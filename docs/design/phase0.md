@@ -89,7 +89,21 @@ Per gameweek:
 - **Pre-GW (T-24h to T-1h):** fetch FPL bootstrap-static, fixtures, latest odds, latest news. Snapshot prices and ownership. This is the data the optimizer is allowed to use.
 - **Post-GW:** fetch live scores, BPS breakdowns, Understat shot-level data, fbref match reports. This becomes training data for the next iteration.
 
-Each ingestion writes raw payloads to `data/raw/{source}/{date}/` (gitignored), then parses to the bitemporal staging tables. Raw payload retention is non-negotiable — needed to debug feature drift.
+**Two-layer ingestion (per source, mandatory):**
+
+1. `fetch_raw_<source>` — pulls the upstream payload (HTTP / CSV / scrape) and writes to `data/raw/{source}/{YYYY-MM-DD}/{filename}`. Writes nothing to the database except an audit row in `ingest_audit` (URL, response code, content hash, retrieved_at). Idempotent: re-runs on the same day overwrite the same path with content-hash check.
+2. `parse_raw_<source>` — reads from `data/raw/{source}/...`, parses to typed records, writes to staging/fact tables. Reads zero network. Re-runnable any time.
+
+This split is non-negotiable for the four scrape sources (LiveFPL, FPLStatistics, Understat, fbref) where parser fragility is the primary failure mode: a parser bug should never force us to re-hit a third-party site. Raw payload retention is permanent (gitignored, but kept on disk).
+
+```
+data/raw/
+├── fpl_api/2024-08-16/bootstrap-static.json
+├── fbref/2024-08-16/match_3578123.html
+├── livefpl/2024-08-16/eo-gw1.html
+├── understat/2024-08-16/match_27845.html
+└── footballdata/E0_2023-24.csv
+```
 
 ### 2.4 Terms of service
 
@@ -97,6 +111,33 @@ Each ingestion writes raw payloads to `data/raw/{source}/{date}/` (gitignored), 
 - Understat / fbref: scraping permitted with reasonable rate limits.
 - football-data.co.uk: free for non-commercial use.
 - the-odds-api: free tier explicitly sanctioned within request cap.
+
+### 2.5 Scraping compliance policy
+
+Applies to all scraped sources (LiveFPL, FPLStatistics, Understat, fbref).
+
+**Mandatory before first fetch from a new source:**
+- Read `robots.txt` for the host. If a path is disallowed, do not fetch it.
+- Read the site's Terms of Service. Note any commercial-use restrictions in the source module's docstring; this project is non-commercial personal use.
+- Make a single low-rate exploratory fetch to confirm structure; do not iterate against the site during exploration.
+
+**Runtime conduct:**
+- Identify with a clear, descriptive User-Agent: `fpl-bot/0.x (+contact-email-or-repo-url)`.
+- Honor `Crawl-delay` from robots.txt and any HTTP 429 responses with exponential backoff.
+- Cache raw HTML aggressively; never re-fetch unchanged content (content-hash check before write).
+- Per-source request budget: ≤ 1 request/min sustained for HTML scrape sources. LiveFPL: once per gameweek (T-1h ideal). fbref/Understat: post-GW only, sequential, 2s minimum spacing.
+- Never bypass paywalls, login walls, or anti-bot protections. If a source moves behind one of these, fall back; do not work around it.
+
+**Failure handling and fallback chain:**
+- If a source returns 4xx/5xx for > 3 consecutive attempts, log and **fall back** rather than retry-storm:
+  - LiveFPL → FPLStatistics → `fpl_api_approx` (overall EO from FPL API + captain-pct heuristic).
+  - fbref → mark fixture's detailed events as missing; BPS sim degrades to empirical residual for that fixture only.
+  - Understat → fail loudly; we cannot proceed without xG.
+- All ingested rows tag `source` and (where applicable) `provenance_url`; downstream code can filter by source quality tier.
+
+**Audit log (`ingest_audit` table):** every fetch records URL, request timestamp, response code, content hash, byte size, parse status. Queryable so we can demonstrate compliance retrospectively. DDL added below in §3.2.
+
+**Posture if a source's policy changes:** if upstream tightens its policy or starts returning anti-bot challenges, the default is to disable that source's `fetch_raw_*` job until reviewed. Parsing of already-cached raw data continues. The system never escalates to evade detection.
 
 ---
 
@@ -227,20 +268,22 @@ CREATE TABLE fact_market_xg (
   PRIMARY KEY (fixture_id, team_id, source_recorded_at)
 );
 
--- Top-10k effective ownership (scraped from LiveFPL; required for EO term in optimizer)
-CREATE TABLE fact_top10k_ownership (
+-- Effective ownership snapshots (multiple rank bands; primary use is top-10k for the optimizer EO term)
+CREATE TABLE fact_eo_snapshot (
   player_id              INT NOT NULL,
   season_id              SMALLINT NOT NULL,
   gameweek               SMALLINT NOT NULL,
-  ownership_pct          NUMERIC(6,3) NOT NULL,    -- % of top-10k owning
-  captaincy_pct          NUMERIC(6,3) NOT NULL,    -- % of top-10k captaining
+  rank_band              TEXT NOT NULL,            -- 'top10k' | 'top100k' | 'overall'
+  ownership_pct          NUMERIC(6,3) NOT NULL,    -- % of band owning
+  captaincy_pct          NUMERIC(6,3) NOT NULL,    -- % of band captaining
   effective_ownership    NUMERIC(6,3) NOT NULL,    -- ownership + captaincy + chip-weighted
-  source                 TEXT NOT NULL,            -- 'livefpl' | 'fplstatistics' | ...
+  source                 TEXT NOT NULL,            -- 'livefpl' | 'fplstatistics' | 'fpl_api_approx'
+  provenance_url         TEXT,                     -- canonical fetch URL for audit
   event_time             TIMESTAMPTZ NOT NULL,     -- snapshot time, must be < kickoff
   recorded_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (player_id, season_id, gameweek, event_time, source)
+  PRIMARY KEY (player_id, season_id, gameweek, rank_band, source, event_time)
 );
-CREATE INDEX ix_top10k_eo_pit ON fact_top10k_ownership (player_id, season_id, gameweek, recorded_at DESC);
+CREATE INDEX ix_eo_snapshot_pit ON fact_eo_snapshot (player_id, season_id, gameweek, rank_band, recorded_at DESC);
 
 -- Per-player per-match detailed event counts (from fbref) — feeds the BPS simulator
 CREATE TABLE fact_player_match_event (
@@ -292,6 +335,24 @@ CREATE TABLE dim_penalty_taker (
   recorded_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (team_id, rank_in_order, valid_from, source)
 );
+
+-- Ingest audit log (per §2.5). Every fetch from any source writes one row here
+-- regardless of whether parsing succeeds. Used for compliance demonstration and replay.
+CREATE TABLE ingest_audit (
+  audit_id        BIGSERIAL PRIMARY KEY,
+  source          TEXT NOT NULL,            -- 'fpl_api' | 'livefpl' | 'fbref' | ...
+  url             TEXT NOT NULL,
+  request_ts      TIMESTAMPTZ NOT NULL,
+  response_code   SMALLINT,
+  byte_size       INT,
+  content_hash    TEXT,                     -- sha256 of raw payload
+  raw_path        TEXT,                     -- path under data/raw/ where stored
+  parse_status    TEXT,                     -- 'pending' | 'ok' | 'failed' | 'skipped_unchanged'
+  parse_error     TEXT,
+  user_agent      TEXT,
+  recorded_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_ingest_audit_source_ts ON ingest_audit (source, request_ts DESC);
 ```
 
 ### 3.3 Point-in-time query layer
@@ -303,10 +364,11 @@ def player_status_as_of(player_id: int, as_of: datetime) -> PlayerStatus: ...
 def squad_market_as_of(season_id: int, as_of: datetime) -> pl.DataFrame: ...
 def player_match_history(player_id: int, before: datetime) -> pl.DataFrame: ...
 def market_xg_for_fixture(fixture_id: int, as_of: datetime) -> tuple[float, float]: ...
-def overall_eo_as_of(season_id: int, gw: int, as_of: datetime) -> pl.DataFrame: ...   # FPL bootstrap
-def top10k_eo_as_of(season_id: int, gw: int, as_of: datetime) -> pl.DataFrame: ...    # LiveFPL scrape
+def eo_as_of(season_id: int, gw: int, rank_band: str, as_of: datetime) -> pl.DataFrame: ...
+    # rank_band ∈ {'top10k','top100k','overall'}; falls back across sources if primary missing
 def match_event_history(player_id: int, before: datetime) -> pl.DataFrame: ...        # fbref event counts
 def bps_rules_for_season(season_id: int) -> pl.DataFrame: ...
+def penalty_taker_as_of(team_id: int, as_of: datetime) -> pl.DataFrame: ...           # ordered list, manual override-aware
 ```
 
 Every function takes an explicit `as_of` and translates to `WHERE recorded_at <= as_of` plus a window function picking the latest row per natural key. This is the *only* sanctioned read path.
@@ -625,7 +687,8 @@ fpl_bot/
 │       └── ...
 ├── alembic/                # DB migrations (versioned; never hand-edit deployed migrations)
 ├── src/fpl_bot/
-│   ├── ingest/             # one module per source: fpl_api, vaastav, understat, fbref, footballdata, oddsapi
+│   ├── ingest/             # one module per source, each exposing fetch_raw_* and parse_raw_*
+│   │                       # sources: fpl_api, vaastav, understat, fbref, footballdata, oddsapi, livefpl, fplstatistics
 │   ├── db/
 │   │   ├── models.py       # SQLAlchemy / SQLModel
 │   │   └── pit.py          # the only sanctioned read API
@@ -654,6 +717,20 @@ Tooling:
 - **ruff + pyright** for static analysis.
 - **pre-commit** to run leakage static check before commit.
 
+**Phase 1 CLI smoke commands** (developer-facing only; not the weekly user CLI):
+
+```bash
+fpl-bot ingest <source> --raw-only        # fetch_raw_<source>, write to data/raw/, audit row
+fpl-bot ingest <source> --parse-only      # parse_raw_<source> from existing data/raw/
+fpl-bot ingest <source>                   # fetch then parse
+fpl-bot pit player-status \
+  --player-id 1 --as-of 2024-08-16T18:30:00Z   # exercise the PIT API
+fpl-bot leakage-check                     # run the four leakage tests (§3.4 / §7.6)
+fpl-bot ingest-audit --source livefpl --since 7d   # show recent fetches for compliance review
+```
+
+These prove the end-to-end Phase-1 path: `fetch_raw → data/raw/ → parse_raw → tables → PIT query → leakage gate`.
+
 ---
 
 ## 9. Open questions and risks
@@ -670,6 +747,13 @@ Tooling:
 
 6. **Top-10k EO source**: ✓ LiveFPL primary, FPLStatistics fallback.
 7. **Penalty-taker dim**: ✓ derived-with-manual-override. Schema added (`dim_penalty_taker`); manual rows take precedence over derived via `override_set` flag.
+
+### Round-3 adjustments — applied
+
+8. **Two-layer ingestion**: ✓ each source exposes `fetch_raw_*` (writes to `data/raw/`, audit row) and `parse_raw_*` (reads from disk to tables). Parser failures never force a refetch. (§2.3, §8.)
+9. **Scraping compliance policy**: ✓ §2.5 added — robots.txt + ToS gate, polite UA, rate budgets, content-hash dedupe, fallback chain, never-evade posture. `ingest_audit` table added (§3.2).
+10. **EO table generalization**: ✓ `fact_top10k_ownership` renamed to `fact_eo_snapshot`; `rank_band` and `provenance_url` columns added. PIT API consolidates to `eo_as_of(rank_band, ...)`.
+11. **CLI smoke commands**: ✓ added to §8 (developer-facing only; weekly user CLI is Phase 6).
 
 ### Risks I want on the record
 
