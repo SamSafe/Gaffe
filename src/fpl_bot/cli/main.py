@@ -18,14 +18,15 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from fpl_bot.config import settings
 from fpl_bot.db import pit
 from fpl_bot.ingest import audit as audit_module
-from fpl_bot.ingest import fpl_api, vaastav
+from fpl_bot.ingest import footballdata, fpl_api, vaastav
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 console = Console()
 
-_SUPPORTED_SOURCES = {"fpl", "vaastav"}
+_SUPPORTED_SOURCES = {"fpl", "vaastav", "footballdata"}
 
 
 @app.command()
@@ -81,6 +82,34 @@ def ingest(
                 raise typer.Exit(1)
             console.print(f"[blue]parse_raw_vaastav_season({season_folder!r})[/blue]")
             counts = vaastav.parse_raw_vaastav_season(season_folder)
+            for k, v in counts.items():
+                console.print(f"  {k}: {v}")
+
+    elif source == "footballdata":
+        if season_folder is None:
+            console.print(
+                "[red]footballdata requires --season-folder, e.g. --season-folder 2024-25[/red]"
+            )
+            raise typer.Exit(1)
+        if not parse_only:
+            console.print(f"[blue]fetch_raw_footballdata({season_folder!r})[/blue]")
+            path = footballdata.fetch_raw_footballdata(season_folder)
+            console.print(f"  → {path}")
+        if not raw_only:
+            path = (
+                settings.raw_dir / "footballdata"
+                / dt.datetime.now(dt.UTC).strftime("%Y-%m-%d")
+                / f"E0_{season_folder}.csv"
+            )
+            if not path.exists():
+                console.print(
+                    f"[yellow]No raw payload found at {path}; run without --parse-only first.[/yellow]"
+                )
+                return
+            console.print(
+                f"[blue]parse_raw_footballdata(season_id={season_id})[/blue]"
+            )
+            counts = footballdata.parse_raw_footballdata(path, season_id=season_id)
             for k, v in counts.items():
                 console.print(f"  {k}: {v}")
 
