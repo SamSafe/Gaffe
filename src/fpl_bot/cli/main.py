@@ -20,24 +20,30 @@ from rich.table import Table
 
 from fpl_bot.db import pit
 from fpl_bot.ingest import audit as audit_module
-from fpl_bot.ingest import fpl_api
+from fpl_bot.ingest import fpl_api, vaastav
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 console = Console()
 
-_SUPPORTED_SOURCES = {"fpl"}  # extend in Phase 1B
+_SUPPORTED_SOURCES = {"fpl", "vaastav"}
 
 
 @app.command()
 def ingest(
-    source: Annotated[str, typer.Argument(help="Source: fpl (Phase 1A); others in Phase 1B")],
+    source: Annotated[str, typer.Argument(help="Source: fpl | vaastav (more in 1B)")],
     raw_only: Annotated[bool, typer.Option("--raw-only")] = False,
     parse_only: Annotated[bool, typer.Option("--parse-only")] = False,
-    season_id: Annotated[int, typer.Option("--season-id")] = 24,
+    season_id: Annotated[int, typer.Option("--season-id", help="For 'fpl' parse")] = 25,
+    season_folder: Annotated[
+        str | None,
+        typer.Option("--season-folder", help="For 'vaastav' parse, e.g. 2024-25"),
+    ] = None,
 ) -> None:
     """Run an ingestion. Default: fetch then parse. Use --raw-only or --parse-only."""
     if source not in _SUPPORTED_SOURCES:
-        console.print(f"[red]Source '{source}' not yet implemented. Available: {_SUPPORTED_SOURCES}[/red]")
+        console.print(
+            f"[red]Source '{source}' not yet implemented. Available: {_SUPPORTED_SOURCES}[/red]"
+        )
         raise typer.Exit(1)
     if raw_only and parse_only:
         console.print("[red]--raw-only and --parse-only are mutually exclusive[/red]")
@@ -53,12 +59,30 @@ def ingest(
             if not raw_only:
                 path = fpl_api.latest_raw_for_today(ep)
                 if path is None:
-                    console.print(f"[yellow]No raw payload found for {ep}; run without --parse-only first.[/yellow]")
+                    console.print(
+                        f"[yellow]No raw payload found for {ep}; run without --parse-only first.[/yellow]"
+                    )
                     continue
                 console.print(f"[blue]parse_raw_fpl_api({ep!r}, season_id={season_id})[/blue]")
                 counts = fpl_api.parse_raw_fpl_api(ep, path, season_id=season_id)
                 for k, v in counts.items():
                     console.print(f"  {k}: {v}")
+
+    elif source == "vaastav":
+        if not parse_only:
+            console.print("[blue]fetch_raw_vaastav() — git clone/pull[/blue]")
+            path = vaastav.fetch_raw_vaastav()
+            console.print(f"  → {path}")
+        if not raw_only:
+            if season_folder is None:
+                console.print(
+                    "[red]vaastav parse requires --season-folder, e.g. --season-folder 2024-25[/red]"
+                )
+                raise typer.Exit(1)
+            console.print(f"[blue]parse_raw_vaastav_season({season_folder!r})[/blue]")
+            counts = vaastav.parse_raw_vaastav_season(season_folder)
+            for k, v in counts.items():
+                console.print(f"  {k}: {v}")
 
 
 pit_app = typer.Typer(help="PIT (point-in-time) query smoke commands.")
