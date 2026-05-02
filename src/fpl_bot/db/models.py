@@ -39,6 +39,8 @@ class DimTeam(Base):
 
 
 class DimPlayer(Base):
+    """player_id is the FPL `code` (stable across seasons), NOT the per-season element id."""
+
     __tablename__ = "dim_player"
     player_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     web_name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -49,6 +51,8 @@ class DimPlayer(Base):
 
 
 class DimFixture(Base):
+    """fixture_id is the FPL fixture `code` (stable across seasons)."""
+
     __tablename__ = "dim_fixture"
     fixture_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     season_id: Mapped[int] = mapped_column(SmallInteger, nullable=False)
@@ -57,6 +61,24 @@ class DimFixture(Base):
     home_team_id: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     away_team_id: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     finished: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class DimPlayerSeasonXref(Base):
+    """Translates per-season FPL element_id → stable player_id (= FPL code)."""
+
+    __tablename__ = "dim_player_season_xref"
+    season_id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    fpl_element_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    player_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class DimFixtureSeasonXref(Base):
+    """Translates per-season FPL fixture id → stable fixture_id (= FPL code)."""
+
+    __tablename__ = "dim_fixture_season_xref"
+    season_id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    fpl_fixture_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class DimPenaltyTaker(Base):

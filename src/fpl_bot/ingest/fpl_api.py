@@ -21,7 +21,14 @@ import httpx
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from fpl_bot.config import settings
-from fpl_bot.db.models import DimFixture, DimPlayer, DimTeam, FactPlayerStatus
+from fpl_bot.db.models import (
+    DimFixture,
+    DimFixtureSeasonXref,
+    DimPlayer,
+    DimPlayerSeasonXref,
+    DimTeam,
+    FactPlayerStatus,
+)
 from fpl_bot.db.session import session_scope
 from fpl_bot.ingest.audit import audit_fetch
 
@@ -109,8 +116,11 @@ def _parse_bootstrap_static(payload: dict, season_id: int) -> dict[str, int]:
             counts["dim_team"] += 1
 
         for e in elements_raw:
+            stable_id = e["code"]  # FPL `code` is stable across seasons; `id` is not
+            element_id = e["id"]   # per-season element id, used at ingest time only
+
             stmt = pg_insert(DimPlayer).values(
-                player_id=e["id"],
+                player_id=stable_id,
                 web_name=e["web_name"],
                 first_name=e.get("first_name"),
                 last_name=e.get("second_name"),
@@ -126,9 +136,21 @@ def _parse_bootstrap_static(payload: dict, season_id: int) -> dict[str, int]:
             s.execute(stmt)
             counts["dim_player"] += 1
 
+            xref_stmt = pg_insert(DimPlayerSeasonXref).values(
+                season_id=season_id,
+                fpl_element_id=element_id,
+                player_id=stable_id,
+            )
+            xref_stmt = xref_stmt.on_conflict_do_update(
+                index_elements=["season_id", "fpl_element_id"],
+                set_={"player_id": xref_stmt.excluded.player_id},
+            )
+            s.execute(xref_stmt)
+            counts["dim_player_season_xref"] = counts.get("dim_player_season_xref", 0) + 1
+
             s.add(
                 FactPlayerStatus(
-                    player_id=e["id"],
+                    player_id=stable_id,
                     season_id=season_id,
                     position_code=element_types[e["element_type"]][:3].upper(),
                     team_id=e["team"],
@@ -148,14 +170,17 @@ def _parse_bootstrap_static(payload: dict, season_id: int) -> dict[str, int]:
 
 
 def _parse_fixtures(payload: list[dict], season_id: int) -> dict[str, int]:
-    count = 0
+    counts = {"dim_fixture": 0, "dim_fixture_season_xref": 0}
     with session_scope() as s:
         for f in payload:
             if f.get("kickoff_time") is None:
                 continue  # unscheduled fixture; skip until kickoff is set
+            stable_id = f["code"]    # stable across seasons
+            per_season_id = f["id"]  # per-season identifier
             kickoff = dt.datetime.fromisoformat(f["kickoff_time"].replace("Z", "+00:00"))
+
             stmt = pg_insert(DimFixture).values(
-                fixture_id=f["id"],
+                fixture_id=stable_id,
                 season_id=season_id,
                 gameweek=f["event"] or 0,
                 kickoff_utc=kickoff,
@@ -172,8 +197,20 @@ def _parse_fixtures(payload: list[dict], season_id: int) -> dict[str, int]:
                 },
             )
             s.execute(stmt)
-            count += 1
-    return {"dim_fixture": count}
+            counts["dim_fixture"] += 1
+
+            xref_stmt = pg_insert(DimFixtureSeasonXref).values(
+                season_id=season_id,
+                fpl_fixture_id=per_season_id,
+                fixture_id=stable_id,
+            )
+            xref_stmt = xref_stmt.on_conflict_do_update(
+                index_elements=["season_id", "fpl_fixture_id"],
+                set_={"fixture_id": xref_stmt.excluded.fixture_id},
+            )
+            s.execute(xref_stmt)
+            counts["dim_fixture_season_xref"] += 1
+    return counts
 
 
 def latest_raw_for_today(endpoint: str) -> Path | None:

@@ -155,6 +155,8 @@ A point-in-time query for "what was true as of gameweek N kickoff" filters `reco
 
 **Leakage discipline:** *no downstream feature pipeline reads any table directly.* All reads go through the PIT query layer (`fpl_bot.db.pit`), which mandates an `as_of` parameter. The leakage test suite (Phase 1) confirms by introspection that no model/feature module imports raw tables.
 
+**Cross-season identity (round-4 design fix).** FPL's per-season element `id` and per-season fixture `id` reset each season — Salah's element_id varied from 191 to 308 across six seasons. To support multi-season backfill, `dim_player.player_id` and `dim_fixture.fixture_id` store the **FPL `code` field** (stable across seasons; e.g., Salah=118748, fixture=2561895), not the per-season `id`. Two xref tables (`dim_player_season_xref`, `dim_fixture_season_xref`) translate per-season `id` → stable code at ingest time. All fact tables reference the stable code; no fact-table schema change required.
+
 ### 3.2 Core tables (DDL sketches)
 
 ```sql
@@ -169,7 +171,7 @@ CREATE TABLE dim_team (
 );
 
 CREATE TABLE dim_player (
-  player_id      INT PRIMARY KEY,         -- FPL element id
+  player_id      INT PRIMARY KEY,         -- FPL `code` (stable across seasons), NOT per-season element id
   web_name       TEXT NOT NULL,
   first_name     TEXT,
   last_name      TEXT,
@@ -178,7 +180,7 @@ CREATE TABLE dim_player (
 );
 
 CREATE TABLE dim_fixture (
-  fixture_id     INT PRIMARY KEY,         -- FPL fixture id
+  fixture_id     INT PRIMARY KEY,         -- FPL fixture `code` (stable across seasons)
   season_id      SMALLINT NOT NULL,
   gameweek       SMALLINT NOT NULL,
   kickoff_utc    TIMESTAMPTZ NOT NULL,
@@ -186,6 +188,23 @@ CREATE TABLE dim_fixture (
   away_team_id   SMALLINT NOT NULL,
   finished       BOOLEAN NOT NULL DEFAULT FALSE
 );
+
+-- Translation tables: per-season FPL `id` ↔ stable global `code` (= dim_player.player_id / dim_fixture.fixture_id)
+CREATE TABLE dim_player_season_xref (
+  season_id       SMALLINT NOT NULL,
+  fpl_element_id  INT NOT NULL,           -- the per-season `id` from bootstrap-static
+  player_id       INT NOT NULL,           -- stable `code` (FK to dim_player.player_id, not enforced)
+  PRIMARY KEY (season_id, fpl_element_id)
+);
+CREATE INDEX ix_player_xref_player ON dim_player_season_xref (player_id);
+
+CREATE TABLE dim_fixture_season_xref (
+  season_id           SMALLINT NOT NULL,
+  fpl_fixture_id      INT NOT NULL,       -- the per-season `id` from fixtures endpoint
+  fixture_id          INT NOT NULL,       -- stable `code` (FK to dim_fixture.fixture_id, not enforced)
+  PRIMARY KEY (season_id, fpl_fixture_id)
+);
+CREATE INDEX ix_fixture_xref_fixture ON dim_fixture_season_xref (fixture_id);
 
 -- Append-only event tables (the bitemporal-lite core)
 CREATE TABLE fact_player_status (
@@ -754,6 +773,10 @@ These prove the end-to-end Phase-1 path: `fetch_raw → data/raw/ → parse_raw 
 9. **Scraping compliance policy**: ✓ §2.5 added — robots.txt + ToS gate, polite UA, rate budgets, content-hash dedupe, fallback chain, never-evade posture. `ingest_audit` table added (§3.2).
 10. **EO table generalization**: ✓ `fact_top10k_ownership` renamed to `fact_eo_snapshot`; `rank_band` and `provenance_url` columns added. PIT API consolidates to `eo_as_of(rank_band, ...)`.
 11. **CLI smoke commands**: ✓ added to §8 (developer-facing only; weekly user CLI is Phase 6).
+
+### Round-4 fix — cross-season stable IDs (applied during Phase 1A smoke)
+
+12. **Stable global IDs**: ✓ `dim_player.player_id` and `dim_fixture.fixture_id` rekeyed to FPL `code` (stable across seasons). Two xref tables (`dim_player_season_xref`, `dim_fixture_season_xref`) translate per-season FPL element/fixture `id` to stable `code`. Migration `0002_stable_ids.py` applied; verified with Salah (code=118748, per-season id=381 in 2025/26). Without this, multi-season vaastav backfill would have collided per-season element ids — Salah's element_id varied 191→308 across six seasons.
 
 ### Risks I want on the record
 
