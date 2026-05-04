@@ -15,6 +15,7 @@ dependencies = [
     "pydantic-settings>=2.3",
     "selectolax>=0.3",
     "tenacity>=8.3",
+    "scipy>=1.13",
 ]
 
 [project.scripts]

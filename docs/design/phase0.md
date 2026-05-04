@@ -250,20 +250,36 @@ CREATE TABLE fact_player_match (
   PRIMARY KEY (player_id, fixture_id, recorded_at)
 );
 
-CREATE TABLE fact_understat_shot (
-  shot_id        TEXT PRIMARY KEY,        -- understat-provided
-  fixture_id     INT,                     -- nullable; matched via fuzzy join
-  player_id      INT,
-  minute         SMALLINT,
-  xg             NUMERIC(5,4),
-  xa_for_assister NUMERIC(5,4),
-  result         TEXT,
-  situation      TEXT,
-  shot_type      TEXT,
-  body_part      TEXT,
-  is_set_piece   BOOLEAN,
-  recorded_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+-- Per-match Understat aggregates (round-5 fix; replaces fact_understat_shot).
+-- Direct understat scraping is blocked by robots.txt; we read vaastav's
+-- redistributed mirror, which is per-match aggregate (no shot coordinates,
+-- situation, or body-part). fixture_id and player_id are populated at
+-- ingest via name/date matching.
+CREATE TABLE fact_understat_player_match (
+  understat_player_id  INT NOT NULL,
+  match_date           DATE NOT NULL,
+  recorded_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  understat_match_id   INT,
+  h_team               TEXT,
+  a_team               TEXT,
+  fixture_id           INT,                  -- nullable; resolved at ingest
+  player_id            INT,                  -- nullable; resolved at ingest (stable code)
+  position             TEXT,
+  minutes              SMALLINT,
+  goals                SMALLINT,
+  shots                SMALLINT,
+  xg                   NUMERIC(7,5),
+  xa                   NUMERIC(7,5),
+  key_passes           SMALLINT,
+  npg                  SMALLINT,
+  npxg                 NUMERIC(7,5),
+  xg_chain             NUMERIC(7,5),
+  xg_buildup           NUMERIC(7,5),
+  assists              SMALLINT,
+  PRIMARY KEY (understat_player_id, match_date, recorded_at)
 );
+CREATE INDEX ix_understat_pm_pit
+  ON fact_understat_player_match (player_id, match_date, recorded_at DESC);
 
 CREATE TABLE fact_odds (
   fixture_id     INT NOT NULL,
@@ -766,6 +782,14 @@ These prove the end-to-end Phase-1 path: `fetch_raw → data/raw/ → parse_raw 
 
 6. **Top-10k EO source**: ✓ LiveFPL primary, FPLStatistics fallback.
 7. **Penalty-taker dim**: ✓ derived-with-manual-override. Schema added (`dim_penalty_taker`); manual rows take precedence over derived via `override_set` flag.
+
+### Round-5 adjustments — applied (Phase 1B compliance fallout)
+
+13. **Understat blocked by robots.txt** (`User-agent: *` / `Disallow: /`). Cannot scrape directly. **Fall-back**: read vaastav's bundled per-match Understat mirror (`data/raw/vaastav/.../understat/`), MIT-licensed open redistribution. Schema reshaped: `fact_understat_shot` (per-shot) replaced by `fact_understat_player_match` (per-match aggregate; goals, shots, xG, xA, npg, npxG, xG_chain, xG_buildup, key_passes). Migration `0003_understat_per_match.py`.
+    - **Cost**: lose shot-level X/Y, situation, body-part. Affects §4.2 set-piece-taker derivation (now manual list only) and "in-box / big-chance" rolling rates (drop from feature set).
+14. **fbref blocked by Cloudflare anti-bot** (HTTP 403 on robots.txt itself). §2.5 forbids bypassing; no free alternative provides tackles/interceptions/blocks/dribbles/big-chances/errors/passes-completed. **Fall-back**: empirical-residual imputation in the BPS simulator behind a clean `EventSource` interface (`src/fpl_bot/db/event_source.py`). Future swap to sports-reference Premium or another fbref-equivalent source is a single-class change; the prediction/optimization pipeline does not change.
+    - **Cost vs full sim**: estimated ~1-2% bonus prediction accuracy loss. Documented as known approximation; revisit when a free or affordable replacement source emerges.
+    - Concretely: §4.5 BPS simulator predicts the components we measure (cards, saves, goals, assists, CS, conceded), then samples per-position empirical means with calibrated noise for the missing event types. Resulting bonus distribution calibrated against historical assignments.
 
 ### Round-3 adjustments — applied
 

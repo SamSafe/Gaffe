@@ -11,6 +11,7 @@ from sqlalchemy import (
     CHAR,
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     Index,
     Integer,
@@ -152,22 +153,38 @@ class FactPlayerMatch(Base):
     total_points: Mapped[int | None] = mapped_column(SmallInteger)
 
 
-class FactUnderstatShot(Base):
-    __tablename__ = "fact_understat_shot"
-    shot_id: Mapped[str] = mapped_column(Text, primary_key=True)
+class FactUnderstatPlayerMatch(Base):
+    """Per-match Understat aggregates (round-5 fix; vaastav-mirror sourced).
+
+    Replaces the original fact_understat_shot. We can't scrape understat.com
+    directly (robots.txt Disallow), and vaastav's redistributed mirror is
+    per-match aggregate, not per-shot. fixture_id and player_id are populated
+    at ingest time via name/date matching; both nullable until resolved.
+    """
+
+    __tablename__ = "fact_understat_player_match"
+    understat_player_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    match_date: Mapped[dt.date] = mapped_column(Date, primary_key=True)
+    recorded_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), primary_key=True, server_default=func.now()
+    )
+    understat_match_id: Mapped[int | None] = mapped_column(Integer)
+    h_team: Mapped[str | None] = mapped_column(Text)
+    a_team: Mapped[str | None] = mapped_column(Text)
     fixture_id: Mapped[int | None] = mapped_column(Integer)
     player_id: Mapped[int | None] = mapped_column(Integer)
-    minute: Mapped[int | None] = mapped_column(SmallInteger)
-    xg: Mapped[float | None] = mapped_column(Numeric(5, 4))
-    xa_for_assister: Mapped[float | None] = mapped_column(Numeric(5, 4))
-    result: Mapped[str | None] = mapped_column(Text)
-    situation: Mapped[str | None] = mapped_column(Text)
-    shot_type: Mapped[str | None] = mapped_column(Text)
-    body_part: Mapped[str | None] = mapped_column(Text)
-    is_set_piece: Mapped[bool | None] = mapped_column(Boolean)
-    recorded_at: Mapped[dt.datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
+    position: Mapped[str | None] = mapped_column(Text)
+    minutes: Mapped[int | None] = mapped_column(SmallInteger)
+    goals: Mapped[int | None] = mapped_column(SmallInteger)
+    shots: Mapped[int | None] = mapped_column(SmallInteger)
+    xg: Mapped[float | None] = mapped_column(Numeric(7, 5))
+    xa: Mapped[float | None] = mapped_column(Numeric(7, 5))
+    key_passes: Mapped[int | None] = mapped_column(SmallInteger)
+    npg: Mapped[int | None] = mapped_column(SmallInteger)
+    npxg: Mapped[float | None] = mapped_column(Numeric(7, 5))
+    xg_chain: Mapped[float | None] = mapped_column(Numeric(7, 5))
+    xg_buildup: Mapped[float | None] = mapped_column(Numeric(7, 5))
+    assists: Mapped[int | None] = mapped_column(SmallInteger)
 
 
 class FactOdds(Base):

@@ -20,13 +20,14 @@ from rich.table import Table
 
 from fpl_bot.config import settings
 from fpl_bot.db import pit
+from fpl_bot.derive import dixon_coles
 from fpl_bot.ingest import audit as audit_module
-from fpl_bot.ingest import footballdata, fpl_api, vaastav
+from fpl_bot.ingest import footballdata, fpl_api, understat, vaastav
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 console = Console()
 
-_SUPPORTED_SOURCES = {"fpl", "vaastav", "footballdata"}
+_SUPPORTED_SOURCES = {"fpl", "vaastav", "footballdata", "understat"}
 
 
 @app.command()
@@ -112,6 +113,39 @@ def ingest(
             counts = footballdata.parse_raw_footballdata(path, season_id=season_id)
             for k, v in counts.items():
                 console.print(f"  {k}: {v}")
+
+    elif source == "understat":
+        if season_folder is None:
+            console.print(
+                "[red]understat requires --season-folder, e.g. --season-folder 2024-25[/red]"
+            )
+            raise typer.Exit(1)
+        if not parse_only:
+            console.print(
+                f"[blue]fetch_raw_understat({season_folder!r}) — vaastav-mirror shim[/blue]"
+            )
+            path = understat.fetch_raw_understat(season_folder)
+            console.print(f"  → {path}")
+        if not raw_only:
+            console.print(f"[blue]parse_raw_understat_season({season_folder!r})[/blue]")
+            counts = understat.parse_raw_understat_season(season_folder)
+            for k, v in counts.items():
+                console.print(f"  {k}: {v}")
+
+
+derive_app = typer.Typer(help="Derived computations from raw fact tables.")
+app.add_typer(derive_app, name="derive")
+
+
+@derive_app.command("market-xg")
+def derive_market_xg(
+    season_id: Annotated[int, typer.Option("--season-id")],
+) -> None:
+    """Run Dixon-Coles inversion on fact_odds → fact_market_xg for one season."""
+    console.print(f"[blue]derive_market_xg_for_season(season_id={season_id})[/blue]")
+    counts = dixon_coles.derive_market_xg_for_season(season_id)
+    for k, v in counts.items():
+        console.print(f"  {k}: {v}")
 
 
 pit_app = typer.Typer(help="PIT (point-in-time) query smoke commands.")
