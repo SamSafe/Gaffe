@@ -1,0 +1,31 @@
+target: assists
+feature                       | gain     | share
+------------------------------+----------+------
+key_passes_per_90_last_10     |     6883 | 27.7%
+shots_per_90_last_10          |     3073 | 12.4%
+xa_per_90_last_10             |     2375 | 9.6%
+team_lambda_market_xg         |     1969 | 7.9%
+xg_chain_per_90_last_5        |      920 | 3.7%
+opponent_lambda_market_xg     |      836 | 3.4%
+xg_per_90_last_5              |      826 | 3.3%
+xg_buildup_per_90_last_5      |      748 | 3.0%
+xg_per_90_last_10             |      710 | 2.9%
+shots_per_90_last_5           |      700 | 2.8%
+npxg_per_90_last_5            |      680 | 2.7%
+pos_GKP                       |      622 | 2.5%
+days_into_season              |      598 | 2.4%
+xg_per_90_last_3              |      574 | 2.3%
+shots_per_90_last_3           |      497 | 2.0%
+npxg_per_90_last_10           |      494 | 2.0%
+npxg_per_90_last_3            |      461 | 1.9%
+gameweek                      |      331 | 1.3%
+xa_per_90_last_3              |      323 | 1.3%
+pos_DEF                       |      319 | 1.3%
+key_passes_per_90_last_3      |      303 | 1.2%
+key_passes_per_90_last_5      |      248 | 1.0%
+pos_MID                       |       95 | 0.4%
+xa_per_90_last_5              |       88 | 0.4%
+was_home                      |       48 | 0.2%
+is_penalty_taker              |       47 | 0.2%
+pos_FWD                       |       44 | 0.2%
+role_mismatch                 |       34 | 0.1%

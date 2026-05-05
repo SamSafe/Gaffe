@@ -1,0 +1,28 @@
+target   | feature group       | full dev | ablated  | delta (higher = group more important)
+---------+---------------------+----------+----------+----------------------------------------
+assists  | market_xg           | 0.3924   | 0.3965   | +0.0041
+assists  | position            | 0.3924   | 0.3939   | +0.0015
+assists  | shots_rolling       | 0.3924   | 0.3934   | +0.0010
+assists  | chain_buildup       | 0.3924   | 0.3932   | +0.0008
+assists  | npxg_rolling        | 0.3924   | 0.3928   | +0.0004
+assists  | role_mismatch       | 0.3924   | 0.3926   | +0.0002
+assists  | xa_rolling          | 0.3924   | 0.3925   | +0.0001
+assists  | timing              | 0.3924   | 0.3923   | -0.0001
+assists  | penalty_taker       | 0.3924   | 0.3922   | -0.0002
+assists  | xg_rolling          | 0.3924   | 0.3919   | -0.0004
+assists  | key_passes_rolling  | 0.3924   | 0.3919   | -0.0005
+assists  | venue               | 0.3924   | 0.3917   | -0.0007
+---------+---------------------+----------+----------+----------------------------------------
+goals    | position            | 0.3681   | 0.3745   | +0.0064
+goals    | market_xg           | 0.3681   | 0.3729   | +0.0048
+goals    | penalty_taker       | 0.3681   | 0.3712   | +0.0031
+goals    | xg_rolling          | 0.3681   | 0.3704   | +0.0023
+goals    | key_passes_rolling  | 0.3681   | 0.3688   | +0.0007
+goals    | chain_buildup       | 0.3681   | 0.3686   | +0.0005
+goals    | venue               | 0.3681   | 0.3686   | +0.0004
+goals    | npxg_rolling        | 0.3681   | 0.3684   | +0.0003
+goals    | timing              | 0.3681   | 0.3684   | +0.0003
+goals    | role_mismatch       | 0.3681   | 0.3682   | +0.0001
+goals    | shots_rolling       | 0.3681   | 0.3675   | -0.0006
+goals    | xa_rolling          | 0.3681   | 0.3667   | -0.0014
+---------+---------------------+----------+----------+----------------------------------------

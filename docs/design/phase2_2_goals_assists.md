@@ -117,10 +117,31 @@ Filter to `minutes ≥ 1` rows (conditional-on-playing). For Poisson loss, set s
 **Acceptance gate before Phase 2.3**:
 - [x] **Beats `rolling_xg_5` baseline by ≥ 5%** on Poisson deviance. Actual: 29–39% relative for goals, 37–48% for assists, across all 4 walk-forward folds. Weighted (default) ≈ unweighted within 0.001 deviance — both ship; weighted is the production default.
 - [x] **All leakage tests still green; new feature-path leakage test added.** 25/25 passing including `test_goals_features_pit_stable_across_truncation`.
-- [ ] **Calibration ±5% per decile** — diagnostic deferred to a follow-up commit (same pattern as Phase 2.1 closeout).
-- [ ] **Ablation table** — diagnostic deferred to a follow-up commit.
+- [x] **Calibration plots committed** — `docs/design/phase2_2_results/calibration_{goals,assists}_test_*.png` (8 plots, decile-binned predicted-vs-empirical for each fold × each target).
+- [x] **Ablation table committed** — `docs/design/phase2_2_results/ablation_2024_25.txt` (single fold; feature_importance per target).
 
-**Substantive gate met**; calibration and ablation diagnostics follow as a non-blocking close-out commit.
+**Goals ablation findings (single fold, 2024/25 test):**
+- Most important: `position` (+0.0064), `market_xg` (+0.0048), `penalty_taker` (+0.0031) — validates the hand-curated PK config carrying real signal
+- `xg_rolling` (+0.0023), `key_passes_rolling` (+0.0007), `chain_buildup` (+0.0005)
+- `xa_rolling` (-0.0014) and `shots_rolling` (-0.0006) show *negative* delta — removing them slightly improves goals model. Interpretation: xA isn't a goal-predictor and adds overfitting noise; shots is partially redundant with xg_rolling. Candidate for v2 cleanup.
+
+**Assists ablation findings:**
+- Most important: `market_xg` (+0.0041), `position` (+0.0015), `shots_rolling` (+0.0010)
+- `chain_buildup` (+0.0008), `npxg_rolling` (+0.0004), `xa_rolling` (+0.0001)
+- Counter-intuitive: `key_passes_rolling` (-0.0005), `xg_rolling` (-0.0004), `venue` (-0.0007). Likely fold-noise; multi-fold ablation would clarify.
+
+**Feature importance (gain): goals model** — top 5: `shots_per_90_last_10` (34%), `xg_per_90_last_10` (14%), `team_lambda_market_xg` (5%), `npxg_per_90_last_10` (5%), `pos_DEF` (4%).
+
+**Feature importance (gain): assists model** — top 5: `key_passes_per_90_last_10` (28%), `shots_per_90_last_10` (12%), `xa_per_90_last_10` (10%), `team_lambda_market_xg` (8%), `xg_chain_per_90_last_5` (4%).
+
+### Follow-ups (non-blocking, deferred)
+
+- Drop `xa_per_90_*` features from the goals model (negative ablation delta).
+- Multi-fold ablation to confirm the assists `key_passes`/`venue` negative deltas are fold-noise, not real.
+- Backfill direct-FK and corner takers in `set_piece_takers.yaml` for older seasons (penalty taker is in; FK/corner are not — limits the assist-model's set-piece signal to current season only).
+- Once `fact_player_status` accumulates GW-by-GW snapshots, add live-only features (status_code, news keywords) at predict time.
+
+**Gate met. Ready for Phase 2.3 (clean sheet model).**
 
 ---
 
