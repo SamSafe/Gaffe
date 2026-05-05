@@ -1,0 +1,8 @@
+feature group     | full ll  | w/o group ll | delta (higher = group more important)
+------------------+----------+--------------+--------------------------------------
+rolling_minutes   | 0.5059   | 0.5310       | +0.0251
+position          | 0.5059   | 0.5143       | +0.0084
+season_context    | 0.5059   | 0.5064       | +0.0004
+start60_rates     | 0.5059   | 0.5060       | +0.0001
+bucket_history    | 0.5059   | 0.5059       | +0.0000
+timing            | 0.5059   | 0.5043       | -0.0016

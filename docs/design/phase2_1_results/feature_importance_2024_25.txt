@@ -1,0 +1,18 @@
+feature                | gain     | share
+-----------------------+----------+------
+min_last_1             |   560738 | 50.8%
+min_last_3             |   242098 | 21.9%
+min_last_5             |   121866 | 11.0%
+min_last_10            |    45567 | 4.1%
+pos_GKP                |    45565 | 4.1%
+days_into_season       |    24418 | 2.2%
+days_since_last_match  |    24015 | 2.2%
+start60_rate_10        |     9842 | 0.9%
+pos_MID                |     8049 | 0.7%
+gameweek               |     6831 | 0.6%
+pos_FWD                |     5583 | 0.5%
+pos_DEF                |     4823 | 0.4%
+season_match_count     |     4160 | 0.4%
+start60_rate_5         |      453 | 0.0%
+start60_rate_3         |      138 | 0.0%
+bucket_last_1          |        0 | 0.0%
