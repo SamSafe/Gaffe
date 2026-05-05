@@ -16,6 +16,7 @@ dependencies = [
     "selectolax>=0.3",
     "tenacity>=8.3",
     "scipy>=1.13",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]

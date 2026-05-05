@@ -1,0 +1,59 @@
+# Players whose actual on-pitch role differs from FPL classification (Phase 0 §4.2).
+#
+# Used as a binary `role_mismatch` feature plus a categorical `actual_role` in
+# the goals/assists models.
+#
+# Format:
+#   <web_name>:
+#     fpl_position: GKP | DEF | MID | FWD
+#     actual_role:  GKP | CB | FB | DM | CM | CAM | WG | ST | F9
+#     note: <free text>
+#
+# Coverage (v1): canonical mismatches only. The "alpha" cases — where FPL
+# under-represents an attacker as a midfielder, or vice versa. Beyond this
+# list we accept FPL's classification.
+#
+# Maintenance: revisit pre-season; managers' tactical setups change
+# year-to-year. Notes capture WHY we override so future-us can reassess.
+
+players:
+  M.Salah:
+    fpl_position: MID
+    actual_role: ST
+    note: "Plays highest in Liverpool's front line; primary striker by xG/touches"
+  Palmer:
+    fpl_position: MID
+    actual_role: F9
+    note: "Free-roaming #10 / false-9 at Chelsea; out-of-position vs other FPL MIDs"
+  Bruno Fernandes:
+    fpl_position: MID
+    actual_role: CAM
+    note: "Plays as #10 directly behind the striker"
+  Foden:
+    fpl_position: MID
+    actual_role: F9
+    note: "Played as false-9 for Man City through 2023/24; varies under different managers"
+  Cunha:
+    fpl_position: FWD
+    actual_role: CAM
+    note: "Drops deep at Wolves — closer to a #10 than a pure striker"
+  Eze:
+    fpl_position: MID
+    actual_role: CAM
+    note: "Crystal Palace's primary creator; plays as advanced #10"
+  Mac Allister:
+    fpl_position: MID
+    actual_role: DM
+    note: "Plays deeper than typical MID since moving to Liverpool — much lower xG than peer MIDs"
+  Rice:
+    fpl_position: MID
+    actual_role: DM
+    note: "Box-to-box deep MID at Arsenal; not a goal threat like wide MIDs"
+  Maddison:
+    fpl_position: MID
+    actual_role: CAM
+    note: "Spurs primary creator playing as #10 / advanced CM"
+  Bernardo:
+    fpl_position: MID
+    actual_role: CAM
+    note: "Often deployed as advanced creator or false-9 at Man City"
