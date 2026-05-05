@@ -783,6 +783,14 @@ These prove the end-to-end Phase-1 path: `fetch_raw → data/raw/ → parse_raw 
 6. **Top-10k EO source**: ✓ LiveFPL primary, FPLStatistics fallback.
 7. **Penalty-taker dim**: ✓ derived-with-manual-override. Schema added (`dim_penalty_taker`); manual rows take precedence over derived via `override_set` flag.
 
+### Round-6 closure — Phase 1B done-with-deferrals
+
+15. **livefpl scraping deferred.** livefpl.net is reachable (HTTP 200, no robots.txt), but it's a JavaScript SPA with data behind internal XHR endpoints. Reverse-engineering those is brittle and §2.5-adjacent in spirit. Stub at `src/fpl_bot/ingest/livefpl.py` raises `NotImplementedError` with the rationale; revisit if a clean public endpoint or manual export emerges.
+16. **fplstatistics scraping deferred.** Persistent connect-timeout from this environment (60s, multiple attempts, both subdomains). Site appears down or geo-blocked. Stub at `src/fpl_bot/ingest/fplstatistics.py`.
+17. **Top-10k EO falls back to `fpl_api_approx`** (overall EO from FPL API + captain-pct heuristic). The schema's `fact_eo_snapshot.source` enum already accommodates this — Phase 4 optimizer's rank-utility uses whichever source is highest fidelity at run time.
+18. **oddsapi (the-odds-api.com)** wired up at `src/fpl_bot/ingest/oddsapi.py`. Free-tier API; requires `FPL_BOT_ODDS_API_KEY` env var (added to Settings). Parser body deferred to Phase 6 weekly live run; backtest already covered by football-data.co.uk.
+19. **Time-shuffle and future-feature-search leakage tests deferred to Phase 2.** Both gates require features and models to exist; they are Phase 2 entry-criteria, not Phase 1 deliverables. Static-import + synthetic-future-row gates are sufficient for Phase 1 closure.
+
 ### Round-5 adjustments — applied (Phase 1B compliance fallout)
 
 13. **Understat blocked by robots.txt** (`User-agent: *` / `Disallow: /`). Cannot scrape directly. **Fall-back**: read vaastav's bundled per-match Understat mirror (`data/raw/vaastav/.../understat/`), MIT-licensed open redistribution. Schema reshaped: `fact_understat_shot` (per-shot) replaced by `fact_understat_player_match` (per-match aggregate; goals, shots, xG, xA, npg, npxG, xG_chain, xG_buildup, key_passes). Migration `0003_understat_per_match.py`.
