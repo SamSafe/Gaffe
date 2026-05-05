@@ -105,6 +105,8 @@ def all_player_match_with_kickoff(
                 FactPlayerMatch.assists,
                 FactPlayerMatch.clean_sheet,
                 FactPlayerMatch.total_points,
+                FactPlayerMatch.was_home,
+                FactPlayerMatch.price_tenths,
                 _DimFixture.season_id,
                 _DimFixture.gameweek,
                 _DimFixture.kickoff_utc,
@@ -128,6 +130,8 @@ def all_player_match_with_kickoff(
                 "assists": r.assists,
                 "clean_sheet": r.clean_sheet,
                 "total_points": r.total_points,
+                "was_home": r.was_home,
+                "price_tenths": r.price_tenths,
                 "season_id": r.season_id,
                 "gameweek": r.gameweek,
                 "kickoff_utc": r.kickoff_utc,
@@ -137,6 +141,152 @@ def all_player_match_with_kickoff(
             for r in rows
         ]
     )
+
+
+def understat_player_match_history(
+    season_ids: list[int] | None = None,
+) -> pl.DataFrame:
+    """Bulk fetch of fact_understat_player_match aggregated to latest recorded_at per
+    (understat_player_id, match_date). Optional filter to fixtures in season_ids
+    (skips rows with NULL fixture_id since season is unresolvable for them).
+    """
+    from sqlalchemy import func as _func
+
+    from fpl_bot.db.models import (
+        DimFixture as _DimFixture,
+    )
+    from fpl_bot.db.models import (
+        FactUnderstatPlayerMatch as _FUPM,
+    )
+
+    with session_scope() as s:
+        latest = (
+            select(
+                _FUPM.understat_player_id,
+                _FUPM.match_date,
+                _func.max(_FUPM.recorded_at).label("max_rec"),
+            )
+            .group_by(_FUPM.understat_player_id, _FUPM.match_date)
+            .subquery()
+        )
+        stmt = select(
+            _FUPM.understat_player_id,
+            _FUPM.match_date,
+            _FUPM.fixture_id,
+            _FUPM.player_id,
+            _FUPM.position,
+            _FUPM.minutes,
+            _FUPM.goals,
+            _FUPM.shots,
+            _FUPM.xg,
+            _FUPM.xa,
+            _FUPM.key_passes,
+            _FUPM.npg,
+            _FUPM.npxg,
+            _FUPM.xg_chain,
+            _FUPM.xg_buildup,
+        ).join(
+            latest,
+            (latest.c.understat_player_id == _FUPM.understat_player_id)
+            & (latest.c.match_date == _FUPM.match_date)
+            & (latest.c.max_rec == _FUPM.recorded_at),
+        )
+        if season_ids is not None:
+            stmt = stmt.join(_DimFixture, _DimFixture.fixture_id == _FUPM.fixture_id).where(
+                _DimFixture.season_id.in_(season_ids)
+            )
+        rows = s.execute(stmt).all()
+
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(
+        [
+            {
+                "understat_player_id": r.understat_player_id,
+                "match_date": r.match_date,
+                "fixture_id": r.fixture_id,
+                "player_id": r.player_id,
+                "position_us": r.position,
+                "minutes_us": r.minutes,
+                "goals_us": r.goals,
+                "shots": r.shots,
+                "xg": float(r.xg) if r.xg is not None else None,
+                "xa": float(r.xa) if r.xa is not None else None,
+                "key_passes": r.key_passes,
+                "npg": r.npg,
+                "npxg": float(r.npxg) if r.npxg is not None else None,
+                "xg_chain": float(r.xg_chain) if r.xg_chain is not None else None,
+                "xg_buildup": float(r.xg_buildup) if r.xg_buildup is not None else None,
+            }
+            for r in rows
+        ]
+    )
+
+
+def market_xg_for_fixtures(
+    fixture_ids: list[int] | None = None,
+) -> pl.DataFrame:
+    """Latest fact_market_xg row per (fixture_id, team_id). Returns
+    columns: fixture_id, team_id, lambda, cs_prob.
+    """
+    from sqlalchemy import func as _func
+
+    from fpl_bot.db.models import FactMarketXg as _FMX
+
+    with session_scope() as s:
+        latest = (
+            select(
+                _FMX.fixture_id,
+                _FMX.team_id,
+                _func.max(_FMX.source_recorded_at).label("max_src"),
+            )
+            .group_by(_FMX.fixture_id, _FMX.team_id)
+            .subquery()
+        )
+        stmt = select(_FMX.fixture_id, _FMX.team_id, _FMX.lambda_, _FMX.cs_prob).join(
+            latest,
+            (latest.c.fixture_id == _FMX.fixture_id)
+            & (latest.c.team_id == _FMX.team_id)
+            & (latest.c.max_src == _FMX.source_recorded_at),
+        )
+        if fixture_ids is not None:
+            stmt = stmt.where(_FMX.fixture_id.in_(fixture_ids))
+        rows = s.execute(stmt).all()
+
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(
+        [
+            {
+                "fixture_id": r.fixture_id,
+                "team_id": r.team_id,
+                "lambda_market_xg": float(r.lambda_),
+                "cs_prob_market": float(r.cs_prob),
+            }
+            for r in rows
+        ]
+    )
+
+
+def web_name_to_player_id() -> dict[str, int]:
+    """Map of FPL web_name → stable player_id (FPL code). Latest snapshot."""
+    from fpl_bot.db.models import DimPlayer as _DimPlayer
+
+    with session_scope() as s:
+        rows = s.execute(select(_DimPlayer.player_id, _DimPlayer.web_name)).all()
+    return {r.web_name: r.player_id for r in rows if r.web_name}
+
+
+def team_id_by_full_name(season_ids: list[int] | None = None) -> dict[tuple[int, str], int]:
+    """Map of (season_id, full_name) → team_id."""
+    from fpl_bot.db.models import DimTeam as _DimTeam
+
+    with session_scope() as s:
+        stmt = select(_DimTeam.season_id, _DimTeam.full_name, _DimTeam.team_id)
+        if season_ids is not None:
+            stmt = stmt.where(_DimTeam.season_id.in_(season_ids))
+        rows = s.execute(stmt).all()
+    return {(r.season_id, r.full_name): r.team_id for r in rows}
 
 
 def all_player_positions() -> pl.DataFrame:

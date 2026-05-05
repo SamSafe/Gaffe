@@ -19,6 +19,120 @@
 # Primary cross-checks: livefpl.net set-piece notes, FFScout, public match
 # reporting. Spot-correctable; flag obvious errors.
 
+# Historical backfill: penalty takers only for seasons 19-23. Direct-FK and
+# corner takers are not yet backfilled (lower modelling priority; can extend
+# later). Best-effort accuracy from public match records; spot-correctable.
+
+19:
+  Arsenal: {penalty: Aubameyang}
+  Aston Villa: {penalty: Grealish}
+  Bournemouth: {penalty: Wilson}
+  Brighton: {penalty: Maupay}
+  Burnley: {penalty: Wood}
+  Chelsea: {penalty: Jorginho}
+  Crystal Palace: {penalty: Milivojević}
+  Everton: {penalty: Sigurdsson}
+  Leicester: {penalty: Vardy}
+  Liverpool: {penalty: M.Salah}
+  Man City: {penalty: Agüero}
+  Man Utd: {penalty: Bruno Fernandes}
+  Newcastle: {penalty: Joelinton}
+  Norwich: {penalty: Pukki}
+  Sheffield Utd: {penalty: Norwood}
+  Southampton: {penalty: Ings}
+  Spurs: {penalty: Kane}
+  Watford: {penalty: Deeney}
+  West Ham: {penalty: Noble}
+  Wolves: {penalty: Jiménez}
+
+20:
+  Arsenal: {penalty: Aubameyang}
+  Aston Villa: {penalty: Watkins}
+  Brighton: {penalty: Maupay}
+  Burnley: {penalty: Wood}
+  Chelsea: {penalty: Jorginho}
+  Crystal Palace: {penalty: Milivojević}
+  Everton: {penalty: Sigurdsson}
+  Fulham: {penalty: Cavaleiro}
+  Leeds: {penalty: Bamford}
+  Leicester: {penalty: Vardy}
+  Liverpool: {penalty: M.Salah}
+  Man City: {penalty: De Bruyne}
+  Man Utd: {penalty: Bruno Fernandes}
+  Newcastle: {penalty: Wilson}
+  Sheffield Utd: {penalty: Norwood}
+  Southampton: {penalty: Ings}
+  Spurs: {penalty: Kane}
+  West Brom: {penalty: Pereira}
+  West Ham: {penalty: Antonio}
+  Wolves: {penalty: Jiménez}
+
+21:
+  Arsenal: {penalty: Lacazette}
+  Aston Villa: {penalty: Watkins}
+  Brentford: {penalty: Toney}
+  Brighton: {penalty: Maupay}
+  Burnley: {penalty: Wood}
+  Chelsea: {penalty: Jorginho}
+  Crystal Palace: {penalty: Zaha}
+  Everton: {penalty: Calvert-Lewin}
+  Leeds: {penalty: Bamford}
+  Leicester: {penalty: Vardy}
+  Liverpool: {penalty: M.Salah}
+  Man City: {penalty: Mahrez}
+  Man Utd: {penalty: Bruno Fernandes}
+  Newcastle: {penalty: Wilson}
+  Norwich: {penalty: Pukki}
+  Southampton: {penalty: Ward-Prowse}
+  Spurs: {penalty: Kane}
+  Watford: {penalty: King}
+  West Ham: {penalty: Antonio}
+  Wolves: {penalty: Jiménez}
+
+22:
+  Arsenal: {penalty: Saka}
+  Aston Villa: {penalty: Watkins}
+  Bournemouth: {penalty: Solanke}
+  Brentford: {penalty: Toney}
+  Brighton: {penalty: Mac Allister}
+  Chelsea: {penalty: Jorginho}
+  Crystal Palace: {penalty: Zaha}
+  Everton: {penalty: Calvert-Lewin}
+  Fulham: {penalty: Mitrović}
+  Leeds: {penalty: Bamford}
+  Leicester: {penalty: Maddison}
+  Liverpool: {penalty: M.Salah}
+  Man City: {penalty: Haaland}
+  Man Utd: {penalty: Bruno Fernandes}
+  Newcastle: {penalty: Wilson}
+  Nott'm Forest: {penalty: Awoniyi}
+  Southampton: {penalty: Ward-Prowse}
+  Spurs: {penalty: Kane}
+  West Ham: {penalty: Antonio}
+  Wolves: {penalty: Neves}
+
+23:
+  Arsenal: {penalty: Saka}
+  Aston Villa: {penalty: Watkins}
+  Bournemouth: {penalty: Solanke}
+  Brentford: {penalty: Toney}
+  Brighton: {penalty: João Pedro}
+  Burnley: {penalty: Cullen}
+  Chelsea: {penalty: Palmer}
+  Crystal Palace: {penalty: Eze}
+  Everton: {penalty: Calvert-Lewin}
+  Fulham: {penalty: Pereira}
+  Liverpool: {penalty: M.Salah}
+  Luton: {penalty: Adebayo}
+  Man City: {penalty: Haaland}
+  Man Utd: {penalty: Bruno Fernandes}
+  Newcastle: {penalty: Isak}
+  Nott'm Forest: {penalty: Hudson-Odoi}
+  Sheffield Utd: {penalty: McAtee}
+  Spurs: {penalty: Son}
+  West Ham: {penalty: Bowen}
+  Wolves: {penalty: Cunha}
+
 24:
   Arsenal:
     penalty: Saka
