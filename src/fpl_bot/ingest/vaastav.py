@@ -237,6 +237,10 @@ def _ingest_one_gw_df(
             if player_id is None or fixture_id is None:
                 continue
 
+            was_home = row.get("was_home")
+            if was_home is not None and not isinstance(was_home, bool):
+                # vaastav stores 'True'/'False' strings in some seasons
+                was_home = str(was_home).strip().lower() in ("true", "1")
             stmt = pg_insert(FactPlayerMatch).values(
                 player_id=player_id,
                 fixture_id=fixture_id,
@@ -251,6 +255,8 @@ def _ingest_one_gw_df(
                 bonus=row.get("bonus"),
                 bps=row.get("bps"),
                 total_points=row.get("total_points"),
+                was_home=was_home,
+                price_tenths=row.get("value"),
             )
             s.execute(stmt)
             n += 1

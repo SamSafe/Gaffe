@@ -151,6 +151,8 @@ class FactPlayerMatch(Base):
     bonus: Mapped[int | None] = mapped_column(SmallInteger)
     bps: Mapped[int | None] = mapped_column(SmallInteger)
     total_points: Mapped[int | None] = mapped_column(SmallInteger)
+    was_home: Mapped[bool | None] = mapped_column(Boolean)
+    price_tenths: Mapped[int | None] = mapped_column(SmallInteger)
 
 
 class FactUnderstatPlayerMatch(Base):
