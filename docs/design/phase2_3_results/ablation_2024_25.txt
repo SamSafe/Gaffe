@@ -1,0 +1,8 @@
+feature group           | full brier | ablated   | delta (higher = group more important)
+------------------------+------------+-----------+----------------------------------------
+timing                  | 0.1697     | 0.1702    | +0.0005
+market_lambdas          | 0.1697     | 0.1698    | +0.0001
+rolling_goals_for       | 0.1697     | 0.1697    | -0.0000
+venue                   | 0.1697     | 0.1696    | -0.0002
+rolling_goals_conceded  | 0.1697     | 0.1691    | -0.0007
+rolling_cs              | 0.1697     | 0.1691    | -0.0007

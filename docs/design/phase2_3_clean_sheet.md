@@ -110,8 +110,14 @@ Hyperparameters: same restrained sweep as Phase 2.1/2.2.
 - [x] **Residual must beat market by ≥ 0.005 Brier on ≥ 3/4 folds.** Result: **0/4 folds pass.** Per-fold deltas (Brier_market − Brier_model): +0.0002, −0.0002, −0.0002, +0.0005. All within fold-level noise. **Production model = `market_only`** as the design explicitly directs in this case.
 - [x] **All leakage tests still green; new feature-path leakage test added.** 33/33 passing including `test_clean_sheet_features_pit_stable_across_truncation`.
 - [x] **Overall ECE within tolerance.** Market ECE per fold: 0.018, 0.026, 0.046, 0.015 — all under 0.05. (Subgroup ECE in the diagnostics close-out commit.)
-- [ ] **Calibration plot committed** — diagnostics close-out follow-up.
-- [ ] **Ablation table committed** — diagnostics close-out follow-up.
+- [x] **Calibration plots committed** — `docs/design/phase2_3_results/calibration_test_*.png` (4 plots, side-by-side market vs residual per fold).
+- [x] **Ablation table committed** — `docs/design/phase2_3_results/ablation_2024_25.txt`. Confirms residual finds nothing useful: every group's ablation delta is in [−0.0007, +0.0005]. Removing `rolling_cs` and `rolling_goals_conceded` actually *improves* the model by 0.0007 — the residual model is noise-fitting.
+- [x] **Subgroup ECE committed** — `docs/design/phase2_3_results/subgroup_ece_2024_25.txt`. Market is well-calibrated overall (decile ECE 0.000–0.092, all but the top decile under 0.05). Most striking team-level finding: market under-prices Liverpool's CS issues in 2024/25 (team ECE = 0.206) and Spurs' (0.101). The residual model corrects these specific teams (Liverpool 0.206 → 0.075, Spurs 0.101 → 0.019) but regresses on Man City (0.042 → 0.109) and others — net-zero at the fold level. Documented as "promising team-specific signal that doesn't generalize", not a Phase 2.3 fix.
+
+### Diagnostic findings worth noting
+
+- **Feature importance**: `days_since_last_match` (23%) and `days_into_season` (20%) lead by gain — both are spurious-correlation features (the residual is fishing for patterns the market hasn't priced; with no real signal, fixture-cadence features end up at the top of the noise floor). Real defensive features (rolling_goals_conceded, rolling_cs) collectively are < 7% of total gain. Confirms the model has no genuine signal to find.
+- **Liverpool 2024/25 calibration miss**: the market priced Liverpool's CS rate too high; the residual partially corrected it but at the cost of other teams. Possible 2025/26 follow-up: investigate whether team-specific recalibration (per-team Platt scaling against rolling defensive form) yields stable lift.
 
 **Why the residual failed (and that's fine):** EPL CS markets are very efficient. The Dixon-Coles inversion of 1X2 + totals already produces well-calibrated CS probabilities (per-fold ECE 0.015–0.046). There's no systematic mispricing for a residual model to find. This is the "market is efficient on CS" outcome the design anticipates — we keep the residual code in place for periodic re-evaluation but the production caller returns `market_cs_prob` directly.
 
