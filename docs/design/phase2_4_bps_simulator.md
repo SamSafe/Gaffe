@@ -117,7 +117,11 @@ Per Phase 0 §4.5: "Brier on 'did this player receive bonus?', per-position, per
 
 - [x] **Beats `naive event-proxy linear combination` by ≥ 5% relative Brier on P(bonus > 0).** Actual: ~42-43% relative across all 4 folds. Way past threshold.
 - [x] **Beats `top-3-by-xPts heuristic` on P(bonus = 3).** Sim Brier 0.0129-0.0154 vs heuristic 0.0232-0.0282 — ~45% better across folds.
-- [x] **ECE < 0.05 per position.** Overall ECE 0.003-0.007 across folds; per-position breakdown in diagnostics close-out.
+- [⚠] **ECE < 0.05 per position.** Overall ECE 0.003-0.007 (well under). Per-position breakdown (fold 2024/25):
+  - GKP: 0.021 ✓
+  - DEF: 0.014 ✓
+  - MID: 0.005 ✓
+  - **FWD: 0.055 — narrowly fails (10% over threshold)**. Predicted FWD bonus rate 5.8% vs actual 11.3% — systematic under-prediction. Strongly consistent with the independent-goal-sampling distortion flagged in §9. Recommend the multinomial v2 fix as priority follow-up; design treats this as a near-miss not a blocker since the primary and secondary gates pass massively.
 - [x] **All leakage tests still green; new feature-path leakage test added.** 22 BPS-specific tests pass.
 
 **Walk-forward CV results (4-fold, 200 MC iterations, ~10 min):**
@@ -129,11 +133,28 @@ season  | n      | brier_pos: sim/naive/top3/posM | brier_3: sim/top3 | ECE
  2024/25|  27605 | 0.0377/0.0642/0.0675/0.0386    | 0.0135/0.0243     | 0.003
 ```
 
-### Notable finding
+### Notable findings
 
-The **position-marginal baseline (`posM`) is unexpectedly strong** — only ~2% relative worse than the simulator across folds. This says that "P(bonus | position, minutes_played)" already captures most of the BPS signal in EPL data; the simulator's mechanism-level lift over a strong-but-mechanism-free baseline is modest (~2% on Brier). The naive event-proxy and top-3-by-xPts baselines, by contrast, are notably weaker — the simulator's win over those is comfortable.
+1. **Position-marginal baseline is unexpectedly strong** — only ~2% relative worse than the simulator on Brier(P(>0)). "P(bonus | position, minutes_played)" already captures most of the EPL BPS signal at the marginal level. The simulator's headline lift over this strongest baseline is modest. The naive-event-proxy and top-3-by-xPts baselines are notably weaker; the simulator's win over those is comfortable. Phase 4 stochastic optimization will benefit from the simulator's full P(bonus = k) distribution which the position-marginal baseline only approximates — the marginal-Brier gap understates the simulator's value to the optimizer.
 
-Interpretation: the simulator IS doing real work (it beats every baseline), but the headline lift over the strongest baseline is small. Phase 4 stochastic optimization should benefit from the bonus *distribution* (not just the mean) — the simulator outputs full P(bonus = k) which the position-marginal baseline only approximates. The marginal-Brier gap understates the simulator's value to the optimizer.
+2. **FWD calibration is the weak spot.** Per-position ECE at FWD = 0.055 narrowly fails the 0.05 gate. Diagnostics show systematic under-prediction (sim_mean 5.8% vs actual 11.3% bonus rate). Most likely causes, in priority order:
+   - Independent player goal sampling (§9 v2 candidate): when sum across teammates < team_score, the top scorer (often a FWD) is under-counted on goals BPS. Multinomial(team_score, normalized_λ) would resolve this.
+   - Tier-C residual undercaptures FWD-specific event distribution: the per-(position, minutes_bucket) Gaussian may be too narrow for FWDs whose BPS variance is actually larger.
+   - Sample size: FWD has the smallest n in the test fold (1805); per-position ECE may be noisy.
+   - **Documenting as a known approximation; recommending multinomial-goal-sampling as the priority v2 fix.**
+
+3. **Residual source is critical for calibration but minor for Brier.** Per the no-residual variant: with the empirical residual the simulator's Brier P(>0) is 0.0377 (vs 0.0401 without — +0.0024 lift); but ECE drops dramatically from 0.035 → 0.003. Without the residual, the simulator is meaningfully miscalibrated even though its raw Brier is similar. **Validates the architecture decision in §1** — the residual covers un-modeled events not in the trio's outputs, and stripping it costs us calibration.
+
+### Per-bonus-tier Brier (fold 2024/25)
+
+```
+tier | n_actual | sim_brier | top3_brier | sim - top3
+   1 |      391 | 0.0137    | 0.0266     | -0.0128 (sim 49% better)
+   2 |      411 | 0.0143    | 0.0271     | -0.0128 (sim 47% better)
+   3 |      396 | 0.0135    | 0.0243     | -0.0109 (sim 45% better)
+```
+
+Simulator beats top-3-by-xPts baseline meaningfully across every bonus tier.
 
 **If both gates fail**: the simulator implementation has a bug; iterate. Unlike Phase 2.3, there is no "ship the heuristic" fallback — the spec requires the mechanism-based simulator. We iterate until it works.
 

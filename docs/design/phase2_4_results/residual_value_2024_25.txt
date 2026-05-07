@@ -1,0 +1,7 @@
+Residual source value — fold 2024/25 (lower Brier = better)
+
+metric          | with_residual | no_residual | residual_lift
+----------------+---------------+-------------+--------------
+Brier P(>0)     | 0.0377        | 0.0401      | +0.0024
+Brier P(=3)     | 0.0135        | 0.0135      | +0.0000
+ECE P(>0)       | 0.0032        | 0.0349      | -
