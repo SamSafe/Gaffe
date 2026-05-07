@@ -20,6 +20,13 @@ import numpy as np
 import polars as pl
 
 from fpl_bot.db.event_source import EventSource
+from fpl_bot.models.xpts import (
+    HAUL_THRESHOLDS,
+    XPTS_HIST_BINS,
+    XPTS_HIST_MAX,
+    XPTS_HIST_MIN,
+    score_fpl_points,
+)
 
 # ── BPS rule table (FPL 2024/25) ──────────────────────────────────────────────
 # Per-event integer BPS contribution. Positions: GKP, DEF, MID, FWD.
@@ -213,14 +220,29 @@ class BPSSimulator:
     def __post_init__(self) -> None:
         self._rng = np.random.default_rng(self.seed)
 
-    def simulate_fixture(self, inputs: FixtureInputs) -> pl.DataFrame:
-        """Returns per-player bonus distribution for one fixture: columns
-        player_id, p_bonus_0, p_bonus_1, p_bonus_2, p_bonus_3, expected_bonus.
+    def simulate_fixture(
+        self,
+        inputs: FixtureInputs,
+        *,
+        return_raw_xpts_samples: bool = False,
+    ) -> pl.DataFrame | tuple[pl.DataFrame, np.ndarray]:
+        """Per-player bonus + xPts distribution for one fixture.
+
+        Output DataFrame columns:
+          player_id, p_bonus_0..p_bonus_3, expected_bonus,
+          e_xpts, var_xpts, p_xpts_ge_2, p_xpts_ge_6, p_xpts_ge_10, p_xpts_ge_15,
+          xpts_pmf (list[float] of length 31; bin 0 = -5 pts, bin 30 = +25 pts).
+
+        If `return_raw_xpts_samples=True`, returns a tuple
+        (DataFrame, np.int16 array of shape (n_players, n_iterations)).
         """
         players = inputs.players
         n_players = players.height
         if n_players == 0:
-            return pl.DataFrame()
+            empty = pl.DataFrame()
+            if return_raw_xpts_samples:
+                return empty, np.zeros((0, 0), dtype=np.int16)
+            return empty
 
         player_ids = players["player_id"].to_numpy()
         positions = players["position_code"].to_list()
@@ -235,11 +257,21 @@ class BPSSimulator:
         rc_rate = players["rc_rate_per_90"].to_numpy()
         is_pen_taker = players["is_penalty_taker"].to_numpy()
 
-        # Bonus accumulator
         bonus_counts = np.zeros((n_players, 4), dtype=np.int64)
-        # Monte Carlo loop
-        for _s in range(self.n_iterations):
-            # Match-level draws
+        xpts_samples = np.zeros((n_players, self.n_iterations), dtype=np.int16)
+
+        # Per-iteration scratch buffers (reset each iter)
+        minutes_buf = np.zeros(n_players, dtype=np.int16)
+        goals_buf = np.zeros(n_players, dtype=np.int16)
+        assists_buf = np.zeros(n_players, dtype=np.int16)
+        team_cs_buf = np.zeros(n_players, dtype=np.bool_)
+        team_gc_buf = np.zeros(n_players, dtype=np.int16)
+        saves_buf = np.zeros(n_players, dtype=np.int16)
+        yc_buf = np.zeros(n_players, dtype=np.int8)
+        rc_buf = np.zeros(n_players, dtype=np.int8)
+        pens_missed_buf = np.zeros(n_players, dtype=np.int8)
+
+        for s in range(self.n_iterations):
             h_score = int(self._rng.poisson(inputs.home_team_lambda))
             a_score = int(self._rng.poisson(inputs.away_team_lambda))
             home_cs = (a_score == 0)
@@ -248,6 +280,16 @@ class BPSSimulator:
             away_pens = int(self._rng.poisson(self.pen_per_match_lambda / 2))
 
             bps_per_player = np.zeros(n_players, dtype=np.float64)
+            minutes_buf.fill(0)
+            goals_buf.fill(0)
+            assists_buf.fill(0)
+            team_cs_buf.fill(False)
+            team_gc_buf.fill(0)
+            saves_buf.fill(0)
+            yc_buf.fill(0)
+            rc_buf.fill(0)
+            pens_missed_buf.fill(0)
+
             for i in range(n_players):
                 pos = positions[i]
                 player_home = bool(is_home[i])
@@ -262,19 +304,19 @@ class BPSSimulator:
                     inputs.alphas_by_position.get(pos, 0.4),
                     self._rng,
                 )
+                minutes_buf[i] = minutes
+                team_cs_buf[i] = team_cs
+                team_gc_buf[i] = team_gc
                 if minutes <= 0:
-                    bps_per_player[i] = 0.0
                     continue
 
                 minutes_factor = minutes / 90.0
 
-                # Tier A: goals, assists (independent per player; v1 simplification)
                 goals = int(self._rng.poisson(max(0.0, lambda_g[i]) * minutes_factor))
                 assists = int(
                     self._rng.poisson(max(0.0, lambda_a[i]) * minutes_factor)
                 )
 
-                # Tier B: saves, cards
                 saves = int(
                     self._rng.poisson(max(0.0, saves_rate[i]) * minutes_factor)
                 ) if pos == "GKP" else 0
@@ -285,7 +327,6 @@ class BPSSimulator:
                     max(0.0, rc_rate[i]) * minutes_factor
                 )
 
-                # Penalties (taker only)
                 pens_scored = 0
                 pens_missed = 0
                 if bool(is_pen_taker[i]) and pens_for_team > 0:
@@ -294,8 +335,14 @@ class BPSSimulator:
                             pens_scored += 1
                         else:
                             pens_missed += 1
-                # If our taker scored a pen, count it toward goals
                 goals += pens_scored
+
+                goals_buf[i] = goals
+                assists_buf[i] = assists
+                saves_buf[i] = saves
+                yc_buf[i] = int(yc_drawn)
+                rc_buf[i] = int(rc_drawn)
+                pens_missed_buf[i] = pens_missed
 
                 bps_known = score_bps_known_events(
                     position=pos,
@@ -309,20 +356,55 @@ class BPSSimulator:
                     red_cards=int(rc_drawn),
                     penalties_missed_or_saved=pens_missed,
                 )
-
-                # Tier C: empirical residual
                 bps_residual = self.event_source.simulate_unmodeled_bps(
                     pos, minutes, self._rng
                 )
-
                 bps_per_player[i] = bps_known + bps_residual
 
+            # Bonus depends on rank — must come after all per-player BPS
             bonus_array = assign_bonus_within_fixture(bps_per_player, player_ids)
+
+            # FPL points use the same draws + the just-computed bonus
             for i in range(n_players):
+                if minutes_buf[i] <= 0:
+                    xpts = 0
+                else:
+                    xpts = score_fpl_points(
+                        position=positions[i],
+                        minutes=int(minutes_buf[i]),
+                        goals=int(goals_buf[i]),
+                        assists=int(assists_buf[i]),
+                        team_clean_sheet=bool(team_cs_buf[i]),
+                        team_goals_conceded=int(team_gc_buf[i]),
+                        saves=int(saves_buf[i]),
+                        yellow_cards=int(yc_buf[i]),
+                        red_cards=int(rc_buf[i]),
+                        penalties_missed_or_saved=int(pens_missed_buf[i]),
+                        bonus=int(bonus_array[i]),
+                    )
+                # Clip to histogram range; rare outliers stack at edge
+                if xpts < XPTS_HIST_MIN:
+                    xpts = XPTS_HIST_MIN
+                elif xpts > XPTS_HIST_MAX:
+                    xpts = XPTS_HIST_MAX
+                xpts_samples[i, s] = xpts
                 bonus_counts[i, int(bonus_array[i])] += 1
 
-        # Aggregate to bonus distribution
+        # Aggregate
         n = self.n_iterations
+        e_xpts = xpts_samples.mean(axis=1)
+        var_xpts = xpts_samples.var(axis=1, ddof=1) if n > 1 else np.zeros(n_players)
+        tail_probs: dict[int, np.ndarray] = {
+            t: (xpts_samples >= t).mean(axis=1) for t in HAUL_THRESHOLDS
+        }
+        # PMF: bins indexed 0=XPTS_HIST_MIN ... XPTS_HIST_BINS-1=XPTS_HIST_MAX
+        pmf_matrix = np.zeros((n_players, XPTS_HIST_BINS), dtype=np.float64)
+        for i in range(n_players):
+            counts = np.bincount(
+                xpts_samples[i] - XPTS_HIST_MIN, minlength=XPTS_HIST_BINS
+            )[:XPTS_HIST_BINS]
+            pmf_matrix[i] = counts / n
+
         rows = []
         for i in range(n_players):
             p = bonus_counts[i] / n
@@ -336,9 +418,20 @@ class BPSSimulator:
                     "expected_bonus": float(
                         0 * p[0] + 1 * p[1] + 2 * p[2] + 3 * p[3]
                     ),
+                    "e_xpts": float(e_xpts[i]),
+                    "var_xpts": float(var_xpts[i]),
+                    "p_xpts_ge_2": float(tail_probs[2][i]),
+                    "p_xpts_ge_6": float(tail_probs[6][i]),
+                    "p_xpts_ge_10": float(tail_probs[10][i]),
+                    "p_xpts_ge_15": float(tail_probs[15][i]),
+                    "xpts_pmf": pmf_matrix[i].tolist(),
                 }
             )
-        return pl.DataFrame(rows)
+
+        out_df = pl.DataFrame(rows)
+        if return_raw_xpts_samples:
+            return out_df, xpts_samples
+        return out_df
 
 
 # ── Residual-fitting helpers ──────────────────────────────────────────────────
