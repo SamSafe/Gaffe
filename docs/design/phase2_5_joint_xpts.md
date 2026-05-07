@@ -106,6 +106,18 @@ season  | n      | MAE: sim/naive/pos     | Brier(≥6): sim/naive/pos | dec  | 
 
 3. **Calibration is excellent.** 39/40 decile passes across folds. The simulator's mean predictions track empirical means within ±10% on essentially every decile.
 
+### Diagnostic findings (close-out, fold 2024/25)
+
+**Per-position MAE on E[xPts] vs actual `total_points`:**
+- GKP: 0.981 (mean predicted 1.173 vs actual 1.147 — within 3%)
+- DEF: 1.262 (mean predicted 1.338 vs actual 1.305 — within 3%)
+- MID: 0.926 (mean predicted 1.030 vs actual 1.108 — slight under-prediction)
+- FWD: 1.414 (mean predicted 1.685 vs actual 1.816 — same FWD under-prediction surfaced in 2.4; consistent with independent-goal sampling distortion. Multinomial v2 fix is the priority.)
+
+**Decile calibration (predicted vs actual mean per decile):**
+- All 10 deciles pass the ±10% (or ≤0.5 absolute) tolerance.
+- D1 anomaly: predicted 0.018 vs actual 0.496 — bench-marginal players whose minutes model gives nearly-zero p_full but who occasionally come on for cameos. Within ≤0.5 absolute tolerance; flagged as a v1.1 candidate (extend minutes model with a bench-cameo prior).
+
 ### Held-out 2025/26 raw-sample dump
 
 **Deferred** — `fact_player_match` for season 25 is empty (vaastav backfill is through 2024-25; the FPL API ingest doesn't write match-level data). The `run_held_out_with_raw_samples()` capability is implemented and ready; it can run as soon as 2025-26 vaastav data is published. The Phase 4 SAA development can proceed with held-out 2024-25 raw samples in the meantime if needed.
