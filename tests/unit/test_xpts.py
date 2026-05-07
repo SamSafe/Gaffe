@@ -18,7 +18,6 @@ from fpl_bot.models.xpts import (
     score_fpl_points,
 )
 
-
 # ── Appearance points ────────────────────────────────────────────────────────
 
 
