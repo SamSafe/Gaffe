@@ -405,10 +405,14 @@ def backtest_season(
 
         t0 = time.time()
         # Cold-start gets longer time budget; rolling-horizon solves are smaller.
-        # Rolling limit bumped 60→120 in v1.2 (α/β grid surfaced flake at 60s
-        # where some configs hit no_feasible at maxTimeLimit despite β-equivalent
-        # configs passing — extra budget gives the LP relaxation enough room to
-        # find an incumbent before the time limit).
+        # Rolling limit history:
+        #   v1.0/v1.1 = 60s
+        #   v1.2 = 120s (α/β grid surfaced flake at 60s where β-equivalent
+        #     configs hit no_feasible at maxTimeLimit)
+        # v2.5.1 root cause: the multinomial-fix predictions tightened
+        # within-team ties → LP relaxation has many near-optimal integer
+        # solutions → branch-and-bound can't prove optimality fast. Fix is
+        # the 1% MIP gap in solve_milp (not a time-limit bump).
         time_limit = 180 if not state.squad else 120
         try:
             decisions, meta = solve_rolling_horizon(inputs, time_limit_s=time_limit)

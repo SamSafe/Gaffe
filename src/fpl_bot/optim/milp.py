@@ -446,15 +446,34 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
     return m
 
 
-def solve_milp(model: ConcreteModel, *, time_limit_s: int = 120) -> dict:
+def solve_milp(
+    model: ConcreteModel,
+    *,
+    time_limit_s: int = 120,
+    mip_rel_gap: float = 0.01,
+) -> dict:
     """Solve the MILP. Returns metadata about the solve.
 
     Accepts feasible-but-not-optimal solutions (e.g., on time-limit hit) —
     HiGHS will have loaded the incumbent. Only fails if no feasible solution
     was found at all.
+
+    `mip_rel_gap` (default 1%): HiGHS stops as soon as it has an incumbent
+    within this relative gap of the LP relaxation upper bound. The Phase 2.5
+    independent-goal sampler produced predictions where the LP relaxation
+    had loose ties; HiGHS could prove optimality at the default gap. Phase
+    2.5.1's multinomial sampler tightens within-team prediction ties, making
+    the integer search much harder to prove optimal — but a 1% gap is well
+    below our prediction noise (the rho/eo/lambda parameters carry far more
+    uncertainty than 1% of objective). 1% solves an order of magnitude
+    faster on the tied folds.
     """
     solver = SolverFactory("appsi_highs")
-    solver.options["time_limit"] = float(time_limit_s)
+    # appsi_highs ignores `solver.options[...]` for HiGHS-specific keys; pass
+    # them through `highs_options` instead. (Discovered after `solver.options
+    # ["mip_rel_gap"] = 0.01` was silently ignored.)
+    solver.highs_options["time_limit"] = float(time_limit_s)
+    solver.highs_options["mip_rel_gap"] = float(mip_rel_gap)
     solver.config.load_solution = False
     result = solver.solve(model, tee=False)
 
