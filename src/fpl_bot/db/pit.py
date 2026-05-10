@@ -88,14 +88,30 @@ def all_player_match_with_kickoff(
 ) -> pl.DataFrame:
     """Bulk fetch: every fact_player_match × dim_fixture row, time-keyed by kickoff_utc.
 
+    Dedupes by latest recorded_at per (player_id, fixture_id) — needed because
+    re-ingest creates a new bitemporal row each time (e.g., the Phase 3.5
+    transfers backfill added a second row per fixture). Same pattern as
+    `understat_player_match_history` and `eo_as_of`.
+
     Used for backtest feature building. Time-cutoff filtering for PIT correctness
     is the caller's responsibility — typically polars window functions over
     per-player time-sorted groupings (shift / rolling) that ensure each row's
     features use only data from earlier rows.
     """
+    from sqlalchemy import func as _func
+
     from fpl_bot.db.models import DimFixture as _DimFixture
 
     with session_scope() as s:
+        latest = (
+            select(
+                FactPlayerMatch.player_id,
+                FactPlayerMatch.fixture_id,
+                _func.max(FactPlayerMatch.recorded_at).label("max_rec"),
+            )
+            .group_by(FactPlayerMatch.player_id, FactPlayerMatch.fixture_id)
+            .subquery("fpm_latest")
+        )
         stmt = (
             select(
                 FactPlayerMatch.player_id,
@@ -113,12 +129,23 @@ def all_player_match_with_kickoff(
                 FactPlayerMatch.total_points,
                 FactPlayerMatch.was_home,
                 FactPlayerMatch.price_tenths,
+                FactPlayerMatch.transfers_in,
+                FactPlayerMatch.transfers_out,
+                FactPlayerMatch.transfers_balance,
+                FactPlayerMatch.selected,
                 _DimFixture.season_id,
                 _DimFixture.gameweek,
                 _DimFixture.kickoff_utc,
                 _DimFixture.home_team_id,
                 _DimFixture.away_team_id,
-            ).join(_DimFixture, _DimFixture.fixture_id == FactPlayerMatch.fixture_id)
+            )
+            .join(
+                latest,
+                (latest.c.player_id == FactPlayerMatch.player_id)
+                & (latest.c.fixture_id == FactPlayerMatch.fixture_id)
+                & (latest.c.max_rec == FactPlayerMatch.recorded_at),
+            )
+            .join(_DimFixture, _DimFixture.fixture_id == FactPlayerMatch.fixture_id)
         )
         if season_ids is not None:
             stmt = stmt.where(_DimFixture.season_id.in_(season_ids))
@@ -144,6 +171,10 @@ def all_player_match_with_kickoff(
                 "total_points": r.total_points,
                 "was_home": r.was_home,
                 "price_tenths": r.price_tenths,
+                "transfers_in": r.transfers_in,
+                "transfers_out": r.transfers_out,
+                "transfers_balance": r.transfers_balance,
+                "selected": r.selected,
                 "season_id": r.season_id,
                 "gameweek": r.gameweek,
                 "kickoff_utc": r.kickoff_utc,
@@ -151,7 +182,14 @@ def all_player_match_with_kickoff(
                 "away_team_id": r.away_team_id,
             }
             for r in rows
-        ]
+        ],
+        schema_overrides={
+            "transfers_in": pl.Int64,
+            "transfers_out": pl.Int64,
+            "transfers_balance": pl.Int64,
+            "selected": pl.Int64,
+        },
+        infer_schema_length=None,
     )
 
 

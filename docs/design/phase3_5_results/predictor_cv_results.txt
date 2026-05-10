@@ -1,0 +1,45 @@
+Phase 3.5 — Price-change predictor walk-forward CV (SHELVED)
+
+Run: 2026-05-09
+Model: LightGBM multiclass (5 classes: Δ ∈ {-2, -1, 0, +1, +2})
+Class-balanced sample weights to handle ~92.5% Δ=0 majority.
+
+================================================================
+season      n_test  logloss  brier_rise  brier_fall  prec_rise  prec_fall flag_rise flag_fall
+2021/22      22493   0.3596      0.0245      0.0681      0.382      0.318       694      2006
+2022/23      24179   0.3163      0.0199      0.0635      0.347      0.344       675      1827
+2023/24      27877   0.2564      0.0188      0.0509      0.423      0.338       707      2008
+2024/25      26427   0.2944      0.0217      0.0599      0.381      0.335       832      2370
+
+Gate 1 (Brier ≤ 0.04 on rise+fall on ≥3/4 folds): FAIL
+   - brier_rise:  0.019-0.025  (passes 0.04 threshold)
+   - brier_fall:  0.051-0.068  (FAILS — naive base-rate predictor at ~5.5% has Brier ≈ 0.049)
+
+Gate 2 (top-k precision ≥ 0.6 when flags exist): FAIL
+   - precision_rise: 0.35-0.42  (~2/3 of flagged rises don't actually rise)
+   - precision_fall: 0.32-0.34  (~2/3 of flagged falls don't actually fall)
+
+Gate 3 (multiclass log-loss reported only): not gated
+
+ALL PREDICTOR GATES PASS: False
+
+================================================================
+Decision (per phase3_5_dynamic_prices.md §3.4 fallback path):
+The predictor is SHELVED. The cost-basis sell-tax fix ships alone — still
+a real Phase 3.5 win because it removes the static-sell distortion where
+v1.0/v1.1 over-paid for held-and-sold profitable players.
+
+================================================================
+Diagnosis (why the predictor doesn't beat naive base-rate):
+The transfers_in/out signal at GW-end is too late to be predictive — by
+the time we observe it, FPL's price-change algorithm has already locked
+in (or not) the boundary movement. With richer intra-week transfer
+dynamics (current-day net transfers, time-decayed signals, transfer-
+threshold-aware features) the predictor could improve. Our GW-end-
+snapshot data isn't enough.
+
+v2 candidate features:
+- Intra-GW snapshots (every 6 hours from FPL bootstrap-static)
+- transfers_in_pct = transfers_in / selected (rate-of-change vs ownership)
+- Days-since-last-price-change per player
+- Cross-over signals (player gone from -threshold to +threshold)

@@ -153,6 +153,14 @@ class FactPlayerMatch(Base):
     total_points: Mapped[int | None] = mapped_column(SmallInteger)
     was_home: Mapped[bool | None] = mapped_column(Boolean)
     price_tenths: Mapped[int | None] = mapped_column(SmallInteger)
+    # Phase 3.5 dynamic-prices columns. transfers_in/out/balance are per-GW
+    # counts (signed for balance); selected is raw count of managers owning
+    # the player at GW close. Source: vaastav gw{N}.csv. Nullable for back-
+    # compat with existing rows pre-Phase-3.5 backfill.
+    transfers_in: Mapped[int | None] = mapped_column(Integer)
+    transfers_out: Mapped[int | None] = mapped_column(Integer)
+    transfers_balance: Mapped[int | None] = mapped_column(Integer)
+    selected: Mapped[int | None] = mapped_column(Integer)
 
 
 class FactUnderstatPlayerMatch(Base):

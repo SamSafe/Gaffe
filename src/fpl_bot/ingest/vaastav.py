@@ -257,6 +257,10 @@ def _ingest_one_gw_df(
                 total_points=row.get("total_points"),
                 was_home=was_home,
                 price_tenths=row.get("value"),
+                transfers_in=row.get("transfers_in"),
+                transfers_out=row.get("transfers_out"),
+                transfers_balance=row.get("transfers_balance"),
+                selected=row.get("selected"),
             )
             s.execute(stmt)
             n += 1
