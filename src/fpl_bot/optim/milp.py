@@ -68,6 +68,17 @@ class MilpInputs:
     # When False, captain mult is 2× (not 3× via TC), no BB bench scoring,
     # WC/FH unavailable.
     enable_chips: bool = False
+    # Phase 4 SAA: when use_saa=True, objective uses sample-average over
+    # scenarios from predictions_per_scenario instead of the deterministic
+    # `predictions` dict. Set scenario_ids to the list of scenario indices
+    # to average over (e.g., list(range(50))). `predictions` is still
+    # required (used for candidate-filtering and as a fallback if a
+    # (p, w, s) key is missing).
+    use_saa: bool = False
+    predictions_per_scenario: (
+        dict[tuple[int, int, int], float] | None
+    ) = None  # (player_id, gw, scenario_id) → pts
+    scenario_ids: list[int] | None = None
 
 
 def _gw_in_first_half(gw: int) -> bool:
@@ -192,7 +203,15 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
     m.con_xi_fwd = Constraint(m.W, rule=_xi_fwd_min)
 
     # ── Captain / vice ───────────────────────────────────────────────────────
+    # Phase 3 baseline: single captain per week (deterministic / SAA first-stage).
+    # In SAA mode, m.c[p, w] is the FIRST-STAGE captain for w=1 only; for w≥2
+    # the actual captain is m.c_s[p, w, s] (scenario-conditional). We still
+    # need m.c[p, w] to be defined for w≥2 (Pyomo doesn't allow conditional
+    # var indexing without set tricks) — we fix it to 0 below.
     def _one_captain(m, w):
+        if inputs.use_saa and w != H[0]:
+            # In SAA mode, m.c is meaningful only at w=1; force 0 elsewhere.
+            return sum(m.c[p, w] for p in m.P) == 0
         return sum(m.c[p, w] for p in m.P) == 1
 
     m.con_one_captain = Constraint(m.W, rule=_one_captain)
@@ -216,6 +235,36 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
         return m.c[p, w] + m.v[p, w] <= 1
 
     m.con_capt_vice = Constraint(m.P, m.W, rule=_capt_vice_distinct)
+
+    # Phase 4 SAA: scenario-conditional captain for w ≥ 2.
+    if inputs.use_saa:
+        if inputs.predictions_per_scenario is None or inputs.scenario_ids is None:
+            raise ValueError(
+                "use_saa=True requires predictions_per_scenario and scenario_ids"
+            )
+        m.S = Set(initialize=inputs.scenario_ids, ordered=True)
+        m.c_s = Var(m.P, m.W, m.S, domain=Binary)
+
+        first_w = H[0]
+
+        # For w=1: c_s[p,1,s] = c[p,1] for all s (non-anticipative; first-stage)
+        def _capt_first_stage_link(m, p, s):
+            return m.c_s[p, first_w, s] == m.c[p, first_w]
+
+        m.con_capt_first_stage_link = Constraint(
+            m.P, m.S, rule=_capt_first_stage_link
+        )
+
+        # For w≥2: scenario-conditional captain rules
+        def _one_capt_s(m, w, s):
+            return sum(m.c_s[p, w, s] for p in m.P) == 1
+
+        m.con_one_capt_s = Constraint(m.W, m.S, rule=_one_capt_s)
+
+        def _capt_s_in_xi(m, p, w, s):
+            return m.c_s[p, w, s] <= m.y[p, w]
+
+        m.con_capt_s_in_xi = Constraint(m.P, m.W, m.S, rule=_capt_s_in_xi)
 
     # ── Transfers ────────────────────────────────────────────────────────────
     initial_squad = state.squad
@@ -370,7 +419,17 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
     # M_BB: safe upper bound on bench (4 players) xPts in one GW (typical max ~30).
     M_TC = 30.0
     M_BB = 60.0
-    if inputs.enable_chips:
+
+    # Helper: captain ref per (p, w, s). For SAA, uses scenario-conditional
+    # c_s[p, w, s] for w≥2 and c[p, w=1] for w=1 (which equals c_s[p, 1, s]
+    # by the non-anticipativity constraint). For deterministic, just c[p, w].
+    def _capt_ref(m, p, w, s):
+        if inputs.use_saa and w != H[0]:
+            return m.c_s[p, w, s]
+        return m.c[p, w]
+
+    if inputs.enable_chips and not inputs.use_saa:
+        # Deterministic: per-week chip bonuses (no scenario index)
         def _tc_bonus_le_capt(m, w):
             return m.tc_bonus[w] <= sum(m.c[p, w] * pred.get((p, w), 0.0) for p in m.P)
         m.con_tc_bonus_le_capt = Constraint(m.W, rule=_tc_bonus_le_capt)
@@ -397,6 +456,48 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
             ) - M_BB * (1 - m.z_bb[w])
         m.con_bb_bonus_ge = Constraint(m.W, rule=_bb_bonus_ge)
 
+    elif inputs.enable_chips and inputs.use_saa:
+        # SAA: per-(week, scenario) chip bonuses. tc_bonus_s and bb_bonus_s
+        # supersede the per-week tc_bonus/bb_bonus (which we fix to 0 below).
+        pts_s = inputs.predictions_per_scenario
+        m.tc_bonus_s = Var(m.W, m.S, domain=NonNegativeReals)
+        m.bb_bonus_s = Var(m.W, m.S, domain=NonNegativeReals)
+        for w in H:
+            m.tc_bonus[w].fix(0.0)
+            m.bb_bonus[w].fix(0.0)
+
+        def _tc_bonus_s_le_capt(m, w, s):
+            return m.tc_bonus_s[w, s] <= sum(
+                _capt_ref(m, p, w, s) * pts_s.get((p, w, s), 0.0) for p in m.P
+            )
+        m.con_tc_bonus_s_le_capt = Constraint(m.W, m.S, rule=_tc_bonus_s_le_capt)
+
+        def _tc_bonus_s_le_z(m, w, s):
+            return m.tc_bonus_s[w, s] <= M_TC * m.z_tc[w]
+        m.con_tc_bonus_s_le_z = Constraint(m.W, m.S, rule=_tc_bonus_s_le_z)
+
+        def _tc_bonus_s_ge(m, w, s):
+            return m.tc_bonus_s[w, s] >= sum(
+                _capt_ref(m, p, w, s) * pts_s.get((p, w, s), 0.0) for p in m.P
+            ) - M_TC * (1 - m.z_tc[w])
+        m.con_tc_bonus_s_ge = Constraint(m.W, m.S, rule=_tc_bonus_s_ge)
+
+        def _bb_bonus_s_le_bench(m, w, s):
+            return m.bb_bonus_s[w, s] <= sum(
+                (m.x[p, w] - m.y[p, w]) * pts_s.get((p, w, s), 0.0) for p in m.P
+            )
+        m.con_bb_bonus_s_le_bench = Constraint(m.W, m.S, rule=_bb_bonus_s_le_bench)
+
+        def _bb_bonus_s_le_z(m, w, s):
+            return m.bb_bonus_s[w, s] <= M_BB * m.z_bb[w]
+        m.con_bb_bonus_s_le_z = Constraint(m.W, m.S, rule=_bb_bonus_s_le_z)
+
+        def _bb_bonus_s_ge(m, w, s):
+            return m.bb_bonus_s[w, s] >= sum(
+                (m.x[p, w] - m.y[p, w]) * pts_s.get((p, w, s), 0.0) for p in m.P
+            ) - M_BB * (1 - m.z_bb[w])
+        m.con_bb_bonus_s_ge = Constraint(m.W, m.S, rule=_bb_bonus_s_ge)
+
     # ── Objective ────────────────────────────────────────────────────────────
     # Main term: (y + c) * pred - rho * eo * (y + c) * pred  (EO-adjusted)
     # Chip bonus: tc_bonus[w] + bb_bonus[w]  (weekly big-M, no EO adjust in v1)
@@ -418,7 +519,7 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
     else:
         term_coefs = dict.fromkeys(P, 0.0)
 
-    def _obj(m):
+    def _obj_deterministic(m):
         # Per (player, week): main multiplier mult_main = y + c (XI + captain extra)
         # gets EO-adjusted. Chip bonuses (tc_bonus, bb_bonus) are weekly aggregates
         # added to the objective WITHOUT EO adjustment in v1.0 (small effect; see
@@ -441,7 +542,70 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
         terminal = sum(term_coefs.get(p, 0.0) * m.x[p, last_w] for p in m.P)
         return rolling - eo_term + chip_bonus - hits + terminal
 
-    m.objective = Objective(rule=_obj, sense=maximize)
+    def _obj_saa(m):
+        # SAA: average over scenarios. XI is first-stage (single y[p,w]);
+        # captain is scenario-conditional via _capt_ref (uses m.c[p,1] for w=1,
+        # m.c_s[p,w,s] for w≥2). Per-scenario chip bonuses live in m.tc_bonus_s
+        # and m.bb_bonus_s.
+        pts_s = inputs.predictions_per_scenario
+        S = inputs.scenario_ids
+        n_s = len(S)
+        # Pre-compute per-(p, w) mean pts: this is what the FIRST-STAGE XI
+        # sees (it's a single decision across scenarios, so its objective
+        # contribution is the scenario-mean pts).
+        mean_pts: dict[tuple[int, int], float] = {}
+        for p in m.P:
+            for w in m.W:
+                mean_pts[(p, w)] = sum(pts_s.get((p, w, s), 0.0) for s in S) / n_s
+
+        rolling_xi = sum(
+            m.y[p, w] * mean_pts[(p, w)]
+            for p in m.P
+            for w in m.W
+        )
+        eo_xi = sum(
+            inputs.rho * eo.get(p, 0.0) * mean_pts[(p, w)] * m.y[p, w]
+            for p in m.P
+            for w in m.W
+        )
+        # Captain contribution: per-scenario.
+        # For w=1: c[p,1] is first-stage, mean_pts is its objective contribution.
+        # For w≥2: c_s[p,w,s] varies per scenario, multiply by pts_s[p,w,s].
+        first_w = H[0]
+        rolling_capt = sum(
+            m.c[p, first_w] * mean_pts[(p, first_w)] for p in m.P
+        )
+        eo_capt = sum(
+            inputs.rho * eo.get(p, 0.0) * mean_pts[(p, first_w)] * m.c[p, first_w]
+            for p in m.P
+        )
+        for w in m.W:
+            if w == first_w:
+                continue
+            for s in S:
+                for p in m.P:
+                    pts_pws = pts_s.get((p, w, s), 0.0)
+                    rolling_capt += (1.0 / n_s) * m.c_s[p, w, s] * pts_pws
+                    eo_capt += (1.0 / n_s) * inputs.rho * eo.get(p, 0.0) * pts_pws * m.c_s[p, w, s]
+
+        # Per-scenario chip bonus averaged (only when chips are enabled —
+        # otherwise tc_bonus_s / bb_bonus_s aren't built).
+        if inputs.enable_chips:
+            chip_bonus_saa = sum(
+                (1.0 / n_s) * (m.tc_bonus_s[w, s] + m.bb_bonus_s[w, s])
+                for w in m.W
+                for s in S
+            )
+        else:
+            chip_bonus_saa = 0.0
+        hits = sum(HIT_COST * m.ht[w] for w in m.W)
+        terminal = sum(term_coefs.get(p, 0.0) * m.x[p, last_w] for p in m.P)
+        return rolling_xi + rolling_capt - eo_xi - eo_capt + chip_bonus_saa - hits + terminal
+
+    if inputs.use_saa:
+        m.objective = Objective(rule=_obj_saa, sense=maximize)
+    else:
+        m.objective = Objective(rule=_obj_deterministic, sense=maximize)
 
     return m
 

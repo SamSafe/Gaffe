@@ -272,6 +272,9 @@ def backtest_season(
     n_iterations: int = 200,
     cache_predictions: bool = True,
     cache_dir: Path = Path("data/cache/xpts_predictions"),
+    use_saa: bool = False,
+    n_scenarios: int = 25,
+    raw_samples_dir: Path = Path("data/cache/xpts_raw_samples"),
 ) -> BacktestSeasonResult:
     """Run rolling MILP backtest for one test season."""
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -291,6 +294,25 @@ def backtest_season(
     # Aggregate to per-(player, gw) predictions and actuals
     pred_by_pgw = _per_player_per_gw_predictions(eval_df)
     actual_by_pgw = _per_player_per_gw_actuals(eval_df)
+
+    # SAA: load per-scenario raw samples and aggregate to (player, gw, scenario).
+    pts_per_scenario: pl.DataFrame | None = None
+    scenario_ids: list[int] | None = None
+    if use_saa:
+        from fpl_bot.optim.scenarios import (
+            aggregate_pts_by_player_gw_scenario,
+            load_raw_samples,
+        )
+        raw_samples = load_raw_samples(
+            test_season=test_season,
+            train_seasons=train_seasons,
+            n_iterations=n_iterations,
+            cache_dir=raw_samples_dir,
+        )
+        pts_per_scenario = aggregate_pts_by_player_gw_scenario(
+            raw_samples, n_scenarios=n_scenarios
+        )
+        scenario_ids = list(range(n_scenarios))
 
     # Identify all gameweeks that have predictions
     all_gws = sorted({gw for (_, gw) in pred_by_pgw if gw > 0})
@@ -391,6 +413,17 @@ def backtest_season(
         teams_dict = {p: teams[p] for p in candidates if p in teams}
         positions_dict = {p: positions.get(p, "MID") for p in candidates}
 
+        # SAA: build per-scenario pts dict scoped to this horizon
+        pts_per_scenario_dict: dict[tuple[int, int, int], float] | None = None
+        if use_saa and pts_per_scenario is not None and scenario_ids is not None:
+            from fpl_bot.optim.scenarios import make_pts_dict
+            pts_per_scenario_dict = make_pts_dict(
+                pts_per_scenario,
+                candidates=candidates,
+                horizon_gws=horizon_gws,
+                n_scenarios=n_scenarios,
+            )
+
         inputs = MilpInputs(
             state=state,
             horizon_weeks=horizon_gws,
@@ -406,6 +439,9 @@ def backtest_season(
             beta=beta,
             enable_chips=enable_chips,
             full_predictions=pred_df,
+            use_saa=use_saa,
+            predictions_per_scenario=pts_per_scenario_dict,
+            scenario_ids=scenario_ids,
         )
 
         import time

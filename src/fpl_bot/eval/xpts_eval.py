@@ -564,6 +564,37 @@ def run_held_out_with_raw_samples(
     return out_path
 
 
+def run_fold_with_raw_samples(
+    *,
+    test_season: int,
+    train_seasons: list[int],
+    output_dir: Path = Path("data/cache/xpts_raw_samples"),
+    n_iterations: int = 200,
+    seed: int = 42,
+) -> Path | None:
+    """Phase 4 SAA support: dump per-iteration raw FPL points for an arbitrary
+    walk-forward fold. Cache layout matches the Phase 3 predictions cache:
+    `season_{N}_train_{...}_n{N_ITER}.parquet`.
+    """
+    result = _run_one_fold(
+        train_seasons,
+        test_season,
+        n_iterations=n_iterations,
+        seed=seed,
+        return_raw_samples=True,
+    )
+    if result is None:
+        return None
+    _, _, raw_df = result
+    if raw_df is None or raw_df.is_empty():
+        return None
+    output_dir.mkdir(parents=True, exist_ok=True)
+    train_str = "_".join(str(s) for s in train_seasons)
+    out_path = output_dir / f"season_{test_season}_train_{train_str}_n{n_iterations}.parquet"
+    raw_df.write_parquet(out_path)
+    return out_path
+
+
 def format_results(results: list[XPtsFoldResult]) -> str:
     if not results:
         return "(no folds completed)"
