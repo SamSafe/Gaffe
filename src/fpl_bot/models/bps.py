@@ -5,12 +5,18 @@ to assign 3/2/1 bonus. Per Phase 0 §4.5: simulate the mechanism, do NOT
 regress on historical bonus.
 
 v1 simplifications (per design round-1 review):
-  - Independent player goal sampling. Sum across teammates won't match the
-    sampled team_score on every iteration. Acknowledged as bonus-concentration
-    distortion; PRIORITY V2 candidate is Multinomial(team_score, normalized_λ).
   - Independent player minutes sampling (no 5-sub cap); v2 candidate.
   - 4-bucket minutes (0/30/70/90 midpoints). p_full from Phase 2.1 split into
     p_70 + p_90 via per-position α = P(<90 | 60+) fitted from training data.
+
+Phase 2.5.1 fix (shipped): per-player goals are now allocated via a
+team-conditional Multinomial draw — sample team_score from Dixon-Coles λ,
+then distribute across team players using weights w_p = λ_p · minutes/90.
+This guarantees Σ player_goals = team_score per iteration, fixing the
+prior independent-Poisson bug that inflated bonus concentration. Penalty
+goals are absorbed in λ_p (Phase 2.2 trained on total goals); pens-missed
+events still feed BPS deduction via the explicit pen mechanism but no
+longer add scored pens on top of the multinomial allocation.
 """
 from __future__ import annotations
 
@@ -290,29 +296,55 @@ class BPSSimulator:
             rc_buf.fill(0)
             pens_missed_buf.fill(0)
 
+            # PASS 1: sample minutes for everyone. Multinomial weights need
+            # minutes_factor[p] which we don't know until minutes are sampled.
             for i in range(n_players):
-                pos = positions[i]
-                player_home = bool(is_home[i])
-                team_cs = home_cs if player_home else away_cs
-                team_gc = a_score if player_home else h_score
-                pens_for_team = home_pens if player_home else away_pens
-
                 minutes = sample_minutes_bucket(
                     p_zeros[i],
                     p_shorts[i],
                     p_fulls[i],
-                    inputs.alphas_by_position.get(pos, 0.4),
+                    inputs.alphas_by_position.get(positions[i], 0.4),
                     self._rng,
                 )
                 minutes_buf[i] = minutes
-                team_cs_buf[i] = team_cs
-                team_gc_buf[i] = team_gc
+                player_home = bool(is_home[i])
+                team_cs_buf[i] = home_cs if player_home else away_cs
+                team_gc_buf[i] = a_score if player_home else h_score
+
+            # PASS 2: Multinomial-allocate team goals to on-field players.
+            # Weight w_p = max(0, λ_g[p]) · (minutes_p / 90). Players with
+            # minutes=0 get weight 0 → never sampled. If team weights sum to 0
+            # (e.g., entirely benched team — won't happen in practice), all
+            # team goals stay at 0; this guards against div-by-zero.
+            on_field = minutes_buf > 0
+            for team_score, team_mask in (
+                (h_score, on_field & is_home.astype(bool)),
+                (a_score, on_field & ~is_home.astype(bool)),
+            ):
+                if team_score <= 0 or not team_mask.any():
+                    continue
+                w = np.maximum(0.0, lambda_g[team_mask]) * (
+                    minutes_buf[team_mask].astype(np.float64) / 90.0
+                )
+                total_w = w.sum()
+                if total_w <= 0:
+                    continue
+                allocation = self._rng.multinomial(team_score, w / total_w)
+                goals_buf[team_mask] = allocation.astype(np.int16)
+
+            # PASS 3: per-player events that are NOT subject to the team-total
+            # constraint (assists, saves, cards, missed pens) and BPS scoring.
+            for i in range(n_players):
+                pos = positions[i]
+                player_home = bool(is_home[i])
+                pens_for_team = home_pens if player_home else away_pens
+                minutes = int(minutes_buf[i])
                 if minutes <= 0:
                     continue
 
                 minutes_factor = minutes / 90.0
+                goals = int(goals_buf[i])  # set in PASS 2
 
-                goals = int(self._rng.poisson(max(0.0, lambda_g[i]) * minutes_factor))
                 assists = int(
                     self._rng.poisson(max(0.0, lambda_a[i]) * minutes_factor)
                 )
@@ -327,17 +359,17 @@ class BPSSimulator:
                     max(0.0, rc_rate[i]) * minutes_factor
                 )
 
-                pens_scored = 0
+                # Penalty mechanism: pen-taker takes all of the team's pens.
+                # Scored pens are NOT added to goals — Phase 2.2's λ_g already
+                # absorbs total goals incl. pens, and the multinomial above
+                # has already allocated h_score (Dixon-Coles total goals incl.
+                # pens). We track pens_missed only for BPS deduction.
                 pens_missed = 0
                 if bool(is_pen_taker[i]) and pens_for_team > 0:
                     for _ in range(pens_for_team):
-                        if self._rng.random() < self.pen_conversion:
-                            pens_scored += 1
-                        else:
+                        if self._rng.random() >= self.pen_conversion:
                             pens_missed += 1
-                goals += pens_scored
 
-                goals_buf[i] = goals
                 assists_buf[i] = assists
                 saves_buf[i] = saves
                 yc_buf[i] = int(yc_drawn)
@@ -349,8 +381,8 @@ class BPSSimulator:
                     minutes=minutes,
                     goals=goals,
                     assists=assists,
-                    team_clean_sheet=team_cs,
-                    team_goals_conceded=team_gc,
+                    team_clean_sheet=bool(team_cs_buf[i]),
+                    team_goals_conceded=int(team_gc_buf[i]),
                     saves=saves,
                     yellow_cards=int(yc_drawn),
                     red_cards=int(rc_drawn),

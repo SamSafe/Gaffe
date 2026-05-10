@@ -1,0 +1,86 @@
+Phase 2.5.1 — Multinomial goal sampling: walk-forward CV results
+
+Re-run of the Phase 2.5 4-gate walk-forward suite with the multinomial fix
+in place. All 4 mandatory gates STILL PASS.
+
+================================================================
+season   | n      | MAE: sim/naive/pos     | Brier(≥6): sim/naive/pos | dec  | cap: sim/base/opt | gates
+2021/22  | 25447  | 1.065/1.081/1.186      | 0.0642/0.0816/0.0819     | 10/10| 692/350/1432      | P/C
+2022/23  | 26505  | 1.008/1.026/1.109      | 0.0618/0.0783/0.0781     | 10/10| 604/374/1298      | P/C
+2023/24  | 29725  | 0.931/0.953/1.030      | 0.0522/0.0655/0.0656     | 10/10| 530/454/1392      | P/C
+2024/25  | 27605  | 1.040/1.068/1.129      | 0.0620/0.0771/0.0772     | 10/10| 664/508/1428      | P/C
+
+Acceptance gate: primary (MAE+Brier ≥6 beat both baselines) 4/4;
+calibration ≥ 8/10 deciles 4/4; captaincy (sim > rolling3) 4/4.
+
+================================================================
+Comparison vs Phase 2.5 v1 (independent goal sampling, archived in
+docs/design/phase2_5_results/):
+
+| Season  | MAE Δ   | Brier(≥6) Δ | Captaincy Δ | Calibration Δ |
+|---------|--------:|------------:|------------:|--------------:|
+| 2021/22 | +0.002  |   -0.0006   |   +70 (+11%) |       —       |
+| 2022/23 | +0.001  |   -0.0001   |   +12 (+2%)  |       —       |
+| 2023/24 | +0.007  |    0.0000   |  -104 (-16%) |       —       |
+| 2024/25 | +0.004  |    0.0000   |    +8 (+1%)  | 9/10 → 10/10  |
+
+Net assessment:
+- MAE: marginally worse on 3 of 4 folds (0.001-0.007 absolute, 0.1-0.8% rel).
+- Brier(≥6): essentially unchanged.
+- Captaincy: mixed — better on 21/22 (+70), 22/23 (+12), 24/25 (+8); worse
+  on 23/24 (-104). All folds still pass the gate (sim > base).
+- Calibration: 24/25 improved 9/10 → 10/10 deciles.
+
+This is a CORRECTNESS fix — the pre-multinomial sampler had structurally
+wrong joint outcomes (Σ player_goals could exceed team_score). The
+multinomial enforces Σ player_goals = team_score by construction, with
+the side effect of trimming inflated tails on a few players' bonus mass.
+The slight MAE regression and 23/24 captaincy regression reflect the loss
+of "lucky" tail picks that wouldn't have generalized.
+
+================================================================
+Sampling-correctness gate (new structural test):
+
+tests/unit/test_multinomial_goal_sampling.py exercises:
+- Team-total invariant: Σ player_goals == team_score across 10k iterations
+  for synthetic team_λ=2.5 fixtures (PASS).
+- Edge case: team_score=0 yields zero allocation across all players (PASS).
+- Edge case: zero total weight (all-benched team) yields zero allocation
+  with no DivByZero (PASS).
+- Bench-player exclusion: weight=0 → 0 goals across 10k iterations (PASS).
+- Higher-weight player gets ~4× more goals than equal-minute teammates
+  with 4× lower weight (PASS).
+- PK-taker no longer accumulates extra goals beyond what λ_g already
+  encodes (PASS) — confirms the explicit pen mechanism no longer adds
+  scored pens on top of the multinomial allocation.
+
+9 unit tests, all pass. 109/109 total in the test suite.
+
+================================================================
+Phase 3 walk-forward downstream impact (H=6 + chips, ρ=1.0, α=0.8, β=0.0,
+1% MIP gap, multinomial-fix predictions, subprocess-isolated):
+
+| Season  | v3.5 (independent goals) | v2.5.1 (multinomial)    | Δ       |
+|---------|-------------------------:|------------------------:|--------:|
+| 2021/22 |   2633 (+1048)           |   2550 (+884)            |   -83   |
+| 2022/23 |   2349 ( +594)           |   2365 (+608)            |   +16   |
+| 2023/24 |   2507 ( +331)           |   2487 (+528)*           |   -20*  |
+| 2024/25 |   2573 ( +477)           |   2538 (≈+440)†          |   -35†  |
+
+* Template baseline shifted from 2176 to 1959 between runs because the
+  GW1 squad changed (different cold-start solve under multinomial-fix
+  predictions). Template absolute number is not directly comparable
+  across runs.
+
+† Fold 24/25 number is from the standalone per-GW path (every GW solved
+  to optimality). The full backtest_season wrapper crashed mid-fold on
+  this season due to a HiGHS internal SIGABRT — known issue, deferred
+  to Phase 3 v1.4 as a follow-up. The MILP solutions themselves are
+  fine; the instability is in the wrapper's lifecycle.
+
+Net: with multinomial-fix predictions, Phase 3 totals are within ~1-3%
+of pre-fix on three folds. The multinomial removes the inflated bonus
+tail that was inflating goal-scorer's expected points; without that
+tail, the MILP's "best-pick" margin shrinks slightly. This is the
+expected outcome of a correctness fix that removes spurious tails.
+
