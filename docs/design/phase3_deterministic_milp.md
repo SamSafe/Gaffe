@@ -1,17 +1,19 @@
 # Phase 3 — Deterministic Rolling-Horizon MILP
 
-Status: **v1.0 shipped.** Implementation complete; all validity gates pass on fold 2024/25.
+Status: **v1.1 shipped.** Implementation complete; all validity gates pass on the full walk-forward (folds 21-24). Default config: H=6 with chips enabled.
 
 Round-1 review resolutions:
 - Static prices for v1; price-change predictor deferred to Phase 3.5.
 - Pyomo + HiGHS; no solver change needed.
-- Horizon: **4 GWs** for v1.0 (cut from 6 for solver tractability — see §1 v1.0 simplifications).
+- Horizon: **6 GWs** with chips (v1.1, after weekly-aggregate chip refactor — see §1).
 - Walk-forward folds 21-24 with separated validity vs performance gates.
-- v1.0 implementation simplifications (forced by solver-time constraints):
-  - **Chips disabled** (z_wc/z_fh/z_bb/z_tc all pinned to 0). Bilinear chip auxiliaries roughly doubled MILP size and caused time-limit hits at H=6 + 200 candidates. Chips deferred to Phase 3.5 alongside the season-long chip-DP from Phase 5.
-  - **Cold-start GW1 uses H=1** (not H=4) — picks the squad freely with terminal value providing 5-GW lookahead. Reduces cold-start MILP size by ~4×.
+- v1.1 implementation simplifications:
+  - **Chip bonuses skip EO adjustment** (the +1× under TC and bench points under BB are added to the objective without EO discount). Captain choice is still EO-aware via the main `c[p,w]` term in the rolling+EO sums; only the chip *increment* bypasses EO. Documented as v1.2 candidate.
+  - **Cold-start GW1 uses H=1** (not H=6) — picks the squad freely with terminal value providing 5-GW lookahead. Reduces cold-start MILP size by ~6×.
   - **Candidate pool reduced** to top-25-per-position + cheap-K-per-position + PK takers + current squad (~125 candidates per solve).
   - **Feasible-but-not-optimal solutions accepted** when solver hits time limit; only "no feasible found" is a failure.
+
+Initial v1.0 shipped without chips (H=4) due to per-(player, week) bilinear chip aux blowing up the model; v1.1 replaces those 2400 binaries with 12 weekly-aggregate continuous vars and big-M linearization on the (linear) sum `Σ_p c[p,w]·pts[p,w]` — pts is a parameter, so the product is linear and exactly representable.
 
 Per Phase 0 §5: solve a rolling-horizon MILP that consumes the Phase 2.5 joint-xPts predictions, the EO data layer, and the chip rules; outputs squad / starting XI / captain-vice / transfer / chip decisions over the horizon, re-solved each gameweek.
 
@@ -166,32 +168,34 @@ This is rolling backtest, not one-shot full-season optimization.
 
 Two distinct gate categories per round-1 review (separate to avoid distortions from static-price / FWD / no-news limitations):
 
-### Optimizer validity gates (ALL MUST PASS) — fold 2024/25
+### Optimizer validity gates (ALL MUST PASS) — full walk-forward (folds 21-24), H=6 + chips, v1.1
 
-- [x] **Feasibility**: every per-GW MILP solve returns a valid solution. **38/38 solves succeeded, mean 2.0s per solve.**
-- [x] **Budget correctness**: cost + bank conservation holds on every solved GW. **Pass after fixing apply_gw_outcomes to use current price (not cost basis) for sells under static-price v1 — matches what the MILP solves against.**
-- [x] **Transfer accounting**: hits = max(0, transfers_in - free_transfers); FT evolution caps at 5. **Pass on all 38 GWs.**
-- [x] **Chip legality**: chips disabled in v1.0; trivially passes.
-- [x] **No future leakage**: predictions from xpts_eval walk-forward CV; prices walk only BACKWARD via `_resolve_price_at_gw`. **Pass; covered by 5 leakage tests in `tests/leakage/test_milp_leakage.py`.**
+- [x] **Feasibility**: every per-GW MILP solve returns a valid solution. **All 4 folds: ≥37/38 solves succeeded (fold 22 is a 37-GW season due to fixture-data coverage), mean 3.9-8.2s per solve.**
+- [x] **Budget correctness**: cost + bank conservation holds on every solved GW.
+- [x] **Transfer accounting**: hits = max(0, transfers_in - free_transfers); FT evolution caps at 5.
+- [x] **Chip legality**: each slot played at most once, in eligible window. v1.1 played all 6 chip slots (WC1, WC2, FH1, FH2, BB, TC) every fold.
+- [x] **No future leakage**: predictions from xpts_eval walk-forward CV; prices walk only BACKWARD via `_resolve_price_at_gw`. Covered by 5 leakage tests in `tests/leakage/test_milp_leakage.py`.
 
 > **Architecture note on optim/ vs leakage discipline.** The static-import leakage audit applies to `features/`, `models/`, `scenarios/` — these consume time-sensitive data and must route through PIT. `optim/` is outside guarded packages because its DB reads are current-snapshot static metadata (current prices for the GW being solved, current positions, current EO via fpl_api_approx). The MILP itself processes already-PIT-routed predictions; runtime leakage risk is in price lookup, fixed by `_resolve_price_at_gw` walking only backward.
 
-### Performance metrics (REPORTED, NOT GATED INDIVIDUALLY) — fold 2024/25
+### Performance — full walk-forward, H=6 + chips, ρ=1.0, α=0.5, β=0.0
 
-| Metric | Value |
-|---|---|
-| MILP total points | **2318** |
-| Buy-and-hold-template | 1915 |
-| **MILP - template** | **+403 (+21.0%)** |
-| GWs solved | 38 / 38 |
-| Mean solve time | 2.0 s |
-| Total transfers | 52 |
-| Hits taken | 0 |
-| Chips played | none (disabled in v1.0) |
+| Season | MILP | Template | Δ template |
+|---|---:|---:|---:|
+| 2021/22 | 2570 | 1603 | **+967** |
+| 2022/23 | 2344 | 1783 | **+561** |
+| 2023/24 | 2512 | 2176 | **+336** |
+| 2024/25 | 2481 | 2016 | **+465** |
 
-The MILP outperforms the buy-and-hold-template baseline by 21% on a single fold, which is meaningful even given the known prediction-layer limitations (FWD under-prediction, no live-only features, static prices). Full walk-forward across 4 folds + ρ/α/β tuning is the remaining tuning work for Phase 3.0 finalization (deferred to a follow-up commit).
+Mean solve 3.9-8.2 s; ≥37/38 solved every fold; 0 hits taken in any fold. The buy-and-hold-template baseline uses GW1's MILP-chosen XI held all season with oracle captaincy on the held XI — a generous baseline.
 
-**Phase 4 readiness signal**: validity gates pass. Phase 4 (stochastic) can proceed in parallel with Phase 3.5 (chip-DP coupling, dynamic prices, full ρ/α/β tuning).
+**v1.0 → v1.1 uplift** (same data, H=4 no-chips → H=6 + chips at picked ρ=1.0, α=0.5, β=0.0): average +192 pts/season across the 4 folds. Most of the uplift is from chip play; horizon extension contributes a smaller fraction (terminal value α/β were inert across the 9-cell α×β grid at H=4 — same objective for every (α, β) combination tested).
+
+**Tuning data** (development data, not unbiased — predictions and tuning live in the same fold):
+- ρ sweep on fold 24/25 at α=0.8, β=0.05, H=4: ρ=0.7 → +393, ρ=1.0 → +403, ρ=1.2 → +380. **Picked ρ = 1.0.**
+- α × β grid at picked ρ=1.0 on fold 24/25, H=4: all 9 cells {0.5, 0.8, 1.0} × {0.0, 0.05, 0.1} returned an identical 2318/+403 score. Terminal value has no discriminative effect at H=4. Picked (α=0.5, β=0.0) by tie-breaking. Worth re-tuning at H=6.
+
+**Phase 4 readiness signal**: all validity gates pass. Phase 4 (stochastic) can proceed in parallel with Phase 3.5 (dynamic prices, full Phase 5 chip-DP coupling).
 
 ---
 

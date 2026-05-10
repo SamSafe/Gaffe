@@ -268,6 +268,7 @@ def backtest_season(
     rho: float = 1.0,
     alpha: float = 0.8,
     beta: float = 0.05,
+    enable_chips: bool = False,
     n_iterations: int = 200,
     cache_predictions: bool = True,
     cache_dir: Path = Path("data/cache/xpts_predictions"),
@@ -377,6 +378,8 @@ def backtest_season(
             rho=rho,
             alpha=alpha,
             beta=beta,
+            enable_chips=enable_chips,
+            full_predictions=pred_df,
         )
 
         import time

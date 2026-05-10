@@ -113,17 +113,26 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
     m.z_fh = Var(m.W, domain=Binary)
     m.z_bb = Var(m.W, domain=Binary)
     m.z_tc = Var(m.W, domain=Binary)
-    m.tc_aux = Var(m.P, m.W, domain=Binary)  # = c * z_tc (zero when disabled)
-    m.bb_aux = Var(m.P, m.W, domain=Binary)  # = (x - y) * z_bb (zero when disabled)
+    # Weekly chip bonus aggregates (replaces per-(player, week) bilinear aux).
+    # tc_bonus[w] = z_tc[w] * sum_p c[p,w] * pred[p,w]    (captain extra 1× under TC)
+    # bb_bonus[w] = z_bb[w] * sum_p (x[p,w] - y[p,w]) * pred[p,w]   (bench points under BB)
+    # This shrinks the model from O(P*W) chip binaries to O(W) reals — at H=6,
+    # P=200 that's ~2400 binaries → 12 reals. Big-M linearization is exact
+    # because pred[p,w] is a parameter (the products c*pred and (x-y)*pred are
+    # linear in the squad/XI/captain decision vars).
+    # v1.0 simplification: chip bonuses bypass EO adjustment (captain choice is
+    # still EO-aware via the c term in the main rolling+eo objective; the EXTRA
+    # 1× under TC just isn't EO-discounted). Documented as v1.1 candidate.
+    m.tc_bonus = Var(m.W, domain=NonNegativeReals)
+    m.bb_bonus = Var(m.W, domain=NonNegativeReals)
     if not inputs.enable_chips:
         for w in H:
             m.z_wc[w].fix(0)
             m.z_fh[w].fix(0)
             m.z_bb[w].fix(0)
             m.z_tc[w].fix(0)
-            for p in P:
-                m.tc_aux[p, w].fix(0)
-                m.bb_aux[p, w].fix(0)
+            m.tc_bonus[w].fix(0.0)
+            m.bb_bonus[w].fix(0.0)
 
     # ── Squad shape ─────────────────────────────────────────────────────────
     def _squad_size(m, w):
@@ -356,37 +365,43 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
         for slot in ALL_CHIP_SLOTS:
             _build_per_slot_constraint(m, slot)
 
-    # Bilinear chip auxiliaries — only added when chips are enabled.
+    # Weekly chip-bonus big-M linearization — only added when chips are enabled.
+    # M_TC: safe upper bound on a single player's xPts in one GW (typical max ~15).
+    # M_BB: safe upper bound on bench (4 players) xPts in one GW (typical max ~30).
+    M_TC = 30.0
+    M_BB = 60.0
     if inputs.enable_chips:
-        def _tc_aux_le_c(m, p, w):
-            return m.tc_aux[p, w] <= m.c[p, w]
-        m.con_tc_aux_le_c = Constraint(m.P, m.W, rule=_tc_aux_le_c)
+        def _tc_bonus_le_capt(m, w):
+            return m.tc_bonus[w] <= sum(m.c[p, w] * pred.get((p, w), 0.0) for p in m.P)
+        m.con_tc_bonus_le_capt = Constraint(m.W, rule=_tc_bonus_le_capt)
 
-        def _tc_aux_le_z(m, p, w):
-            return m.tc_aux[p, w] <= m.z_tc[w]
-        m.con_tc_aux_le_z = Constraint(m.P, m.W, rule=_tc_aux_le_z)
+        def _tc_bonus_le_z(m, w):
+            return m.tc_bonus[w] <= M_TC * m.z_tc[w]
+        m.con_tc_bonus_le_z = Constraint(m.W, rule=_tc_bonus_le_z)
 
-        def _tc_aux_ge(m, p, w):
-            return m.tc_aux[p, w] >= m.c[p, w] + m.z_tc[w] - 1
-        m.con_tc_aux_ge = Constraint(m.P, m.W, rule=_tc_aux_ge)
+        def _tc_bonus_ge(m, w):
+            return m.tc_bonus[w] >= sum(m.c[p, w] * pred.get((p, w), 0.0) for p in m.P) - M_TC * (1 - m.z_tc[w])
+        m.con_tc_bonus_ge = Constraint(m.W, rule=_tc_bonus_ge)
 
-        def _bb_aux_le_bench(m, p, w):
-            return m.bb_aux[p, w] <= m.x[p, w] - m.y[p, w]
-        m.con_bb_aux_le_bench = Constraint(m.P, m.W, rule=_bb_aux_le_bench)
+        def _bb_bonus_le_bench(m, w):
+            return m.bb_bonus[w] <= sum((m.x[p, w] - m.y[p, w]) * pred.get((p, w), 0.0) for p in m.P)
+        m.con_bb_bonus_le_bench = Constraint(m.W, rule=_bb_bonus_le_bench)
 
-        def _bb_aux_le_z(m, p, w):
-            return m.bb_aux[p, w] <= m.z_bb[w]
-        m.con_bb_aux_le_z = Constraint(m.P, m.W, rule=_bb_aux_le_z)
+        def _bb_bonus_le_z(m, w):
+            return m.bb_bonus[w] <= M_BB * m.z_bb[w]
+        m.con_bb_bonus_le_z = Constraint(m.W, rule=_bb_bonus_le_z)
 
-        def _bb_aux_ge(m, p, w):
-            return m.bb_aux[p, w] >= (m.x[p, w] - m.y[p, w]) + m.z_bb[w] - 1
-        m.con_bb_aux_ge = Constraint(m.P, m.W, rule=_bb_aux_ge)
+        def _bb_bonus_ge(m, w):
+            return m.bb_bonus[w] >= sum(
+                (m.x[p, w] - m.y[p, w]) * pred.get((p, w), 0.0) for p in m.P
+            ) - M_BB * (1 - m.z_bb[w])
+        m.con_bb_bonus_ge = Constraint(m.W, rule=_bb_bonus_ge)
 
     # ── Objective ────────────────────────────────────────────────────────────
-    # mult[p, w] = y + c + tc_aux + bb_aux
-    # objective term per (p, w): (mult - rho * eo) * pred
-    # minus 4 * ht (suppressed when WC; baked into HIT_BIGM constraint above)
-    # plus terminal value V_T at last week
+    # Main term: (y + c) * pred - rho * eo * (y + c) * pred  (EO-adjusted)
+    # Chip bonus: tc_bonus[w] + bb_bonus[w]  (weekly big-M, no EO adjust in v1)
+    # Hits: -4 * ht (suppressed under WC/FH via HIT_BIGM)
+    # Terminal value V_T applied to squad at last horizon week.
     last_w = H[-1]
 
     # Terminal value coefficients (per player at horizon-tip)
@@ -404,28 +419,27 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
         term_coefs = dict.fromkeys(P, 0.0)
 
     def _obj(m):
-        # Per (player, week): mult * pts - rho * eo * mult_visible * pts
-        # mult = y + c + tc_aux + bb_aux (XI + captain extra + TC extra + BB-bench)
+        # Per (player, week): main multiplier mult_main = y + c (XI + captain extra)
+        # gets EO-adjusted. Chip bonuses (tc_bonus, bb_bonus) are weekly aggregates
+        # added to the objective WITHOUT EO adjustment in v1.0 (small effect; see
+        # tc_bonus/bb_bonus comment near var definition).
         rolling = sum(
-            (m.y[p, w] + m.c[p, w] + m.tc_aux[p, w] + m.bb_aux[p, w])
-            * pred.get((p, w), 0.0)
+            (m.y[p, w] + m.c[p, w]) * pred.get((p, w), 0.0)
             for p in m.P
             for w in m.W
         )
-        # EO penalty: only the "visible" multiplier (y + c + tc + bb) counts
-        # against effective ownership — same shape as rolling but scaled by
-        # (rho * eo) instead of by 1.
         eo_term = sum(
             inputs.rho
             * eo.get(p, 0.0)
             * pred.get((p, w), 0.0)
-            * (m.y[p, w] + m.c[p, w] + m.tc_aux[p, w] + m.bb_aux[p, w])
+            * (m.y[p, w] + m.c[p, w])
             for p in m.P
             for w in m.W
         )
+        chip_bonus = sum(m.tc_bonus[w] + m.bb_bonus[w] for w in m.W)
         hits = sum(HIT_COST * m.ht[w] for w in m.W)
         terminal = sum(term_coefs.get(p, 0.0) * m.x[p, last_w] for p in m.P)
-        return rolling - eo_term - hits + terminal
+        return rolling - eo_term + chip_bonus - hits + terminal
 
     m.objective = Objective(rule=_obj, sense=maximize)
 
