@@ -325,6 +325,13 @@ def backtest_season(
           f"{len(valid_players)} eligible players, horizon={horizon}")
 
     for gw in all_gws:
+        # NOTE on stability: appsi_highs occasionally SIGABRTs after many
+        # solves in one Python process — a HiGHS C++ state leak we can't
+        # control from Python. Experiments showed gc.collect() either here
+        # or inside solve_milp triggers destructors at the wrong time and
+        # MAKES IT WORSE. The reliable workaround is per-fold subprocess
+        # isolation; see scripts/phase2_5_1_phase3_isolated.py. The
+        # single-process walk-forward is best-effort.
         # Cold-start GW1: H=1 (just pick the squad; terminal value brings in
         # 5-GW lookahead via post-horizon xPts term). Reduces solve complexity.
         # Subsequent GWs: full rolling horizon.
