@@ -84,24 +84,20 @@ def apply_gw_outcomes(
 ) -> BacktestState:
     """Transition: apply transfers + chip + bank/FT evolution.
 
-    Currently uses the same buy/sell price for transfers (static-price v1
-    assumption per Phase 3 design §1). Sell price = cost_basis price for
-    transferred-out players when we have a basis; else current buy price.
+    v1.2 (Phase 3.5): the harness pre-computes sell prices using the FPL
+    cost-basis sell-tax rule and passes them in `actual_prices[p]["sell"]`.
+    This function just consumes whatever the harness provides — no policy
+    here. apply_gw_outcomes is now policy-free w.r.t. price.
     """
     transfers_out = decisions.transferred_out
     transfers_in = decisions.transferred_in
 
-    # Money in. v1.0 static-price assumption: both buys and sells use the
-    # CURRENT price passed in actual_prices. This matches what the MILP
-    # solved against (it sees buy=sell=current_price). Cost basis is still
-    # tracked for forward compatibility with Phase 3.5 where dynamic prices
-    # will reintroduce sell-vs-buy spread.
     bank_after = state.bank
     new_cost_basis = dict(state.cost_basis)
     for p in transfers_out:
-        # Static v1: sell at current price (== what MILP saw as sell_price)
         sell_price = actual_prices.get(p, {}).get("sell")
         if sell_price is None:
+            # No sell price supplied: fall back to cost basis (cold-start safety).
             sell_price = new_cost_basis.get(p, 0)
         bank_after += sell_price
         new_cost_basis.pop(p, None)

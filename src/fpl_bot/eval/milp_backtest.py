@@ -351,8 +351,27 @@ def backtest_season(
             result.validity_failures.append(f"GW{gw}: empty candidate set")
             break
 
-        # Resolve prices for this GW (used for both buy and sell — static price v1)
-        prices = {p: _resolve_price_at_gw(p, gw, prices_by_pgw) for p in candidates}
+        # Resolve current price for this GW (used as buy price for everyone; also
+        # the sell price for non-state-squad players who could be bought-then-sold
+        # within the horizon — they have no cost basis yet so no spread).
+        buy_prices = {p: _resolve_price_at_gw(p, gw, prices_by_pgw) for p in candidates}
+        # Sell prices: FPL's sell-tax rule.
+        #   tax = max(0, (current - cost_basis) // 2)  (50% tax on profit only)
+        #   sell = current - tax
+        # When current < basis: profit < 0, tax = 0, sell = current ✓
+        # When current ≥ basis: tax = profit//2, sell = basis + ceil(profit/2)
+        # Players not in state.squad have no cost basis yet → sell = current
+        # (could only be sold within-horizon after a buy, no profit possible
+        # under static prices).
+        sell_prices = {}
+        for p in candidates:
+            current = buy_prices[p]
+            basis = state.cost_basis.get(p) if p in state.squad else None
+            if basis is not None:
+                tax = max(0, (current - basis) // 2)
+                sell_prices[p] = current - tax
+            else:
+                sell_prices[p] = current
 
         # Predictions dict scoped to candidates × horizon_gws
         pred_dict = {
@@ -371,8 +390,8 @@ def backtest_season(
             candidates=candidates,
             predictions=pred_dict,
             eo=eo,
-            buy_prices=prices,
-            sell_prices=prices,
+            buy_prices=buy_prices,
+            sell_prices=sell_prices,
             positions=positions_dict,
             teams=teams_dict,
             rho=rho,
@@ -385,8 +404,12 @@ def backtest_season(
         import time
 
         t0 = time.time()
-        # Cold-start gets longer time budget; rolling-horizon solves are smaller
-        time_limit = 180 if not state.squad else 60
+        # Cold-start gets longer time budget; rolling-horizon solves are smaller.
+        # Rolling limit bumped 60→120 in v1.2 (α/β grid surfaced flake at 60s
+        # where some configs hit no_feasible at maxTimeLimit despite β-equivalent
+        # configs passing — extra budget gives the LP relaxation enough room to
+        # find an incumbent before the time limit).
+        time_limit = 180 if not state.squad else 120
         try:
             decisions, meta = solve_rolling_horizon(inputs, time_limit_s=time_limit)
         except Exception as exc:
@@ -408,10 +431,13 @@ def backtest_season(
                 gw_points += actual_by_pgw.get((p, gw), 0)
         gw_points -= 4 * decisions.hits
 
-        # Apply outcomes → next state
+        # Apply outcomes → next state. Pass the cost-basis-aware sell prices
+        # so apply_gw_outcomes' bank update matches what the MILP solved against.
         state_before = state
-        chip_actual_prices = {p: {"buy": prices[p], "sell": prices[p]} for p in candidates}
-        new_state = apply_gw_outcomes(state, decisions, chip_actual_prices)
+        actual_prices_for_state = {
+            p: {"buy": buy_prices[p], "sell": sell_prices[p]} for p in candidates
+        }
+        new_state = apply_gw_outcomes(state, decisions, actual_prices_for_state)
 
         record = GwBacktestRecord(
             gameweek=gw,
@@ -424,12 +450,15 @@ def backtest_season(
         )
         result.gw_records.append(record)
 
-        # Validity checks
+        # Validity checks. Budget check uses current (buy) prices to compare
+        # squad value before/after — the cost-basis sell-tax doesn't make money
+        # appear from nowhere (sell ≤ current under tax), so cost + bank
+        # ≤ entering still holds.
         budget_ok, transfers_ok, chips_ok, leak_ok, errs = _check_validity(
             record,
             state_before=state_before,
             state_after=new_state,
-            prices=prices,
+            prices=buy_prices,
             used_chips_before=state_before.chips_used,
         )
         if not budget_ok:

@@ -178,14 +178,27 @@ Two distinct gate categories per round-1 review (separate to avoid distortions f
 
 > **Architecture note on optim/ vs leakage discipline.** The static-import leakage audit applies to `features/`, `models/`, `scenarios/` — these consume time-sensitive data and must route through PIT. `optim/` is outside guarded packages because its DB reads are current-snapshot static metadata (current prices for the GW being solved, current positions, current EO via fpl_api_approx). The MILP itself processes already-PIT-routed predictions; runtime leakage risk is in price lookup, fixed by `_resolve_price_at_gw` walking only backward.
 
-### Performance — full walk-forward, H=6 + chips, ρ=1.0, α=0.5, β=0.0
+### Performance — v1.2 full walk-forward, H=6 + chips, ρ=1.0, α=0.8, β=0.0, time_limit=120s
 
 | Season | MILP | Template | Δ template |
 |---|---:|---:|---:|
-| 2021/22 | 2570 | 1603 | **+967** |
-| 2022/23 | 2344 | 1783 | **+561** |
-| 2023/24 | 2512 | 2176 | **+336** |
-| 2024/25 | 2481 | 2016 | **+465** |
+| 2021/22 | 2628 | 1603 | **+1025** |
+| 2022/23 | 2375 | 1755 | **+620** |
+| 2023/24 | 2520 | 2176 | **+344** |
+| 2024/25 | 2561 | 2096 | **+465** |
+
+**v1.1 → v1.2 housekeeping**: bumped picked α from 0.5 → 0.8 (terminal-value α was inert at H=4 but discriminates at H=6 — α=0.8 best on fold 24/25 in the H=6 grid, +81 abs pts); bumped rolling-solve `time_limit_s` from 60 → 120 to absorb a tractability flake where some α/β configs hit `maxTimeLimit` with no incumbent at 60s. Average uplift v1.1 → v1.2: +44 pts/season.
+
+**Phase 3.5 follow-up** (see [phase3_5_dynamic_prices.md](phase3_5_dynamic_prices.md)): cost-basis sell-tax now active (replaces v1.2's static-current-price-on-sells simplification). Removes the free-roll on profitable sells. Avg -5.5 pts/season vs v1.2 walk-forward — a *correctness* delta, not a performance regression: v3.5 numbers are realistic for real-FPL play. The price-change predictor was scoped but failed its gates (transfers_in/out at GW-end is too late a signal); shelved for v2 with intra-week dynamics.
+
+#### v1.0 (H=4 no-chips, archived for reference)
+
+| Season | MILP | Template | Δ template |
+|---|---:|---:|---:|
+| 2021/22 | 2259 | 1696 | +563 |
+| 2022/23 | 2186 | 1957 | +229 |
+| 2023/24 | 2378 | 2017 | +361 |
+| 2024/25 | 2318 | 1915 | +403 |
 
 Mean solve 3.9-8.2 s; ≥37/38 solved every fold; 0 hits taken in any fold. The buy-and-hold-template baseline uses GW1's MILP-chosen XI held all season with oracle captaincy on the held XI — a generous baseline.
 
