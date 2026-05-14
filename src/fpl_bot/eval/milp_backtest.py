@@ -132,6 +132,52 @@ def _per_player_per_gw_actuals(eval_df: pl.DataFrame) -> dict[tuple[int, int], i
     }
 
 
+def _per_player_per_gw_actual_minutes(
+    season_id: int,
+) -> dict[tuple[int, int], int]:
+    """Per-(player, gameweek) actual minutes (summed across DGW fixtures).
+
+    Pulled directly from fact_player_match.minutes joined to dim_fixture for
+    the test season. Used by the auto-sub scorer to detect XI blanks.
+    """
+    with session_scope() as s:
+        # Dedupe by latest recorded_at per (player_id, fixture_id) — same
+        # pattern as pit.all_player_match_with_kickoff after the Phase 3.5
+        # backfill that added a second bitemporal row per fixture.
+        from sqlalchemy import func as _func
+        latest = (
+            select(
+                FactPlayerMatch.player_id,
+                FactPlayerMatch.fixture_id,
+                _func.max(FactPlayerMatch.recorded_at).label("max_rec"),
+            )
+            .group_by(FactPlayerMatch.player_id, FactPlayerMatch.fixture_id)
+            .subquery("fpm_minutes_latest")
+        )
+        rows = s.execute(
+            select(
+                FactPlayerMatch.player_id,
+                DimFixture.gameweek,
+                FactPlayerMatch.minutes,
+            )
+            .join(
+                latest,
+                (latest.c.player_id == FactPlayerMatch.player_id)
+                & (latest.c.fixture_id == FactPlayerMatch.fixture_id)
+                & (latest.c.max_rec == FactPlayerMatch.recorded_at),
+            )
+            .join(DimFixture, DimFixture.fixture_id == FactPlayerMatch.fixture_id)
+            .where(DimFixture.season_id == season_id)
+        ).all()
+    out: dict[tuple[int, int], int] = {}
+    for r in rows:
+        if r.gameweek is None or r.minutes is None:
+            continue
+        key = (int(r.player_id), int(r.gameweek))
+        out[key] = out.get(key, 0) + int(r.minutes)
+    return out
+
+
 def _team_id_per_player_for_season(
     season_id: int, candidates: list[int]
 ) -> dict[int, int]:
@@ -294,6 +340,9 @@ def backtest_season(
     # Aggregate to per-(player, gw) predictions and actuals
     pred_by_pgw = _per_player_per_gw_predictions(eval_df)
     actual_by_pgw = _per_player_per_gw_actuals(eval_df)
+    # Actual minutes per (player, gw) — needed by the auto-sub scorer to
+    # detect XI blanks (minutes == 0).
+    actual_minutes_by_pgw = _per_player_per_gw_actual_minutes(test_season)
 
     # SAA: load per-scenario raw samples and aggregate to (player, gw, scenario).
     pts_per_scenario: pl.DataFrame | None = None
@@ -465,18 +514,30 @@ def backtest_season(
             break
         solve_time = time.time() - t0
 
-        # Compute actual GW points = XI points + captain extra - hit cost
-        gw_points = 0
-        for p in decisions.starting_xi:
-            gw_points += actual_by_pgw.get((p, gw), 0)
-        if decisions.captain is not None:
-            cap_pts = actual_by_pgw.get((decisions.captain, gw), 0)
-            multiplier = 2 if decisions.chip_played != "TC" else 3
-            gw_points += cap_pts * (multiplier - 1)
-        if decisions.chip_played == "BB":
-            for p in decisions.squad - decisions.starting_xi:
-                gw_points += actual_by_pgw.get((p, gw), 0)
-        gw_points -= 4 * decisions.hits
+        # Compute actual GW points with FPL auto-sub + auto-vice rules.
+        from fpl_bot.optim.scorer import ScorerInputs, score_gw
+        actual_pts_this_gw = {
+            p: actual_by_pgw.get((p, gw), 0) for p in decisions.squad
+        }
+        actual_minutes_this_gw = {
+            p: actual_minutes_by_pgw.get((p, gw), 0) for p in decisions.squad
+        }
+        # Bench-order heuristic: rank by this-GW predicted xPts (the same
+        # signal the MILP optimized against). The manager's best-guess
+        # ranking of "who should sub in first if needed".
+        bench_order_xpts = {
+            p: pred_by_pgw.get((p, gw), 0.0) for p in decisions.squad
+        }
+        scorer_out = score_gw(
+            ScorerInputs(
+                decisions=decisions,
+                actual_pts=actual_pts_this_gw,
+                actual_minutes=actual_minutes_this_gw,
+                positions=positions_dict,
+                bench_order_xpts=bench_order_xpts,
+            )
+        )
+        gw_points = scorer_out.gw_points
 
         # Apply outcomes → next state. Pass the cost-basis-aware sell prices
         # so apply_gw_outcomes' bank update matches what the MILP solved against.
