@@ -19,7 +19,6 @@ from pyomo.environ import (
     NonNegativeReals,
     Objective,
     Set,
-    SolverFactory,
     Var,
     maximize,
     value,
@@ -616,51 +615,127 @@ def solve_milp(
     time_limit_s: int = 120,
     mip_rel_gap: float = 0.01,
 ) -> dict:
-    """Solve the MILP. Returns metadata about the solve.
+    """Solve the MILP via `highspy` in a subprocess. Returns metadata.
 
-    Accepts feasible-but-not-optimal solutions (e.g., on time-limit hit) —
-    HiGHS will have loaded the incumbent. Only fails if no feasible solution
-    was found at all.
+    Accepts feasible-but-not-optimal solutions (we still load the incumbent
+    into the Pyomo model). Only fails if no feasible solution was found.
 
     `mip_rel_gap` (default 1%): HiGHS stops as soon as it has an incumbent
-    within this relative gap of the LP relaxation upper bound. The Phase 2.5
-    independent-goal sampler produced predictions where the LP relaxation
-    had loose ties; HiGHS could prove optimality at the default gap. Phase
-    2.5.1's multinomial sampler tightens within-team prediction ties, making
-    the integer search much harder to prove optimal — but a 1% gap is well
-    below our prediction noise (the rho/eo/lambda parameters carry far more
-    uncertainty than 1% of objective). 1% solves an order of magnitude
-    faster on the tied folds.
+    within this relative gap of the LP relaxation upper bound. Well below
+    our prediction noise.
+
+    **Why subprocess-per-solve**: Phase 3 v1.4 documented that `appsi_highs`
+    accumulates C++ HiGHS instance state across solves in one Python
+    process, eventually SIGABRTing. Switching to `highspy` direct (via LP
+    file roundtrip) hit the same class of issue (`malloc() / free()` heap
+    corruption after many solves) — confirming the bug is in HiGHS itself
+    at v1.14.0, not the Pyomo wrapper. Subprocess isolation per solve gives
+    each MILP a fresh OS heap; ~0.5-1s subprocess overhead per solve vs
+    ~10s typical solve time is acceptable.
     """
-    solver = SolverFactory("appsi_highs")
-    # appsi_highs ignores `solver.options[...]` for HiGHS-specific keys; pass
-    # them through `highs_options` instead. (Discovered after `solver.options
-    # ["mip_rel_gap"] = 0.01` was silently ignored.)
-    solver.highs_options["time_limit"] = float(time_limit_s)
-    solver.highs_options["mip_rel_gap"] = float(mip_rel_gap)
-    solver.config.load_solution = False
-    result = solver.solve(model, tee=False)
+    import contextlib
+    import json
+    import os
+    import subprocess
+    import sys
+    import tempfile
 
-    termination = str(result.solver.termination_condition)
-    found_feasible = (
-        result.solver.best_feasible_objective is not None
-        if hasattr(result.solver, "best_feasible_objective")
-        else False
-    )
+    from pyomo.repn.plugins.lp_writer import LPWriter
 
-    if termination == "optimal" or found_feasible:
-        # Load the (optimal or incumbent) solution into the model
-        solver.load_vars()
+    with tempfile.NamedTemporaryFile(
+        suffix=".lp", delete=False, mode="w"
+    ) as f:
+        lp_path = f.name
+        writer = LPWriter()
+        write_info = writer.write(model, f, symbolic_solver_labels=True)
+    sm = write_info.symbol_map
+
+    with tempfile.NamedTemporaryFile(
+        suffix=".json", delete=False, mode="w"
+    ) as f:
+        out_json_path = f.name
+
+    try:
+        # Subprocess timeout: solver time_limit + 30s buffer for I/O.
+        proc_timeout = float(time_limit_s) + 30.0
+        # Retry policy: if HiGHS 1.14.0 SIGABRTs (rc=-6) on a specific MILP
+        # — known bug on larger MILPs, esp. Phase 4 SAA — retry up to 2
+        # times with perturbed MIP gaps. The internal heuristic search
+        # explores different paths and usually side-steps the bug.
+        gap_perturbations = [mip_rel_gap, 0.005, 0.02]
+        result = None
+        for attempt_gap in gap_perturbations:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "fpl_bot.optim._highspy_worker",
+                    lp_path,
+                    out_json_path,
+                    "--time-limit",
+                    str(time_limit_s),
+                    "--mip-rel-gap",
+                    str(attempt_gap),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=proc_timeout,
+            )
+            if result.returncode == 0:
+                break
+            # rc=-6 == SIGABRT (HiGHS internal crash); try another gap.
+            if result.returncode != -6:
+                break
+        if result.returncode != 0:
+            return {
+                "status": "no_feasible_solution",
+                "termination": f"worker_rc={result.returncode}",
+                "objective": None,
+            }
+
+        with open(out_json_path) as f:
+            out = json.load(f)
+        if out["status"] != "ok":
+            return out
+
+        # Map highspy column values back to Pyomo Vars via symbol_map.
+        # HiGHS returns LP-solve numerics (e.g. 0.9999999999 for a binary
+        # 1, 1e-14 for a binary 0). Round to the var's domain so Pyomo
+        # doesn't W1001-warn and downstream `value > 0.5`-style threshold
+        # checks behave as expected.
+        from pyomo.core.base.var import VarData
+        from pyomo.environ import Binary, NonNegativeIntegers
+        col_values = out["col_values"]
+        for sym_name, obj_ref in sm.bySymbol.items():
+            if not isinstance(obj_ref, VarData):
+                continue
+            if sym_name not in col_values:
+                continue
+            raw = col_values[sym_name]
+            dom = obj_ref.domain
+            if dom is Binary:
+                obj_ref.value = 1 if raw > 0.5 else 0
+            elif dom is NonNegativeIntegers:
+                obj_ref.value = round(raw)
+            else:
+                obj_ref.value = raw
+
         return {
             "status": "ok",
-            "termination": termination if termination == "optimal" else "feasible",
-            "objective": float(value(model.objective)),
+            "termination": out["termination"],
+            "objective": out["objective"],
         }
-    return {
-        "status": "no_feasible_solution",
-        "termination": termination,
-        "objective": None,
-    }
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "no_feasible_solution",
+            "termination": "subprocess_timeout",
+            "objective": None,
+        }
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(lp_path)
+        with contextlib.suppress(OSError):
+            os.unlink(out_json_path)
 
 
 def extract_decisions(

@@ -46,9 +46,15 @@ print(f"_MARKER_pass={{r.all_validity_gates_pass}}_pts={{r.perf_total_points}}_t
 
 
 def main() -> None:
-    # |S|=10 picked from tractability sweep: 9.3s/GW with chips on at fold 21
-    # (comparable to Phase 3 deterministic). |S|=25 hits ~90s/GW with chips.
-    n_scenarios = 10
+    # |S|=3: the largest scenario count that doesn't trigger a HiGHS 1.14.0
+    # internal SIGABRT during multi-GW solves. Each subprocess gets a fresh
+    # OS heap (via solve_milp's _highspy_worker spawn) so the issue isn't
+    # state accumulation — it's HiGHS choking on the per-scenario chip-bonus
+    # big-M structure at larger |S|. Picked |S|=3 for the walk-forward; the
+    # scenario-conditional captain still provides Jensen-inequality value
+    # over deterministic (3 captain options to pick from per future GW).
+    # See docs/design/phase4_stochastic_optimization.md status block.
+    n_scenarios = 3
     for fold in FOLDS:
         print(f"\n{'='*60}", flush=True)
         print(f"FOLD test={fold['test']} (train={fold['train']}, |S|={n_scenarios})", flush=True)

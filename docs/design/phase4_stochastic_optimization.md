@@ -21,12 +21,27 @@ Status: **v0.1 scaffolding shipped; full walk-forward blocked on HiGHS stability
 
 |S|=10 chips-on is comparable to Phase 3 deterministic. Single-solve correctness verified.
 
-**Blocker**: the multi-solve `backtest_season` path SIGABRTs in HiGHS C++ on early GWs — same root cause as Phase 3 v1.4 (`appsi_highs` C++ state leak across solves), but now hits sooner because the SAA model has 2-3× more binaries. Each fold via subprocess isolation still crashes early. We documented in Phase 3 v1.4 that we cannot reliably fix this from Python.
+**v0.2 update** (post solver-swap): swapped `solve_milp` from Pyomo's `appsi_highs` wrapper to a **subprocess-per-solve** worker (`optim/_highspy_worker.py`) using `highspy` directly via LP-file roundtrip. Each MILP gets a fresh OS heap, eliminating cross-solve state accumulation. Added 3-attempt retry with perturbed MIP gaps for the remaining HiGHS-internal SIGABRTs on specific MILPs (different B&B paths usually side-step the bug).
 
-**Path forward** (not in scope of this phase):
-- Swap solver backend. Gurobi (commercial, free academic) is the most credible; CBC (open-source, slower); or use HiGHS via its own Python bindings (`highspy`) bypassing Pyomo's `appsi_highs` wrapper. Once Phase 3 v1.4 is unblocked, Phase 4 walk-forward should reach the gates in §5.
+**Full SAA walk-forward at |S|=3** (the largest reliable scenario count — HiGHS 1.14.0 still SIGABRTs at |S| ≥ 10 even with subprocess isolation; the bug is in HiGHS itself, not state):
 
-**Why we ship the scaffolding now**: the formulation is correct (verified by single-solve), the data pipeline works (raw samples cached), and the design surfaces the meaningful Phase 4 value-add (scenario-conditional captain → real wait-and-see optionality, not silently-equivalent-to-deterministic). When the solver issue is unblocked, the walk-forward is one command away.
+| Season | SAA |S|=3 | Δ template | Phase 3 (auto-sub) | Δ SAA−P3 | Hits |
+|---|---:|---:|---:|---:|---:|
+| 21/22 | 2359 | +881 | ~2580 | −221 | 5 |
+| 22/23 | 2104 | −28 | ~2390 | −286 | 2 |
+| 23/24 | 2392 | +515 | ~2510 | −118 | 4 |
+| 24/25 | 2258 | +699 | 2558 | −300 | 2 |
+
+**All 4 folds PASS validity** (structural correctness verified end-to-end). Mean solve ~10s/GW.
+
+**Result**: SAA at |S|=3 is worse than Phase 3 deterministic by 100-300 pts/fold. The captain-hedging value-add (Jensen-inequality bite) needs |S| ≥ 10-50 for real lift; HiGHS 1.14.0 crashes at that scale.
+
+Notable behavioral signal: SAA exercises 2-5 hits/season where Phase 3 took 0. The optimizer is making genuinely different decisions; at |S|=3 they're high-variance and tend to lose money, but the architectural correctness is established.
+
+**True path forward** (unchanged from v0.1):
+1. **Upgrade HiGHS** when a bugfix lands for the SIGABRT trigger (file an issue against HiGHS 1.14.0 with our LP file; this is community-fixable upstream).
+2. **Swap to Gurobi** (commercial; free academic license available) or **CBC** (open-source; slower but well-tested) and re-run at |S|=25-50.
+3. Either path requires only swapping the worker binary; the SAA scaffolding is solver-agnostic.
 
 Replace the deterministic E[xPts] objective in the Phase 3 MILP with a sample-average approximation (SAA) over scenarios drawn from the Phase 2.5 joint-xPts simulator. This is the architectural pivot called out in Phase 0 §5: same MILP structure, but the objective becomes an average over |S| scenarios, and decisions can be split into first-stage (current GW, non-anticipative) and second-stage (future GWs, optionally scenario-conditional).
 
