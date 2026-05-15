@@ -321,6 +321,7 @@ def backtest_season(
     use_saa: bool = False,
     n_scenarios: int = 25,
     raw_samples_dir: Path = Path("data/cache/xpts_raw_samples"),
+    use_chip_schedule: bool = False,
 ) -> BacktestSeasonResult:
     """Run rolling MILP backtest for one test season."""
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -386,6 +387,21 @@ def backtest_season(
         if pid in valid_players
     ]
     pred_df = pl.DataFrame(pred_records)
+
+    # Phase 5 chip schedule (computed once at fold start). Decouples chip
+    # timing from the rolling MILP — each per-GW solve sees the chip
+    # activations as fixed parameters, not decisions.
+    chip_schedule: dict[str, int] | None = None
+    if use_chip_schedule and enable_chips:
+        from fpl_bot.optim.chip_scheduler import make_chip_schedule
+        from fpl_bot.optim.fixture_analytics import load_fixture_analytics
+        fixture_analytics = load_fixture_analytics(test_season)
+        chip_schedule = make_chip_schedule(
+            analytics=fixture_analytics,
+            predictions_df=pred_df,
+            team_id_per_player={p: teams[p] for p in valid_players if p in teams},
+        ).as_dict()
+        print(f"Chip schedule: {chip_schedule}", flush=True)
 
     state = BacktestState.cold_start(season_id=test_season)
     result = BacktestSeasonResult(
@@ -491,6 +507,7 @@ def backtest_season(
             use_saa=use_saa,
             predictions_per_scenario=pts_per_scenario_dict,
             scenario_ids=scenario_ids,
+            chip_schedule=chip_schedule,
         )
 
         import time

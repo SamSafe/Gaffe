@@ -78,6 +78,13 @@ class MilpInputs:
         dict[tuple[int, int, int], float] | None
     ) = None  # (player_id, gw, scenario_id) → pts
     scenario_ids: list[int] | None = None
+    # Phase 5 chip-DP: when set, the MILP forces chip activations to the
+    # pre-decided GW (1 at chip_schedule[slot], 0 at all other GWs in the
+    # horizon). Decouples chip timing from the rolling MILP entirely.
+    # Format: {"FH1": 18, "TC": 26, ...} (subset of slots; missing slots
+    # default to "not yet played, MILP can still pick within horizon"
+    # — but typically the scheduler covers all 6 slots).
+    chip_schedule: dict[str, int] | None = None
 
 
 def _gw_in_first_half(gw: int) -> bool:
@@ -143,6 +150,50 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
             m.z_tc[w].fix(0)
             m.tc_bonus[w].fix(0.0)
             m.bb_bonus[w].fix(0.0)
+    elif inputs.chip_schedule is not None:
+        # Phase 5: chip schedule forces activations to pre-decided GWs.
+        # For each chip type, find the target GW from the schedule, fix to 1
+        # if it's in the horizon, else fix all horizon GWs to 0.
+        schedule = inputs.chip_schedule
+        used_chips_before = set(state.chips_used)
+
+        # WC: both WC1 and WC2 share the m.z_wc variable
+        wc_targets = []
+        for slot in ("WC1", "WC2"):
+            if slot in schedule and slot not in used_chips_before:
+                wc_targets.append(schedule[slot])
+        for w in H:
+            if w in wc_targets:
+                m.z_wc[w].fix(1)
+            else:
+                m.z_wc[w].fix(0)
+
+        # FH: same pattern (FH1, FH2 share m.z_fh)
+        fh_targets = []
+        for slot in ("FH1", "FH2"):
+            if slot in schedule and slot not in used_chips_before:
+                fh_targets.append(schedule[slot])
+        for w in H:
+            if w in fh_targets:
+                m.z_fh[w].fix(1)
+            else:
+                m.z_fh[w].fix(0)
+
+        # BB
+        bb_target = schedule.get("BB") if "BB" not in used_chips_before else None
+        for w in H:
+            if w == bb_target:
+                m.z_bb[w].fix(1)
+            else:
+                m.z_bb[w].fix(0)
+
+        # TC
+        tc_target = schedule.get("TC") if "TC" not in used_chips_before else None
+        for w in H:
+            if w == tc_target:
+                m.z_tc[w].fix(1)
+            else:
+                m.z_tc[w].fix(0)
 
     # ── Squad shape ─────────────────────────────────────────────────────────
     def _squad_size(m, w):
