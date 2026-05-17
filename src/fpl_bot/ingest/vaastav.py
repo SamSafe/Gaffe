@@ -262,6 +262,16 @@ def _ingest_one_gw_df(
                 transfers_balance=row.get("transfers_balance"),
                 selected=row.get("selected"),
             )
+            # Idempotent within a transaction. `recorded_at` is server-side
+            # `now()` which is stable across all rows in the same transaction,
+            # so a (player, fixture) appearing twice in the same season's
+            # merged gw{N}.csv files (e.g., postponed fixtures show up in two
+            # gw files) would otherwise PK-conflict. A re-ingest in a fresh
+            # transaction WILL produce a new bitemporal row (different
+            # recorded_at).
+            stmt = stmt.on_conflict_do_nothing(
+                index_elements=["player_id", "fixture_id", "recorded_at"]
+            )
             s.execute(stmt)
             n += 1
     return n
