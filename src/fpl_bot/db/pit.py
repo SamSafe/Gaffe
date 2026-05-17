@@ -423,3 +423,105 @@ def bps_rules_for_season(season_id: int) -> pl.DataFrame:
 def penalty_taker_as_of(team_id: int, as_of: dt.datetime) -> pl.DataFrame:
     """Ordered penalty-taker list for a team, manual override-aware. NOT IMPLEMENTED — Phase 1B."""
     raise NotImplementedError("penalty_taker_as_of: Phase 1B")
+
+
+def upcoming_fixtures(fixture_ids: list[int]) -> pl.DataFrame:
+    """Phase 6 v2: pull dim_fixture metadata for arbitrary fixture_ids.
+
+    Used by the predict-only feature builders to synthesize per-(player,
+    fixture) rows for fixtures that haven't been played yet (no
+    fact_player_match rows exist for them).
+
+    Returns columns: fixture_id, season_id, gameweek, kickoff_utc,
+    home_team_id, away_team_id.
+    """
+    if not fixture_ids:
+        return pl.DataFrame()
+    from fpl_bot.db.models import DimFixture as _DimFixture
+    with session_scope() as s:
+        rows = s.execute(
+            select(
+                _DimFixture.fixture_id,
+                _DimFixture.season_id,
+                _DimFixture.gameweek,
+                _DimFixture.kickoff_utc,
+                _DimFixture.home_team_id,
+                _DimFixture.away_team_id,
+            ).where(_DimFixture.fixture_id.in_(fixture_ids))
+        ).all()
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(
+        [
+            {
+                "fixture_id": int(r.fixture_id),
+                "season_id": int(r.season_id),
+                "gameweek": int(r.gameweek),
+                "kickoff_utc": r.kickoff_utc,
+                "home_team_id": int(r.home_team_id),
+                "away_team_id": int(r.away_team_id),
+            }
+            for r in rows
+        ]
+    )
+
+
+def season_player_status_snapshot(season_id: int) -> pl.DataFrame:
+    """Phase 6 v2: latest (player_id, team_id, position_code) per player for
+    a season, taken from fact_player_status (most recent recorded_at).
+
+    Used by predict-only feature builders to identify "eligible players"
+    for an upcoming fixture (those currently registered to one of the
+    fixture's teams).
+
+    Returns columns: player_id, team_id, position_code.
+    """
+    from sqlalchemy import func as _func
+
+    from fpl_bot.db.models import FactPlayerStatus as _FPS
+    with session_scope() as s:
+        latest = (
+            select(
+                _FPS.player_id,
+                _func.max(_FPS.recorded_at).label("max_rec"),
+            )
+            .where(_FPS.season_id == season_id)
+            .group_by(_FPS.player_id)
+            .subquery("ps_latest")
+        )
+        rows = s.execute(
+            select(_FPS.player_id, _FPS.team_id, _FPS.position_code)
+            .join(
+                latest,
+                (latest.c.player_id == _FPS.player_id)
+                & (latest.c.max_rec == _FPS.recorded_at),
+            )
+        ).all()
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(
+        [
+            {
+                "player_id": int(r.player_id),
+                "team_id": int(r.team_id),
+                "position_code": r.position_code,
+            }
+            for r in rows
+        ]
+    )
+
+
+def season_start_kickoff(season_id: int) -> dt.datetime | None:
+    """Phase 6 v2: min(kickoff_utc) across dim_fixture for a season.
+
+    Used to compute `days_into_season` for upcoming fixtures.
+    """
+    from sqlalchemy import func as _func
+
+    from fpl_bot.db.models import DimFixture as _DimFixture
+    with session_scope() as s:
+        return s.execute(
+            select(_func.min(_DimFixture.kickoff_utc)).where(
+                _DimFixture.season_id == season_id
+            )
+        ).scalar()

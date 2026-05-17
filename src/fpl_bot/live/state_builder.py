@@ -39,10 +39,34 @@ def load_user_state(
     team_id: int,
 ) -> BacktestState:
     """Build a BacktestState from the most recent fact_user_team_snapshot
-    for (season, gameweek, team_id). Latest recorded_at wins per
-    (player_id) within that triple."""
+    AT OR BEFORE the target gameweek.
+
+    Note: the FPL `entry/{team_id}/event/{gw}/picks/` endpoint returns 404
+    for not-yet-finished GWs. For an UPCOMING-GW recommend we therefore
+    fall back to the latest available snapshot (typically the prior GW's
+    picks) — that's the freshest state we can observe pre-deadline. The
+    returned BacktestState has `gameweek = target gameweek` (so the MILP
+    solves for the right horizon) but its squad / bank / FT come from the
+    most recent snapshot ≤ target gameweek.
+    """
     with session_scope() as s:
-        # Subquery: latest recorded_at per player in this (season, gw, team)
+        # Find the latest snapshot gameweek at or before target
+        max_gw_row = s.execute(
+            select(sa_func.max(FactUserTeamSnapshot.gameweek)).where(
+                (FactUserTeamSnapshot.season_id == season_id)
+                & (FactUserTeamSnapshot.team_id == team_id)
+                & (FactUserTeamSnapshot.gameweek <= gameweek)
+            )
+        ).scalar()
+        if max_gw_row is None:
+            raise ValueError(
+                f"No user-team snapshot for season={season_id}, "
+                f"team_id={team_id} at or before gw={gameweek}. "
+                f"Run `fpl-bot live ingest` first."
+            )
+        snapshot_gw = int(max_gw_row)
+
+        # Subquery: latest recorded_at per player in this (season, snapshot_gw, team)
         latest = (
             select(
                 FactUserTeamSnapshot.player_id,
@@ -50,7 +74,7 @@ def load_user_state(
             )
             .where(
                 (FactUserTeamSnapshot.season_id == season_id)
-                & (FactUserTeamSnapshot.gameweek == gameweek)
+                & (FactUserTeamSnapshot.gameweek == snapshot_gw)
                 & (FactUserTeamSnapshot.team_id == team_id)
             )
             .group_by(FactUserTeamSnapshot.player_id)
@@ -65,14 +89,14 @@ def load_user_state(
             )
             .where(
                 (FactUserTeamSnapshot.season_id == season_id)
-                & (FactUserTeamSnapshot.gameweek == gameweek)
+                & (FactUserTeamSnapshot.gameweek == snapshot_gw)
                 & (FactUserTeamSnapshot.team_id == team_id)
             )
         ).scalars().all()
 
     if not rows:
         raise ValueError(
-            f"No user-team snapshot for season={season_id}, gw={gameweek}, "
+            f"No user-team snapshot for season={season_id}, gw={snapshot_gw}, "
             f"team_id={team_id}. Run `fpl-bot live ingest` first."
         )
 

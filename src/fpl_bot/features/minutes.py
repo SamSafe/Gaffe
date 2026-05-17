@@ -161,3 +161,81 @@ FEATURE_COLUMNS: list[str] = [
     "pos_MID",
     "pos_FWD",
 ]
+
+
+def build_prediction_feature_table(
+    test_season: int,
+    upcoming_fixture_ids: list[int],
+) -> pl.DataFrame:
+    """Phase 6 v2: feature rows for UPCOMING fixtures (no played data yet).
+
+    Per-player rolling features come from their LATEST played match in
+    `test_season`. New fixture rows synthesize team/position/days_into_season
+    from dim_fixture + fact_player_status.
+    """
+    if not upcoming_fixture_ids:
+        return pl.DataFrame()
+
+    history = build_feature_table(season_ids=[test_season])
+    if history.is_empty():
+        per_player_rolling = pl.DataFrame()
+    else:
+        per_player_rolling = (
+            history.sort(["player_id", "kickoff_utc"])
+            .group_by("player_id", maintain_order=True)
+            .last()
+        )
+
+    fixtures_df = pit.upcoming_fixtures(upcoming_fixture_ids)
+    players_df = pit.season_player_status_snapshot(test_season).rename(
+        {"team_id": "current_team_id"}
+    )
+    season_start = pit.season_start_kickoff(test_season)
+
+    if fixtures_df.is_empty() or players_df.is_empty():
+        return pl.DataFrame()
+
+    cross = fixtures_df.join(players_df, how="cross")
+    cross = cross.filter(
+        (pl.col("current_team_id") == pl.col("home_team_id"))
+        | (pl.col("current_team_id") == pl.col("away_team_id"))
+    )
+
+    # Position one-hot
+    for code in POSITION_CODES:
+        cross = cross.with_columns(
+            (pl.col("position_code") == code).cast(pl.Int8).alias(f"pos_{code}")
+        )
+
+    # Rolling features from history
+    rolling_cols = [
+        "min_last_1", "min_last_3", "min_last_5", "min_last_10",
+        "start60_rate_3", "start60_rate_5", "start60_rate_10",
+        "bucket_last_1", "days_since_last_match", "season_match_count",
+    ]
+    if not per_player_rolling.is_empty():
+        keep = ["player_id"] + [c for c in rolling_cols if c in per_player_rolling.columns]
+        cross = cross.join(per_player_rolling.select(keep), on="player_id", how="left")
+    for c in rolling_cols:
+        if c in cross.columns:
+            cross = cross.with_columns(pl.col(c).fill_null(0))
+        else:
+            cross = cross.with_columns(pl.lit(0).alias(c))
+
+    if season_start is not None:
+        cross = cross.with_columns(
+            (
+                (pl.col("kickoff_utc").cast(pl.Datetime) - pl.lit(season_start).cast(pl.Datetime))
+                .dt.total_seconds()
+                / 86400.0
+            ).alias("days_into_season")
+        )
+    else:
+        cross = cross.with_columns(pl.lit(0.0).alias("days_into_season"))
+
+    cross = cross.with_columns(
+        pl.lit(None, dtype=pl.Int16).alias("minutes"),
+        pl.lit(None, dtype=pl.Int8).alias("minutes_bucket"),
+    )
+
+    return cross

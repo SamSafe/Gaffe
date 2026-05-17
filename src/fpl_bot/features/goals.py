@@ -226,6 +226,161 @@ FEATURE_COLUMNS: list[str] = [
 ]
 
 
+def build_prediction_feature_table(
+    test_season: int,
+    upcoming_fixture_ids: list[int],
+) -> pl.DataFrame:
+    """Build goals/assists feature rows for UPCOMING fixtures (Phase 6 v2).
+
+    Each row matches the schema of `build_feature_table` but is for a fixture
+    that hasn't been played yet (`minutes` is null, labels null). Rolling
+    features come from the player's most recent played match (computed via
+    the existing `build_feature_table` then propagated forward).
+
+    Strategy:
+    1. Build the historical feature table for `test_season` (played fixtures).
+    2. Per-player, take their LATEST row's rolling features.
+    3. For each upcoming (fixture, eligible player) pair, emit a row with:
+       - rolling features from step 2
+       - fixture-specific fields (was_home, team_lambda_market_xg, etc.)
+         resolved from dim_fixture + market_xg + position snapshot
+       - labels (goals, assists) set to None
+    """
+    if not upcoming_fixture_ids:
+        return pl.DataFrame()
+
+    # 1. Load historical played-fixture feature table for the season
+    history = build_feature_table(season_ids=[test_season])
+
+    # 2. Per-player latest row (max kickoff_utc)
+    if history.is_empty():
+        per_player_rolling = pl.DataFrame()
+    else:
+        per_player_rolling = (
+            history.sort(["player_id", "kickoff_utc"])
+            .group_by("player_id", maintain_order=True)
+            .last()
+        )
+
+    # 3. Pull upcoming fixture metadata + eligible players (PIT-routed)
+    fixtures_df = pit.upcoming_fixtures(upcoming_fixture_ids)
+    players_df = pit.season_player_status_snapshot(test_season).rename(
+        {"team_id": "current_team_id"}
+    )
+
+    if fixtures_df.is_empty() or players_df.is_empty():
+        return pl.DataFrame()
+
+    # 4. Cross join: each player × each fixture, filtered to player's team
+    cross = fixtures_df.join(players_df, how="cross")
+    cross = cross.filter(
+        (pl.col("current_team_id") == pl.col("home_team_id"))
+        | (pl.col("current_team_id") == pl.col("away_team_id"))
+    )
+    cross = cross.with_columns(
+        (pl.col("current_team_id") == pl.col("home_team_id")).alias("was_home"),
+        pl.when(pl.col("current_team_id") == pl.col("home_team_id"))
+        .then(pl.col("home_team_id"))
+        .otherwise(pl.col("away_team_id"))
+        .alias("player_team_id"),
+        pl.when(pl.col("current_team_id") == pl.col("home_team_id"))
+        .then(pl.col("away_team_id"))
+        .otherwise(pl.col("home_team_id"))
+        .alias("opponent_team_id"),
+    )
+
+    # 5. Join market xG
+    market = pit.market_xg_for_fixtures()
+    if not market.is_empty():
+        team_market = market.select(
+            pl.col("fixture_id"),
+            pl.col("team_id").alias("player_team_id"),
+            pl.col("lambda_market_xg").alias("team_lambda_market_xg"),
+        )
+        opp_market = market.select(
+            pl.col("fixture_id"),
+            pl.col("team_id").alias("opponent_team_id"),
+            pl.col("lambda_market_xg").alias("opponent_lambda_market_xg"),
+        )
+        cross = cross.join(team_market, on=["fixture_id", "player_team_id"], how="left")
+        cross = cross.join(opp_market, on=["fixture_id", "opponent_team_id"], how="left")
+    else:
+        cross = cross.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("team_lambda_market_xg"),
+            pl.lit(None, dtype=pl.Float64).alias("opponent_lambda_market_xg"),
+        )
+    for c in ("team_lambda_market_xg", "opponent_lambda_market_xg"):
+        cross = cross.with_columns(pl.col(c).cast(pl.Float64))
+
+    # 6. Join rolling features from each player's last historical row.
+    #    Take ONLY the rolling-feature columns; bring in via player_id.
+    rolling_cols = [c for c in FEATURE_COLUMNS if "per_90" in c]
+    if not per_player_rolling.is_empty():
+        keep = ["player_id"] + [c for c in rolling_cols if c in per_player_rolling.columns]
+        rolling = per_player_rolling.select(keep)
+        cross = cross.join(rolling, on="player_id", how="left")
+    else:
+        for c in rolling_cols:
+            cross = cross.with_columns(pl.lit(0.0).alias(c))
+
+    # 7. PK taker flags + role mismatch
+    pk_takers_df = _resolved_pk_takers([test_season])
+    if not pk_takers_df.is_empty():
+        cross = cross.join(pk_takers_df, on=["season_id", "player_team_id"], how="left")
+        cross = cross.with_columns(
+            (pl.col("player_id") == pl.col("pk_taker_player_id"))
+            .fill_null(False)
+            .cast(pl.Int8)
+            .alias("is_penalty_taker")
+        ).drop("pk_taker_player_id")
+    else:
+        cross = cross.with_columns(pl.lit(0, dtype=pl.Int8).alias("is_penalty_taker"))
+
+    role_mismatch_pids = _resolved_role_mismatch_player_ids()
+    cross = cross.with_columns(
+        pl.col("player_id")
+        .is_in(list(role_mismatch_pids))
+        .cast(pl.Int8)
+        .alias("role_mismatch")
+    )
+
+    # 8. Position one-hot
+    for code in POSITION_CODES:
+        cross = cross.with_columns(
+            (pl.col("position_code") == code).cast(pl.Int8).alias(f"pos_{code}")
+        )
+
+    # 9. days_into_season + minutes_factor (default 1.0 = full 90 for prediction)
+    season_start = pit.season_start_kickoff(test_season)
+    if season_start is not None:
+        cross = cross.with_columns(
+            (
+                (pl.col("kickoff_utc").cast(pl.Datetime) - pl.lit(season_start).cast(pl.Datetime))
+                .dt.total_seconds()
+                / 86400.0
+            ).alias("days_into_season")
+        )
+    else:
+        cross = cross.with_columns(pl.lit(0.0).alias("days_into_season"))
+
+    cross = cross.with_columns(
+        pl.lit(1.0).alias("minutes_factor"),  # default-assume full-90 for prediction
+        pl.lit(None, dtype=pl.Int16).alias("goals"),
+        pl.lit(None, dtype=pl.Int16).alias("assists"),
+        pl.col("was_home").cast(pl.Int8),
+    )
+
+    # Fill any missing rolling features with 0 (e.g., promoted-team players
+    # with no prior PL match)
+    for c in rolling_cols:
+        if c in cross.columns:
+            cross = cross.with_columns(pl.col(c).fill_null(0.0))
+        else:
+            cross = cross.with_columns(pl.lit(0.0).alias(c))
+
+    return cross
+
+
 def _resolved_pk_takers(season_ids: list[int] | None) -> pl.DataFrame:
     """Materializes a (season_id, player_team_id, pk_taker_player_id) table from
     the manual config + dim_team / dim_player joins."""

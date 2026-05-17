@@ -21,7 +21,9 @@ import polars as pl
 from fpl_bot.db import pit
 from fpl_bot.db.event_source import EmpiricalResidualEventSource
 from fpl_bot.eval.bps_eval import (
+    _train_goals_or_assists_predict_only,
     _train_goals_or_assists_predictor,
+    _train_minutes_predict_only,
     _train_minutes_predictor,
 )
 from fpl_bot.features.bps import (
@@ -593,6 +595,221 @@ def run_fold_with_raw_samples(
     out_path = output_dir / f"season_{test_season}_train_{train_str}_n{n_iterations}.parquet"
     raw_df.write_parquet(out_path)
     return out_path
+
+
+def run_predict_only(
+    *,
+    test_season: int,
+    train_seasons: list[int],
+    upcoming_fixture_ids: list[int],
+    n_iterations: int = 200,
+    seed: int = 42,
+) -> pl.DataFrame:
+    """Phase 6 v2: produce per-(player, fixture) xPts predictions for the
+    specified UPCOMING fixtures.
+
+    Unlike `_run_one_fold` (a backtest function), this works for fixtures
+    that haven't been played yet. The output schema mirrors `eval_df` from
+    `_run_one_fold` but without `total_points` (no actuals exist).
+
+    Returns columns: player_id, fixture_id, e_xpts, p_xpts_ge_6,
+    e_xpts_naive, e_xpts_position, kickoff_utc.
+    """
+    if not upcoming_fixture_ids:
+        return pl.DataFrame()
+
+    minutes_pred = _train_minutes_predict_only(
+        train_seasons, test_season, upcoming_fixture_ids
+    )
+    goals_pred = _train_goals_or_assists_predict_only(
+        train_seasons, test_season, upcoming_fixture_ids, target="goals"
+    )
+    assists_pred = _train_goals_or_assists_predict_only(
+        train_seasons, test_season, upcoming_fixture_ids, target="assists"
+    )
+    if minutes_pred.is_empty() or goals_pred.is_empty():
+        return pl.DataFrame()
+
+    positions_df = pit.all_player_positions()
+    train_pm = pit.all_player_match_with_kickoff(season_ids=train_seasons)
+    residual_df = fit_residual_dataset(train_pm, positions_df)
+    event_source = EmpiricalResidualEventSource()
+    event_source.fit(residual_df)
+    train_pm_for_alphas = train_pm.join(
+        positions_df, on="player_id", how="left"
+    ).drop_nulls("position_code")
+    alphas = split_p_full_by_position(train_pm_for_alphas)
+
+    # assemble_fold_predictions uses pit.all_player_match_with_kickoff for
+    # test_season, which won't return rows for upcoming fixtures. So we
+    # need a Phase-6-specific assembler. Synthesize fixtures + per-player
+    # rows directly.
+    from sqlalchemy import func as sa_func
+    from sqlalchemy import select as sa_select
+
+    from fpl_bot.db.models import DimFixture, FactPlayerStatus
+    from fpl_bot.db.session import session_scope
+    from fpl_bot.features.bps import FoldPredictionInputs
+
+    with session_scope() as s:
+        fixture_rows = s.execute(
+            sa_select(
+                DimFixture.fixture_id, DimFixture.season_id, DimFixture.gameweek,
+                DimFixture.home_team_id, DimFixture.away_team_id,
+            ).where(DimFixture.fixture_id.in_(upcoming_fixture_ids))
+        ).all()
+        latest_ps = (
+            sa_select(
+                FactPlayerStatus.player_id,
+                sa_func.max(FactPlayerStatus.recorded_at).label("max_rec"),
+            )
+            .where(FactPlayerStatus.season_id == test_season)
+            .group_by(FactPlayerStatus.player_id)
+            .subquery("ps_latest")
+        )
+        ps_rows = s.execute(
+            sa_select(
+                FactPlayerStatus.player_id, FactPlayerStatus.team_id, FactPlayerStatus.position_code,
+            ).join(
+                latest_ps,
+                (latest_ps.c.player_id == FactPlayerStatus.player_id)
+                & (latest_ps.c.max_rec == FactPlayerStatus.recorded_at),
+            )
+        ).all()
+
+    fixtures_df = pl.DataFrame(
+        [
+            {
+                "fixture_id": int(r.fixture_id),
+                "season_id": int(r.season_id),
+                "gameweek": int(r.gameweek),
+                "home_team_id": int(r.home_team_id),
+                "away_team_id": int(r.away_team_id),
+            }
+            for r in fixture_rows
+        ]
+    )
+    # Market xG join
+    market = pit.market_xg_for_fixtures()
+    if not market.is_empty():
+        hm = market.select(
+            pl.col("fixture_id"),
+            pl.col("team_id").alias("home_team_id"),
+            pl.col("lambda_market_xg").cast(pl.Float64).alias("home_team_lambda"),
+            pl.col("cs_prob_market").cast(pl.Float64).alias("home_market_cs_prob"),
+        )
+        am = market.select(
+            pl.col("fixture_id"),
+            pl.col("team_id").alias("away_team_id"),
+            pl.col("lambda_market_xg").cast(pl.Float64).alias("away_team_lambda"),
+            pl.col("cs_prob_market").cast(pl.Float64).alias("away_market_cs_prob"),
+        )
+        fixtures_df = fixtures_df.join(hm, on=["fixture_id", "home_team_id"], how="left")
+        fixtures_df = fixtures_df.join(am, on=["fixture_id", "away_team_id"], how="left")
+    # Fill missing market_xg with sensible defaults
+    fixtures_df = fixtures_df.with_columns(
+        pl.col("home_team_lambda").fill_null(1.4),
+        pl.col("away_team_lambda").fill_null(1.2),
+        pl.col("home_market_cs_prob").fill_null(0.3),
+        pl.col("away_market_cs_prob").fill_null(0.25),
+    )
+
+    # Per-player rows: cross fixtures with players, filter by team membership
+    players_df = pl.DataFrame(
+        [
+            {
+                "player_id": int(r.player_id),
+                "current_team_id": int(r.team_id),
+                "position_code": r.position_code,
+            }
+            for r in ps_rows
+        ]
+    )
+    pm = fixtures_df.join(players_df, how="cross")
+    pm = pm.filter(
+        (pl.col("current_team_id") == pl.col("home_team_id"))
+        | (pl.col("current_team_id") == pl.col("away_team_id"))
+    )
+    pm = pm.with_columns(
+        (pl.col("current_team_id") == pl.col("home_team_id")).alias("is_home"),
+    )
+    pm = pm.join(minutes_pred, on=["player_id", "fixture_id"], how="left")
+    pm = pm.join(goals_pred, on=["player_id", "fixture_id"], how="left")
+    pm = pm.join(assists_pred, on=["player_id", "fixture_id"], how="left")
+    pm = pm.with_columns(
+        pl.col("p_minutes_zero").fill_null(0.5),
+        pl.col("p_minutes_short").fill_null(0.2),
+        pl.col("p_minutes_full").fill_null(0.3),
+        pl.col("lambda_goals_per_90").fill_null(0.05),
+        pl.col("lambda_assists_per_90").fill_null(0.05),
+    )
+    # Other fields required by the simulator
+    pm = pm.with_columns(
+        pl.lit(0.0).alias("saves_rate_per_90"),
+        pl.lit(0.0).alias("yc_rate_per_90"),
+        pl.lit(0.0).alias("rc_rate_per_90"),
+        pl.lit(False).alias("is_penalty_taker"),
+        pl.col("current_team_id").alias("team_id"),
+    )
+
+    prepared = FoldPredictionInputs(
+        fixtures=fixtures_df, player_predictions=pm, alphas_by_position=alphas
+    )
+
+    simulator = BPSSimulator(
+        event_source=event_source, n_iterations=n_iterations, seed=seed
+    )
+    sim_rows: list[pl.DataFrame] = []
+    for fix_inputs in fixture_inputs_iter(prepared):
+        df = simulator.simulate_fixture(fix_inputs)
+        if not df.is_empty():
+            df = df.with_columns(pl.lit(fix_inputs.fixture_id).alias("fixture_id"))
+            sim_rows.append(df)
+    if not sim_rows:
+        return pl.DataFrame()
+
+    simulator_predictions = pl.concat(sim_rows, how="vertical_relaxed")
+
+    # Attach kickoff_utc from dim_fixture so downstream callers can sort
+    with session_scope() as s:
+        kickoffs = {
+            r.fixture_id: r.kickoff_utc
+            for r in s.execute(
+                sa_select(DimFixture.fixture_id, DimFixture.kickoff_utc).where(
+                    DimFixture.fixture_id.in_(upcoming_fixture_ids)
+                )
+            ).all()
+        }
+    out = simulator_predictions.select("player_id", "fixture_id", "e_xpts", "p_xpts_ge_6")
+    out = out.with_columns(
+        # placeholders for the deterministic+naive baselines used downstream
+        pl.col("e_xpts").alias("e_xpts_naive"),
+        pl.col("e_xpts").alias("e_xpts_position"),
+        pl.lit(0).alias("total_points"),  # no actuals for upcoming GWs
+        pl.col("fixture_id")
+        .replace_strict(kickoffs, default=None)
+        .alias("kickoff_utc"),
+    )
+    # The cached `_run_one_fold` eval_df reads kickoff_utc through a
+    # Postgres TIMESTAMPTZ → polars Datetime that picks up the session's
+    # local TZ (typically America/Edmonton on dev). Normalize to UTC so
+    # downstream concats are TZ-consistent regardless of how the cache
+    # was written.
+    if "kickoff_utc" in out.columns:
+        col = out.schema["kickoff_utc"]
+        if isinstance(col, pl.Datetime) and col.time_zone is not None:
+            out = out.with_columns(pl.col("kickoff_utc").dt.convert_time_zone("UTC"))
+        else:
+            out = out.with_columns(
+                pl.col("kickoff_utc").cast(pl.Datetime("us")).dt.replace_time_zone("UTC")
+            )
+    # Match the column order of `_run_one_fold`'s eval_df for downstream
+    # concat compatibility (polars `concat` aligns by position by default;
+    # caller uses `how="diagonal_relaxed"` to align by name as belt-and-suspenders).
+    return out.select(
+        "player_id", "fixture_id", "e_xpts", "p_xpts_ge_6",
+        "e_xpts_naive", "e_xpts_position", "total_points", "kickoff_utc",
+    )
 
 
 def format_results(results: list[XPtsFoldResult]) -> str:

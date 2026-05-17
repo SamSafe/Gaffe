@@ -25,8 +25,14 @@ from fpl_bot.features.bps import (
 from fpl_bot.features.goals import (
     build_feature_table as build_goals_feature_table,
 )
+from fpl_bot.features.goals import (
+    build_prediction_feature_table as build_goals_prediction_table,
+)
 from fpl_bot.features.minutes import (
     build_feature_table as build_minutes_feature_table,
+)
+from fpl_bot.features.minutes import (
+    build_prediction_feature_table as build_minutes_prediction_table,
 )
 from fpl_bot.models.bps import (
     BPSSimulator,
@@ -127,6 +133,63 @@ def _train_goals_or_assists_predictor(
     rate = model.predict_per_90(test)
     out_col = f"lambda_{target}_per_90"
     return test.select("player_id", "fixture_id").with_columns(
+        pl.Series(out_col, rate)
+    )
+
+
+# ─── Phase 6 v2: predict-only variants ────────────────────────────────────
+
+
+def _train_minutes_predict_only(
+    train_seasons: list[int],
+    test_season: int,
+    upcoming_fixture_ids: list[int],
+) -> pl.DataFrame:
+    """Train minutes model on train_seasons, predict on upcoming fixtures.
+
+    Unlike _train_minutes_predictor, the test set is synthesized from
+    upcoming-fixture metadata (no played-fixture data needed).
+    """
+    train_df = build_minutes_feature_table(season_ids=train_seasons)
+    train_df = train_df.filter(pl.col("min_last_1").is_not_null()).filter(
+        pl.col("minutes_bucket").is_not_null()
+    )
+    test_df = build_minutes_prediction_table(
+        test_season=test_season, upcoming_fixture_ids=upcoming_fixture_ids
+    )
+    if train_df.is_empty() or test_df.is_empty():
+        return pl.DataFrame()
+    model = train_minutes_model(train_df, valid=train_df)
+    probs = model.predict_proba(test_df)
+    return test_df.select("player_id", "fixture_id").with_columns(
+        pl.Series("p_minutes_zero", probs[:, 0]),
+        pl.Series("p_minutes_short", probs[:, 1]),
+        pl.Series("p_minutes_full", probs[:, 2]),
+    )
+
+
+def _train_goals_or_assists_predict_only(
+    train_seasons: list[int],
+    test_season: int,
+    upcoming_fixture_ids: list[int],
+    *,
+    target: str,
+) -> pl.DataFrame:
+    """Train goals/assists model on train_seasons, predict on upcoming fixtures."""
+    train_df = build_goals_feature_table(season_ids=train_seasons)
+    label_col = GOALS_LABEL_COLUMNS[target]
+    train_df = train_df.filter(pl.col(label_col).is_not_null()).filter(
+        pl.col("minutes_factor").is_not_null()
+    )
+    test_df = build_goals_prediction_table(
+        test_season=test_season, upcoming_fixture_ids=upcoming_fixture_ids
+    )
+    if train_df.is_empty() or test_df.is_empty():
+        return pl.DataFrame()
+    model = train_per_90_model(train_df, target=target, valid=train_df, weighted=True)
+    rate = model.predict_per_90(test_df)
+    out_col = f"lambda_{target}_per_90"
+    return test_df.select("player_id", "fixture_id").with_columns(
         pl.Series(out_col, rate)
     )
 

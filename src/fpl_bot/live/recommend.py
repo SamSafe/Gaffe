@@ -24,7 +24,7 @@ from fpl_bot.eval.milp_backtest import (
     _resolve_price_at_gw,
     _team_id_per_player_for_season,
 )
-from fpl_bot.eval.xpts_eval import _run_one_fold
+from fpl_bot.eval.xpts_eval import _run_one_fold, run_predict_only
 from fpl_bot.live.state_builder import (
     LiveStatusOverrides,
     load_status_overrides,
@@ -86,24 +86,83 @@ def generate_recommendation(
 
     Returns (markdown_path, json_path).
     """
-    # 1. Load or generate per-(player, gw) predictions for the test season
+    # 1. Load or generate predictions. Try the backtest cache first (played
+    #    GWs only); if the target gameweek isn't there, fall back to the
+    #    Phase 6 v2 predict-only path which synthesizes feature rows for
+    #    upcoming fixtures.
     cache_path = cache_dir / (
         f"season_{season_id}_train_{'_'.join(str(s) for s in train_seasons)}.parquet"
     )
+    eval_df: pl.DataFrame | None = None
     if cache_predictions and cache_path.exists():
         eval_df = pl.read_parquet(cache_path)
-    else:
+        # If the cache covers the target gameweek, we're done. Otherwise
+        # we'll extend with predict-only rows below.
+
+    if eval_df is None or eval_df.is_empty():
         result = _run_one_fold(
             train_seasons, season_id, n_iterations=n_iterations, seed=42
         )
-        if result is None:
-            raise RuntimeError(f"Could not generate predictions for season {season_id}")
-        _, eval_df, _ = result
-        if cache_predictions:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            eval_df.write_parquet(cache_path)
+        if result is not None:
+            _, eval_df, _ = result
+            if cache_predictions and eval_df is not None and not eval_df.is_empty():
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                eval_df.write_parquet(cache_path)
 
-    pred_by_pgw = _per_player_per_gw_predictions(eval_df)
+    pred_by_pgw: dict[tuple[int, int], float] = {}
+    if eval_df is not None and not eval_df.is_empty():
+        pred_by_pgw = _per_player_per_gw_predictions(eval_df)
+
+    cached_gws = sorted({gw for (_, gw) in pred_by_pgw if gw > 0})
+    target_horizon_gws = list(range(gameweek, gameweek + horizon))
+    missing_gws = [w for w in target_horizon_gws if w not in cached_gws]
+
+    if missing_gws:
+        # Phase 6 v2: predict-only for upcoming fixtures
+        from sqlalchemy import select as sa_select
+
+        from fpl_bot.db.models import DimFixture
+        from fpl_bot.db.session import session_scope
+        with session_scope() as s:
+            upcoming_ids = [
+                int(r[0])
+                for r in s.execute(
+                    sa_select(DimFixture.fixture_id).where(
+                        (DimFixture.season_id == season_id)
+                        & (DimFixture.gameweek.in_(missing_gws))
+                    )
+                ).all()
+            ]
+        if upcoming_ids:
+            predict_df = run_predict_only(
+                test_season=season_id,
+                train_seasons=train_seasons,
+                upcoming_fixture_ids=upcoming_ids,
+                n_iterations=n_iterations,
+                seed=42,
+            )
+            if not predict_df.is_empty():
+                if eval_df is None or eval_df.is_empty():
+                    eval_df = predict_df
+                else:
+                    # Normalize kickoff_utc TZ so both paths concat cleanly
+                    # (cache typically has session-TZ Datetime; predict_df
+                    # is UTC). Push both to UTC.
+                    if "kickoff_utc" in eval_df.columns:
+                        col = eval_df.schema["kickoff_utc"]
+                        if isinstance(col, pl.Datetime) and col.time_zone is not None:
+                            eval_df = eval_df.with_columns(
+                                pl.col("kickoff_utc").dt.convert_time_zone("UTC")
+                            )
+                    eval_df = pl.concat(
+                        [eval_df, predict_df], how="diagonal_relaxed"
+                    )
+                # Refresh pred_by_pgw with combined data
+                pred_by_pgw = _per_player_per_gw_predictions(eval_df)
+
+    if not pred_by_pgw:
+        raise RuntimeError(f"Could not generate predictions for season {season_id}")
+
     all_gws = sorted({gw for (_, gw) in pred_by_pgw if gw > 0})
     all_players = sorted({pid for (pid, _) in pred_by_pgw})
 
