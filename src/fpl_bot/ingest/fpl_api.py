@@ -28,6 +28,7 @@ from fpl_bot.db.models import (
     DimPlayerSeasonXref,
     DimTeam,
     FactPlayerStatus,
+    FactUserTeamSnapshot,
 )
 from fpl_bot.db.session import session_scope
 from fpl_bot.ingest.audit import audit_fetch
@@ -218,3 +219,106 @@ def latest_raw_for_today(endpoint: str) -> Path | None:
     today_dir = _today_dir("fpl_api")
     p = today_dir / f"{endpoint}.json"
     return p if p.exists() else None
+
+
+def fetch_my_team(team_id: int, gameweek: int) -> Path:
+    """Phase 6: pull the user's team state for one GW.
+
+    Endpoint: `entry/{team_id}/event/{gameweek}/picks/`
+    Returns dict with per-pick `element` (FPL element_id), `position`,
+    `is_captain`, `is_vice_captain`, `multiplier`, and an `entry_history`
+    block with `bank` / `event_transfers` / ... and `picks` array.
+
+    For the CURRENT GW (deadline not yet passed), use `my-team/{team_id}/`
+    instead — but that requires an authenticated session. v1 uses the
+    public picks endpoint for the last finished GW + we evolve state
+    locally. Trade-off documented in design §2.1.
+    """
+    url = f"{FPL_BASE}/entry/{team_id}/event/{gameweek}/picks/"
+    raw_path = _today_dir("fpl_api") / f"my_team_{team_id}_gw_{gameweek}.json"
+    with audit_fetch(source="fpl_api", url=url, user_agent=settings.user_agent) as audit:
+        with httpx.Client(
+            headers={"User-Agent": settings.user_agent},
+            timeout=settings.request_timeout_seconds,
+        ) as client:
+            r = client.get(url)
+            audit.response_code = r.status_code
+            r.raise_for_status()
+            payload = r.content
+        audit.byte_size = len(payload)
+        audit.content_hash = sha256(payload).hexdigest()
+        audit.raw_path = str(raw_path)
+        raw_path.write_bytes(payload)
+    return raw_path
+
+
+def parse_my_team(
+    raw_path: Path,
+    season_id: int,
+    gameweek: int,
+    team_id: int,
+) -> int:
+    """Parse a my-team payload into fact_user_team_snapshot rows.
+
+    Resolves per-season FPL element_id → stable player_id via
+    `dim_player_season_xref`. Selling/purchase prices come from the
+    `picks` array (FPL exposes both in the my-team auth endpoint; the
+    public picks endpoint only has current price). For v1 we treat
+    `selling_price` = `purchase_price` = current price (consistent
+    with our static-price MILP simplification from Phase 3 v1.0); a
+    later v2 can pull these from the authenticated my-team endpoint.
+
+    Returns the count of rows inserted.
+    """
+    payload = json.loads(raw_path.read_text())
+    picks = payload.get("picks", [])
+    entry_history = payload.get("entry_history", {})
+    active_chip = payload.get("active_chip")
+    chips_used: list[str] = [active_chip] if active_chip else []
+    bank_tenths = entry_history.get("bank", 0)
+    free_transfers = entry_history.get("event_transfers", 0)  # approximate; FPL exposes only transfers used
+
+    with session_scope() as s:
+        # Resolve element_id → stable player_id
+        xref_rows = s.execute(
+            DimPlayerSeasonXref.__table__.select().where(
+                DimPlayerSeasonXref.season_id == season_id
+            )
+        ).all()
+    element_to_pid = {r.fpl_element_id: r.player_id for r in xref_rows}
+
+    n = 0
+    with session_scope() as s:
+        for pick in picks:
+            element_id = pick["element"]
+            player_id = element_to_pid.get(element_id)
+            if player_id is None:
+                continue  # promoted player not in xref yet; skip
+            # Get current price from latest fact_player_status snapshot
+            stmt = (
+                FactPlayerStatus.__table__.select()
+                .where(FactPlayerStatus.player_id == player_id)
+                .order_by(FactPlayerStatus.recorded_at.desc())
+                .limit(1)
+            )
+            row = s.execute(stmt).first()
+            price_tenths = int(row.price_tenths) if row is not None else 50
+
+            ins = pg_insert(FactUserTeamSnapshot).values(
+                season_id=season_id,
+                gameweek=gameweek,
+                team_id=team_id,
+                player_id=player_id,
+                purchase_price_tenths=price_tenths,
+                selling_price_tenths=price_tenths,
+                multiplier=int(pick.get("multiplier", 1)),
+                is_captain=bool(pick.get("is_captain", False)),
+                is_vice=bool(pick.get("is_vice_captain", False)),
+                position=int(pick.get("position", 0)),
+                bank_tenths=int(bank_tenths),
+                free_transfers=int(free_transfers),
+                chips_used_json=json.dumps(chips_used),
+            )
+            s.execute(ins)
+            n += 1
+    return n

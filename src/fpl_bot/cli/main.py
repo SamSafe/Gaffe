@@ -168,6 +168,73 @@ def pit_player_status(
         console.print(f"  {k}: {v}")
 
 
+live_app = typer.Typer(help="Phase 6 live-run commands (ingest + recommend).")
+app.add_typer(live_app, name="live")
+
+
+@live_app.command("ingest")
+def live_ingest(
+    team_id: Annotated[int, typer.Option("--team-id", envvar="FPL_TEAM_ID")],
+    gameweek: Annotated[int, typer.Option("--gameweek")],
+    season_id: Annotated[int, typer.Option("--season-id")] = 25,
+) -> None:
+    """Pull bootstrap-static + fixtures + my-team for the user's live state."""
+    from fpl_bot.ingest import fpl_api
+
+    console.print("[blue]bootstrap-static[/blue]")
+    bs_raw = fpl_api.fetch_raw_fpl_api("bootstrap-static")
+    bs_counts = fpl_api.parse_raw_fpl_api("bootstrap-static", bs_raw, season_id=season_id)
+    for k, v in bs_counts.items():
+        console.print(f"  {k}: {v}")
+
+    console.print("[blue]fixtures[/blue]")
+    fx_raw = fpl_api.fetch_raw_fpl_api("fixtures")
+    fx_counts = fpl_api.parse_raw_fpl_api("fixtures", fx_raw, season_id=season_id)
+    for k, v in fx_counts.items():
+        console.print(f"  {k}: {v}")
+
+    console.print(f"[blue]my-team team_id={team_id} gw={gameweek}[/blue]")
+    mt_raw = fpl_api.fetch_my_team(team_id=team_id, gameweek=gameweek)
+    n = fpl_api.parse_my_team(
+        mt_raw, season_id=season_id, gameweek=gameweek, team_id=team_id
+    )
+    console.print(f"  fact_user_team_snapshot: {n}")
+
+
+@live_app.command("recommend")
+def live_recommend(
+    team_id: Annotated[int, typer.Option("--team-id", envvar="FPL_TEAM_ID")],
+    gameweek: Annotated[int, typer.Option("--gameweek")],
+    season_id: Annotated[int, typer.Option("--season-id")] = 25,
+    train_seasons: Annotated[
+        str, typer.Option("--train-seasons", help="comma-separated")
+    ] = "19,20,21,22,23,24",
+) -> None:
+    """Run Phase 5 stack + status overrides; emit markdown + JSON recommendation."""
+    from fpl_bot.live.recommend import generate_recommendation
+
+    ts = [int(s) for s in train_seasons.split(",") if s.strip()]
+    md_path, json_path = generate_recommendation(
+        season_id=season_id, gameweek=gameweek, team_id=team_id, train_seasons=ts
+    )
+    console.print(f"[green]wrote {md_path}[/green]")
+    console.print(f"[green]wrote {json_path}[/green]")
+
+
+@live_app.command("retrospective")
+def live_retrospective(
+    team_id: Annotated[int, typer.Option("--team-id", envvar="FPL_TEAM_ID")],
+    gameweek: Annotated[int, typer.Option("--gameweek")],
+    season_id: Annotated[int, typer.Option("--season-id")] = 25,
+) -> None:
+    """Post-GW: pull actuals (assumes bootstrap-static re-ingest after GW close),
+    apply auto-sub scorer to the prior recommendation, write actuals.json."""
+    from fpl_bot.live.retrospective import compute_retrospective
+
+    p = compute_retrospective(season_id=season_id, gameweek=gameweek, team_id=team_id)
+    console.print(f"[green]wrote {p}[/green]")
+
+
 @app.command("leakage-check")
 def leakage_check() -> None:
     """Run the leakage test suite (currently: static-import audit)."""

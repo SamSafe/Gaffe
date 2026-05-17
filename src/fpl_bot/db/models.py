@@ -133,6 +133,34 @@ class FactMatchResult(Base):
     finished: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
+class FactUserTeamSnapshot(Base):
+    """Phase 6: live snapshot of the user's FPL team state pre-deadline.
+
+    One row per (season_id, gameweek, team_id, player_id) per pull. Bank /
+    free_transfers / chips_used are repeated on every per-player row of the
+    same pull (denormalized for query simplicity). bitemporal via
+    recorded_at.
+    """
+
+    __tablename__ = "fact_user_team_snapshot"
+    season_id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    gameweek: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    team_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    player_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    recorded_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), primary_key=True, server_default=func.now()
+    )
+    purchase_price_tenths: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    selling_price_tenths: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    multiplier: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    is_captain: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_vice: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    position: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # 1-15 in user's bench-order
+    bank_tenths: Mapped[int] = mapped_column(Integer, nullable=False)
+    free_transfers: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    chips_used_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+
+
 class FactPlayerMatch(Base):
     __tablename__ = "fact_player_match"
     player_id: Mapped[int] = mapped_column(Integer, primary_key=True)
