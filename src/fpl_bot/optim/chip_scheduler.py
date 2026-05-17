@@ -195,14 +195,13 @@ def make_chip_schedule(
     def _pick_bb_in_half(half_gws: list[int]) -> int | None:
         bb = _best_bb_gw(analytics, half_gws, used)
         if bb is None:
-            per_gw_total = (
-                predictions_df.filter(pl.col("gameweek").is_in(half_gws))
-                .filter(~pl.col("gameweek").is_in(list(used)))
-                .group_by("gameweek")
-                .agg(pl.col("e_xpts").sum().alias("total"))
-                .sort("total", descending=True)
-            )
-            bb = int(per_gw_total[0, "gameweek"]) if not per_gw_total.is_empty() else None
+            # No DGW in this half. The joint xPts prior biases early-season GWs
+            # (no rolling features → position defaults inflate GW1 totals), and
+            # playing BB at a cold-start GW locks in £-on-bench instead of XI.
+            # Prefer the LATEST non-colliding GW — the squad has had time to be
+            # transfer-tuned for bench depth.
+            candidates = [g for g in half_gws if g not in used]
+            bb = max(candidates) if candidates else None
         return bb
 
     # FH first (highest priority — most timing-sensitive)
