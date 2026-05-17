@@ -21,27 +21,40 @@ Status: **v0.1 scaffolding shipped; full walk-forward blocked on HiGHS stability
 
 |S|=10 chips-on is comparable to Phase 3 deterministic. Single-solve correctness verified.
 
-**v0.2 update** (post solver-swap): swapped `solve_milp` from Pyomo's `appsi_highs` wrapper to a **subprocess-per-solve** worker (`optim/_highspy_worker.py`) using `highspy` directly via LP-file roundtrip. Each MILP gets a fresh OS heap, eliminating cross-solve state accumulation. Added 3-attempt retry with perturbed MIP gaps for the remaining HiGHS-internal SIGABRTs on specific MILPs (different B&B paths usually side-step the bug).
+**v1.0 update** (CBC swap, ships): replaced HiGHS entirely with CBC via subprocess. CBC is bundled with `pulp` (`pulp.PULP_CBC_CMD().path` resolves the binary). On Phase 5 deterministic + chip-DP fold 24, CBC mean solve = 1.3s vs HiGHS ~3.5s — **2.5× faster**. Crucially, CBC handles SAA at |S|=25 without crashes (HiGHS 1.14.0 SIGABRT'd at |S|≥10 regardless of subprocess isolation). The earlier `_highspy_worker.py` is removed.
 
-**Full SAA walk-forward at |S|=3** (the largest reliable scenario count — HiGHS 1.14.0 still SIGABRTs at |S| ≥ 10 even with subprocess isolation; the bug is in HiGHS itself, not state):
+**v0.2 attempt** (kept for history): switched from Pyomo `appsi_highs` to `highspy` direct via LP-file roundtrip with subprocess-per-solve isolation. Still SIGABRTed on specific MILPs — confirming the bug is in HiGHS itself, not the wrapper. Superseded by CBC swap above.
 
-| Season | SAA |S|=3 | Δ template | Phase 3 (auto-sub) | Δ SAA−P3 | Hits |
-|---|---:|---:|---:|---:|---:|
-| 21/22 | 2359 | +881 | ~2580 | −221 | 5 |
-| 22/23 | 2104 | −28 | ~2390 | −286 | 2 |
-| 23/24 | 2392 | +515 | ~2510 | −118 | 4 |
-| 24/25 | 2258 | +699 | 2558 | −300 | 2 |
+**v1.0 SAA walk-forward at |S|=25 + chip-DP + CBC** (the production-scale Phase 4 test, unblocked by the CBC swap):
 
-**All 4 folds PASS validity** (structural correctness verified end-to-end). Mean solve ~10s/GW.
+| Fold | SAA |S|=25 | Phase 5 v1 det. | Δ |
+|---|---:|---:|---:|
+| 21/22 | 2428 | 2555 | **−127** |
+| 22/23 | 2370 | 2402 | **−32** |
+| 23/24 | 2353 | 2491 | **−138** |
+| 24/25 | 2428 | 2584 | **−156** |
 
-**Result**: SAA at |S|=3 is worse than Phase 3 deterministic by 100-300 pts/fold. The captain-hedging value-add (Jensen-inequality bite) needs |S| ≥ 10-50 for real lift; HiGHS 1.14.0 crashes at that scale.
+All 5 validity gates pass on all 4 folds. Mean solve 7-11s/GW.
 
-Notable behavioral signal: SAA exercises 2-5 hits/season where Phase 3 took 0. The optimizer is making genuinely different decisions; at |S|=3 they're high-variance and tend to lose money, but the architectural correctness is established.
+**Honest result**: SAA |S|=25 is **−113 pts/fold WORSE** than deterministic. More scenarios did help vs |S|=3 (avg +116/fold improvement) — Jensen's inequality bites correctly — but the **deterministic argmax of `E[xPts]` already captures most of the captain-decision value**. The scenario-conditional second-stage (captain only at w≥2) doesn't deliver enough additional optimization power to overcome SAA's noise.
 
-**True path forward** (unchanged from v0.1):
-1. **Upgrade HiGHS** when a bugfix lands for the SIGABRT trigger (file an issue against HiGHS 1.14.0 with our LP file; this is community-fixable upstream).
-2. **Swap to Gurobi** (commercial; free academic license available) or **CBC** (open-source; slower but well-tested) and re-run at |S|=25-50.
-3. Either path requires only swapping the worker binary; the SAA scaffolding is solver-agnostic.
+Earlier |S|=3 baseline (HiGHS-blocked context):
+
+| Fold | SAA |S|=3 | SAA |S|=25 | Δ (more scenarios) |
+|---|---:|---:|---:|
+| 21/22 | 2359 | 2428 | +69 |
+| 22/23 | 2104 | 2370 | +266 |
+| 23/24 | 2392 | 2353 | −39 |
+| 24/25 | 2258 | 2428 | +170 |
+
+Phase 4 v1.0 SAA does not ship as production default. **CBC swap stays** (real improvement: 2.5× faster + bulletproof stability). SAA scaffolding stays on disk for future v2 (scenario-conditional XI for w≥2, true mean-variance objective, or chance-constrained Stage B).
+
+**Why scenario-conditional captain alone underperforms**:
+1. Captain choice is **dominated** by 1-2 obvious picks per GW (high mean + high variance). The MILP's deterministic E[xPts] argmax already picks these — there's no untapped optionality at the captain level.
+2. The constraint `c[p,w,s] ≤ y[p,w]` requires the captain to be in the **first-stage XI**. Without scenario-conditional XI (too expensive in MILP size), captain-only flexibility is bounded.
+3. SAA introduces objective noise proportional to 1/√|S|. At |S|=25 noise ≈ 20% of one scenario's range, which can swamp the modest captain-hedging gain.
+
+**Path forward (post-v1.0)**: a TRUE Phase 4 win needs either (a) scenario-conditional XI for w≥2 (10× MILP size growth — challenging even with CBC), or (b) a non-linear aggregation (CVaR, threshold chance-constraint) — explicitly excluded by round-1 review. Mark Phase 4 v1 as **scaffolding shipped, no production gain**.
 
 Replace the deterministic E[xPts] objective in the Phase 3 MILP with a sample-average approximation (SAA) over scenarios drawn from the Phase 2.5 joint-xPts simulator. This is the architectural pivot called out in Phase 0 §5: same MILP structure, but the objective becomes an average over |S| scenarios, and decisions can be split into first-stage (current GW, non-anticipative) and second-stage (future GWs, optionally scenario-conditional).
 

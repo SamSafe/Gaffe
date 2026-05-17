@@ -660,35 +660,36 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
     return m
 
 
+def _cbc_binary_path() -> str:
+    """Resolve the CBC binary bundled with `pulp` (added to deps for Phase 4
+    solver swap). Caching one-off; cheap to look up each call."""
+    import pulp
+    return pulp.PULP_CBC_CMD().path
+
+
 def solve_milp(
     model: ConcreteModel,
     *,
     time_limit_s: int = 120,
     mip_rel_gap: float = 0.01,
 ) -> dict:
-    """Solve the MILP via `highspy` in a subprocess. Returns metadata.
+    """Solve the MILP via CBC (subprocess on LP file). Returns metadata.
 
-    Accepts feasible-but-not-optimal solutions (we still load the incumbent
-    into the Pyomo model). Only fails if no feasible solution was found.
+    Accepts feasible-but-not-optimal solutions (we load the incumbent into
+    the Pyomo model). Only fails if no feasible solution was found.
 
-    `mip_rel_gap` (default 1%): HiGHS stops as soon as it has an incumbent
-    within this relative gap of the LP relaxation upper bound. Well below
-    our prediction noise.
-
-    **Why subprocess-per-solve**: Phase 3 v1.4 documented that `appsi_highs`
-    accumulates C++ HiGHS instance state across solves in one Python
-    process, eventually SIGABRTing. Switching to `highspy` direct (via LP
-    file roundtrip) hit the same class of issue (`malloc() / free()` heap
-    corruption after many solves) — confirming the bug is in HiGHS itself
-    at v1.14.0, not the Pyomo wrapper. Subprocess isolation per solve gives
-    each MILP a fresh OS heap; ~0.5-1s subprocess overhead per solve vs
-    ~10s typical solve time is acceptable.
+    **Why CBC and not HiGHS**: Phase 4 SAA at |S|=10+ triggered HiGHS
+    SIGABRTs / heap corruption (documented across v1.4 / Phase 4 v0.2).
+    The bug is inside the HiGHS C++ library at v1.14.0, not the wrapper.
+    Gurobi's free license caps at 2000 vars (our SAA models are ~20k+).
+    CBC is a decades-stable open-source solver, bundled with PuLP, and
+    invoked via subprocess so any internal state is fully isolated per
+    solve. Slower than HiGHS optimal but rock-solid.
     """
     import contextlib
-    import json
     import os
+    import re
     import subprocess
-    import sys
     import tempfile
 
     from pyomo.repn.plugins.lp_writer import LPWriter
@@ -701,68 +702,89 @@ def solve_milp(
         write_info = writer.write(model, f, symbolic_solver_labels=True)
     sm = write_info.symbol_map
 
-    with tempfile.NamedTemporaryFile(
-        suffix=".json", delete=False, mode="w"
-    ) as f:
-        out_json_path = f.name
+    sol_path = lp_path + ".sol"
 
     try:
-        # Subprocess timeout: solver time_limit + 30s buffer for I/O.
-        proc_timeout = float(time_limit_s) + 30.0
-        # Retry policy: if HiGHS 1.14.0 SIGABRTs (rc=-6) on a specific MILP
-        # — known bug on larger MILPs, esp. Phase 4 SAA — retry up to 2
-        # times with perturbed MIP gaps. The internal heuristic search
-        # explores different paths and usually side-steps the bug.
-        gap_perturbations = [mip_rel_gap, 0.005, 0.02]
-        result = None
-        for attempt_gap in gap_perturbations:
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "fpl_bot.optim._highspy_worker",
-                    lp_path,
-                    out_json_path,
-                    "--time-limit",
-                    str(time_limit_s),
-                    "--mip-rel-gap",
-                    str(attempt_gap),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=proc_timeout,
-            )
-            if result.returncode == 0:
-                break
-            # rc=-6 == SIGABRT (HiGHS internal crash); try another gap.
-            if result.returncode != -6:
-                break
-        if result.returncode != 0:
+        cbc_path = _cbc_binary_path()
+        # CBC CLI: timeLimit + ratio (gap), solve, write solution.
+        cmd = [
+            cbc_path,
+            lp_path,
+            "seconds",
+            str(time_limit_s),
+            "ratio",
+            str(mip_rel_gap),
+            "solve",
+            "solu",
+            sol_path,
+            "quit",
+        ]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=float(time_limit_s) + 30.0,
+        )
+        if result.returncode != 0 or not os.path.exists(sol_path):
             return {
                 "status": "no_feasible_solution",
-                "termination": f"worker_rc={result.returncode}",
+                "termination": f"cbc_rc={result.returncode}",
                 "objective": None,
             }
 
-        with open(out_json_path) as f:
-            out = json.load(f)
-        if out["status"] != "ok":
-            return out
+        # Parse CBC solution format:
+        #   Header line: "Optimal - objective value 30.0"
+        #               or "Stopped on time - objective value ..."
+        #               or "Infeasible"
+        # Then: each var on its own line: "<idx> <name> <value> <reduced_cost>"
+        with open(sol_path) as f:
+            lines = f.read().splitlines()
+        if not lines:
+            return {
+                "status": "no_feasible_solution",
+                "termination": "empty_sol_file",
+                "objective": None,
+            }
+        header = lines[0]
+        m_obj = re.search(r"objective value (-?\d+\.?\d*)", header)
+        objective = float(m_obj.group(1)) if m_obj else None
+        if "Infeasible" in header or "Unbounded" in header or objective is None:
+            return {
+                "status": "no_feasible_solution",
+                "termination": header.split(" -")[0].strip(),
+                "objective": None,
+            }
+        is_optimal = "Optimal" in header
+        termination = "optimal" if is_optimal else "feasible"
 
-        # Map highspy column values back to Pyomo Vars via symbol_map.
-        # HiGHS returns LP-solve numerics (e.g. 0.9999999999 for a binary
-        # 1, 1e-14 for a binary 0). Round to the var's domain so Pyomo
-        # doesn't W1001-warn and downstream `value > 0.5`-style threshold
-        # checks behave as expected.
+        # Parse col values (each line: "<idx> <name> <value> <rc>")
+        col_values: dict[str, float] = {}
+        for line in lines[1:]:
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            try:
+                _ = int(parts[0])
+            except ValueError:
+                continue
+            name = parts[1]
+            try:
+                val = float(parts[2])
+            except ValueError:
+                continue
+            col_values[name] = val
+
+        # Map CBC column values back to Pyomo Vars via symbol_map. CBC may
+        # return LP-solve numerics (e.g. 0.9999... for a binary 1); round
+        # to the var's domain so Pyomo doesn't W1001-warn and downstream
+        # `value > 0.5`-style threshold checks behave as expected. CBC
+        # omits vars with value 0 from the solution file, so default to 0.
         from pyomo.core.base.var import VarData
         from pyomo.environ import Binary, NonNegativeIntegers
-        col_values = out["col_values"]
         for sym_name, obj_ref in sm.bySymbol.items():
             if not isinstance(obj_ref, VarData):
                 continue
-            if sym_name not in col_values:
-                continue
-            raw = col_values[sym_name]
+            raw = col_values.get(sym_name, 0.0)
             dom = obj_ref.domain
             if dom is Binary:
                 obj_ref.value = 1 if raw > 0.5 else 0
@@ -773,8 +795,8 @@ def solve_milp(
 
         return {
             "status": "ok",
-            "termination": out["termination"],
-            "objective": out["objective"],
+            "termination": termination,
+            "objective": objective,
         }
     except subprocess.TimeoutExpired:
         return {
@@ -786,7 +808,7 @@ def solve_milp(
         with contextlib.suppress(OSError):
             os.unlink(lp_path)
         with contextlib.suppress(OSError):
-            os.unlink(out_json_path)
+            os.unlink(sol_path)
 
 
 def extract_decisions(
