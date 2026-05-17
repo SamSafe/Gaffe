@@ -54,7 +54,19 @@ Phase 4 v1.0 SAA does not ship as production default. **CBC swap stays** (real i
 2. The constraint `c[p,w,s] ≤ y[p,w]` requires the captain to be in the **first-stage XI**. Without scenario-conditional XI (too expensive in MILP size), captain-only flexibility is bounded.
 3. SAA introduces objective noise proportional to 1/√|S|. At |S|=25 noise ≈ 20% of one scenario's range, which can swamp the modest captain-hedging gain.
 
-**Path forward (post-v1.0)**: a TRUE Phase 4 win needs either (a) scenario-conditional XI for w≥2 (10× MILP size growth — challenging even with CBC), or (b) a non-linear aggregation (CVaR, threshold chance-constraint) — explicitly excluded by round-1 review. Mark Phase 4 v1 as **scaffolding shipped, no production gain**.
+**Path forward (post-v1.0)**: a TRUE Phase 4 win needs either (a) scenario-conditional XI for w≥2, or (b) a non-linear aggregation (CVaR, threshold chance-constraint) — excluded by round-1 review.
+
+**v2 attempt (scenario-conditional XI for w≥2 + captain)**: tested on fold 24 with CBC at |S|=25 + chip-DP. Implemented per phase4 §2.3-2.5 design: `y_s[p,w,s]` and `c_s[p,w,s]` for w≥2, with full XI shape constraints per (w,s); non-anticipativity for w=1; BB bonus uses scenario-conditional XI. Result:
+
+| | total pts | mean solve | wall |
+|---|---:|---:|---:|
+| Deterministic + chip-DP | **2584** | 1.3s | 49s |
+| SAA v1 (capt-only) \|S\|=25 | 2428 | 7.3s | ~5min |
+| SAA v2 (XI+capt) \|S\|=25 | **2428** | 48.3s | 31min |
+
+**v2 gives the same total points as v1 but is 7× slower**. The MILP's optimal squad/XI/captain doesn't change when given XI scenario-flexibility. Why: the deterministic argmax of E[xPts] already finds the "obvious" XI, and the chip-DP fixes WC/FH/BB/TC slots → there's effectively no untapped within-week flexibility for SAA to exploit. The constraint `y_s[p,w,s] ≤ x[p,w]` (XI ⊆ first-stage squad) means the XI per scenario can only re-permute already-bought players, which the deterministic mean-based pick has already optimized to.
+
+**Both v1 and v2 are reverted from production.** Phase 4 SAA scaffolding stays on disk; the only meaningful follow-up is option (b) — a non-linear aggregation like CVaR — which round-1 explicitly excluded. Marking Phase 4 v1.0 as **architecturally complete, no production gain available at this scope**.
 
 Replace the deterministic E[xPts] objective in the Phase 3 MILP with a sample-average approximation (SAA) over scenarios drawn from the Phase 2.5 joint-xPts simulator. This is the architectural pivot called out in Phase 0 §5: same MILP structure, but the objective becomes an average over |S| scenarios, and decisions can be split into first-stage (current GW, non-anticipative) and second-stage (future GWs, optionally scenario-conditional).
 
