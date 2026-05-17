@@ -86,22 +86,23 @@ def test_tc_picks_dgw_player():
     sched = make_chip_schedule(
         analytics=a, predictions_df=preds, team_id_per_player=team_id_per_player
     )
-    assert sched.tc == 34, f"TC expected 34 (DGW), got {sched.tc}"
+    # DGW is at GW34 (second half) → TC2 should land there.
+    assert sched.tc2 == 34, f"TC2 expected 34 (DGW), got {sched.tc2}"
 
 
-def test_bb_picks_dgw_gw():
+def test_bb_picks_non_colliding_in_each_half():
     a = _make_analytics_with_bgw_dgw()
     team_id_per_player = {101: 1, 102: 2, 103: 3, 104: 4}
     preds = _make_predictions(team_id_per_player)
     sched = make_chip_schedule(
         analytics=a, predictions_df=preds, team_id_per_player=team_id_per_player
     )
-    # TC took GW34 (priority FH > TC > BB). BB falls back to next-best.
-    # No other DGW → BB picks any non-colliding GW (fallback to xpts).
-    # Verify BB is assigned (not None) and is not the FH GW.
-    assert sched.bb is not None
-    assert sched.bb != sched.fh1
-    assert sched.bb != sched.tc
+    # TC2 took GW34 (priority FH > TC > BB). BB2 falls back via xPts proxy.
+    # Verify BB1/BB2 are assigned and don't collide with FH/TC.
+    assert sched.bb1 is not None
+    assert sched.bb2 is not None
+    assert sched.bb1 != sched.fh1
+    assert sched.bb2 != sched.tc2
 
 
 def test_wc1_plays_before_fh1():
@@ -122,11 +123,21 @@ def test_chips_dont_collide():
     sched = make_chip_schedule(
         analytics=a, predictions_df=preds, team_id_per_player=team_id_per_player
     )
-    chips_gws = [v for v in [sched.wc1, sched.fh1, sched.wc2, sched.fh2, sched.bb, sched.tc] if v is not None]
+    chips_gws = [
+        v
+        for v in (
+            sched.wc1, sched.fh1, sched.bb1, sched.tc1,
+            sched.wc2, sched.fh2, sched.bb2, sched.tc2,
+        )
+        if v is not None
+    ]
     assert len(chips_gws) == len(set(chips_gws)), f"chip collision: {chips_gws}"
 
 
 def test_as_dict_skips_none():
-    sched = ChipSchedule(wc1=8, fh1=18, wc2=None, fh2=None, bb=25, tc=None)
+    sched = ChipSchedule(
+        wc1=8, fh1=18, bb1=None, tc1=None,
+        wc2=None, fh2=None, bb2=25, tc2=None,
+    )
     d = sched.as_dict()
-    assert d == {"WC1": 8, "FH1": 18, "BB": 25}
+    assert d == {"WC1": 8, "FH1": 18, "BB2": 25}

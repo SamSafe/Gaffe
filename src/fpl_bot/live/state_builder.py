@@ -18,7 +18,7 @@ from sqlalchemy import select
 
 from fpl_bot.db.models import FactPlayerStatus, FactUserTeamSnapshot
 from fpl_bot.db.session import session_scope
-from fpl_bot.optim.state import BacktestState
+from fpl_bot.optim.state import SECOND_HALF_FIRST_GW, BacktestState
 
 # status_code outcomes
 DROP_STATUSES: frozenset[str] = frozenset({"i", "n", "s", "u"})
@@ -30,6 +30,54 @@ class LiveStatusOverrides:
 
     excluded_player_ids: frozenset[int]  # drop from candidate pool entirely
     xpts_attenuator: dict[int, float]  # player_id → multiplier in [0.0, 1.0]
+
+
+_CHIP_NAME_MAP = {
+    "wildcard": "WC",
+    "freehit": "FH",
+    "bboost": "BB",
+    "3xc": "TC",
+}
+
+
+def _resolve_chip_history(
+    *,
+    season_id: int,
+    team_id: int,
+    through_gw: int,
+) -> frozenset[str]:
+    """Return the set of 8-slot chip codes the user has consumed in
+    season `season_id` through (and including) `through_gw`.
+
+    Walks every snapshot for this (season, team) where `gameweek <=
+    through_gw`, deduplicating by gameweek (snapshots are per-player so
+    chips_used_json is replicated). Each (chip_name, gw) maps to
+    `{WC,FH,BB,TC}{1 if gw < 20 else 2}` per the 25/26 ruleset.
+    """
+    with session_scope() as s:
+        rows = s.execute(
+            select(
+                FactUserTeamSnapshot.gameweek,
+                FactUserTeamSnapshot.chips_used_json,
+            )
+            .where(
+                (FactUserTeamSnapshot.season_id == season_id)
+                & (FactUserTeamSnapshot.team_id == team_id)
+                & (FactUserTeamSnapshot.gameweek <= through_gw)
+            )
+            .distinct()
+        ).all()
+
+    resolved: set[str] = set()
+    for gw, chips_json in rows:
+        chips = json.loads(chips_json) if chips_json else []
+        for raw_name in chips:
+            base = _CHIP_NAME_MAP.get(str(raw_name).lower())
+            if base is None:
+                continue
+            suffix = "1" if int(gw) < SECOND_HALF_FIRST_GW else "2"
+            resolved.add(f"{base}{suffix}")
+    return frozenset(resolved)
 
 
 def load_user_state(
@@ -104,33 +152,21 @@ def load_user_state(
     cost_basis: dict[int, int] = {}
     bank_tenths = 0
     free_transfers = 1
-    chips_used_list: list[str] = []
     for r in rows:
         squad_ids.add(int(r.player_id))
         cost_basis[int(r.player_id)] = int(r.purchase_price_tenths)
         bank_tenths = int(r.bank_tenths)
         free_transfers = int(r.free_transfers)
-        chips_used_list = json.loads(r.chips_used_json)
 
-    # FPL ruleset → our chip slot codes. The fact stores raw chip names
-    # like "wildcard", "freehit", "bboost", "3xc"; we map to WC1/WC2/FH1/FH2/BB/TC.
-    chip_name_map = {
-        "wildcard": "WC",  # half-resolved at consume site
-        "freehit": "FH",
-        "bboost": "BB",
-        "3xc": "TC",
-    }
-    chips_used_resolved: set[str] = set()
-    for raw_name in chips_used_list:
-        base = chip_name_map.get(raw_name.lower())
-        if base in ("WC", "FH"):
-            # First-half slot if played GW < 20; second-half slot otherwise.
-            # We don't have per-chip GW from the snapshot; conservatively
-            # mark BOTH slots used if a WC/FH appears in chips_used_list
-            # multiple times. v2 candidate: track which slot was played.
-            chips_used_resolved.add(f"{base}1")
-        elif base in ("BB", "TC"):
-            chips_used_resolved.add(base)
+    # Chips: scan ALL past snapshots ≤ snapshot_gw to find each GW's
+    # active_chip. Map (chip_name, gw) → 8-slot code. The fact's
+    # chips_used_json carries this season's active_chip for the snapshot's
+    # gameweek only (set by ingest_user_team from `active_chip` payload).
+    chips_used_resolved = _resolve_chip_history(
+        season_id=season_id,
+        team_id=team_id,
+        through_gw=snapshot_gw,
+    )
 
     return BacktestState(
         season_id=season_id,

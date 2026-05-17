@@ -132,7 +132,7 @@ def score_gw(inputs: ScorerInputs) -> ScorerOutputs:
 
     # Bench Boost: all 15 score — no auto-sub
     auto_subs: list[tuple[int, int]] = []
-    if d.chip_played == "BB":
+    if d.chip_played in ("BB", "BB1", "BB2"):
         gw_points = sum(pts.get(p, 0) for p in squad)
         captain = d.captain
         used_vice = False
@@ -140,7 +140,8 @@ def score_gw(inputs: ScorerInputs) -> ScorerOutputs:
             if not _played(captain, mins) and d.vice is not None and _played(d.vice, mins):
                 captain = d.vice
                 used_vice = True
-            multiplier = 3 if d.chip_played == "TC" else 2  # BB doesn't trigger TC
+            # BB doesn't trigger TC; multiplier is 2 (no TC under BB).
+            multiplier = 2
             gw_points += pts.get(captain, 0) * (multiplier - 1) if _played(captain, mins) else 0
         gw_points -= 4 * d.hits
         return ScorerOutputs(
@@ -199,7 +200,7 @@ def score_gw(inputs: ScorerInputs) -> ScorerOutputs:
     # Step 5: tally points
     gw_points = sum(pts.get(p, 0) for p in xi_after)
     if captain is not None and _played(captain, mins):
-        multiplier = 3 if d.chip_played == "TC" else 2
+        multiplier = 3 if d.chip_played in ("TC", "TC1", "TC2") else 2
         gw_points += pts.get(captain, 0) * (multiplier - 1)
     gw_points -= 4 * d.hits
 

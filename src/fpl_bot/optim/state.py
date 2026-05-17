@@ -8,13 +8,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# Chip slot identifiers
-CHIPS_FIRST_HALF = ("WC1", "FH1")
-CHIPS_SECOND_HALF = ("WC2", "FH2")
-CHIPS_ANYTIME = ("BB", "TC")
-ALL_CHIP_SLOTS = (*CHIPS_FIRST_HALF, *CHIPS_SECOND_HALF, *CHIPS_ANYTIME)
+# Chip slot identifiers — FPL 2025/26 ruleset: TWO of each chip type,
+# each split across the season halves (one first-half, one second-half).
+# Previously (2024/25 and earlier) BB and TC were single-use; we updated
+# to the 8-slot set after the live retrospective showed the user playing
+# 2× BB and 2× TC across the season.
+CHIPS_FIRST_HALF = ("WC1", "FH1", "BB1", "TC1")
+CHIPS_SECOND_HALF = ("WC2", "FH2", "BB2", "TC2")
+CHIPS_ANYTIME: tuple[str, ...] = ()  # kept for back-compat; empty in 25/26
+ALL_CHIP_SLOTS = (*CHIPS_FIRST_HALF, *CHIPS_SECOND_HALF)
 
-# Per-FPL rules: WC1/FH1 in GW 1-19, WC2/FH2 in GW 20-38
+# Per-FPL rules: first-half slot in GW 1-19, second-half in GW 20-38
 SECOND_HALF_FIRST_GW = 20
 
 INITIAL_BUDGET_TENTHS = 1000  # £100.0m

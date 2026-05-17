@@ -33,14 +33,21 @@ from fpl_bot.optim.fixture_analytics import (
 
 @dataclass(frozen=True)
 class ChipSchedule:
-    """Per-chip GW assignment. None = chip held / not played this season."""
+    """Per-chip GW assignment for FPL 2025/26 (8-slot ruleset).
+
+    Each chip type — Wildcard, Free Hit, Bench Boost, Triple Captain —
+    can be played once per season half (first half = GW1-19, second = 20-38).
+    None = chip held / not played this season.
+    """
 
     wc1: int | None
     fh1: int | None
+    bb1: int | None
+    tc1: int | None
     wc2: int | None
     fh2: int | None
-    bb: int | None
-    tc: int | None
+    bb2: int | None
+    tc2: int | None
 
     def as_dict(self) -> dict[str, int]:
         """Return only the chips that ARE scheduled (skip None)."""
@@ -49,10 +56,12 @@ class ChipSchedule:
             for slot, gw in (
                 ("WC1", self.wc1),
                 ("FH1", self.fh1),
+                ("BB1", self.bb1),
+                ("TC1", self.tc1),
                 ("WC2", self.wc2),
                 ("FH2", self.fh2),
-                ("BB", self.bb),
-                ("TC", self.tc),
+                ("BB2", self.bb2),
+                ("TC2", self.tc2),
             )
             if gw is not None
         }
@@ -156,15 +165,47 @@ def make_chip_schedule(
     predictions_df: pl.DataFrame,
     team_id_per_player: dict[int, int],
 ) -> ChipSchedule:
-    """Compute the chip schedule for one season.
+    """Compute the chip schedule for one season (FPL 2025/26 8-slot ruleset).
 
-    Priority order for collision resolution: FH > TC > BB > WC.
+    Each chip type — WC, FH, BB, TC — gets ONE slot per season half
+    (1st half = GW1-19, 2nd half = GW20-38).
+
+    Priority order for collision resolution within a half: FH > TC > BB > WC.
     """
     fh_gws = first_half_gws(analytics)
     sh_gws = second_half_gws(analytics)
     used: set[int] = set()
 
-    # FH first (highest priority)
+    def _pick_tc_in_half(half_gws: list[int]) -> int | None:
+        # Prefer DGW captains; fall back to highest captain xPts overall.
+        tc = _best_tc_gw(
+            analytics, predictions_df, half_gws, used, team_id_per_player
+        )
+        if tc is None:
+            per_gw_max = (
+                predictions_df.filter(pl.col("gameweek").is_in(half_gws))
+                .filter(~pl.col("gameweek").is_in(list(used)))
+                .group_by("gameweek")
+                .agg(pl.col("e_xpts").max().alias("max_e_xpts"))
+                .sort("max_e_xpts", descending=True)
+            )
+            tc = int(per_gw_max[0, "gameweek"]) if not per_gw_max.is_empty() else None
+        return tc
+
+    def _pick_bb_in_half(half_gws: list[int]) -> int | None:
+        bb = _best_bb_gw(analytics, half_gws, used)
+        if bb is None:
+            per_gw_total = (
+                predictions_df.filter(pl.col("gameweek").is_in(half_gws))
+                .filter(~pl.col("gameweek").is_in(list(used)))
+                .group_by("gameweek")
+                .agg(pl.col("e_xpts").sum().alias("total"))
+                .sort("total", descending=True)
+            )
+            bb = int(per_gw_total[0, "gameweek"]) if not per_gw_total.is_empty() else None
+        return bb
+
+    # FH first (highest priority — most timing-sensitive)
     fh1 = _best_fh_gw(analytics, fh_gws)
     if fh1 is not None:
         used.add(fh1)
@@ -172,62 +213,54 @@ def make_chip_schedule(
     if fh2 is not None:
         used.add(fh2)
 
-    # TC: any GW (the most discretionary). Prefer DGW captains.
-    tc = _best_tc_gw(
-        analytics, predictions_df, analytics.all_gws, used, team_id_per_player
-    )
-    if tc is None:
-        # Fallback: GW with highest captain xPts overall
-        per_gw_max = (
-            predictions_df.filter(~pl.col("gameweek").is_in(list(used)))
-            .group_by("gameweek")
-            .agg(pl.col("e_xpts").max().alias("max_e_xpts"))
-            .sort("max_e_xpts", descending=True)
-        )
-        tc = int(per_gw_max[0, "gameweek"]) if not per_gw_max.is_empty() else None
-    if tc is not None:
-        used.add(tc)
+    # TC1, TC2: best DGW captain in each half
+    tc1 = _pick_tc_in_half(fh_gws)
+    if tc1 is not None:
+        used.add(tc1)
+    tc2 = _pick_tc_in_half(sh_gws)
+    if tc2 is not None:
+        used.add(tc2)
 
-    # BB: any GW with DGW teams
-    bb = _best_bb_gw(analytics, analytics.all_gws, used)
-    if bb is None:
-        # Fallback: GW with highest aggregate predicted xPts across top-4 bench candidates
-        # (rough: take the cheapest 4 players by avg-pts across the season)
-        # Even simpler: GW with highest total xPts across all players
-        per_gw_total = (
-            predictions_df.filter(~pl.col("gameweek").is_in(list(used)))
-            .group_by("gameweek")
-            .agg(pl.col("e_xpts").sum().alias("total"))
-            .sort("total", descending=True)
-        )
-        bb = int(per_gw_total[0, "gameweek"]) if not per_gw_total.is_empty() else None
-    if bb is not None:
-        used.add(bb)
+    # BB1, BB2: best DGW (most teams) in each half
+    bb1 = _pick_bb_in_half(fh_gws)
+    if bb1 is not None:
+        used.add(bb1)
+    bb2 = _pick_bb_in_half(sh_gws)
+    if bb2 is not None:
+        used.add(bb2)
 
-    # WC1 / WC2: play just before FH (or fallback). WC must land on a real
-    # GW (in fh_gws / sh_gws) and not collide with another chip. Strategy:
-    # pick the latest non-colliding GW that is strictly < FH GW within
-    # the half. If no FH, default to GW 8 / GW 27 (FPL community classic
-    # WC slots).
-    def _pick_wc(half_gws: list[int], fh_gw: int | None, default: int) -> int | None:
-        candidates = (
-            [g for g in half_gws if g < fh_gw] if fh_gw else half_gws
-        )
-        # Prefer GW closest-but-before-FH.
-        candidates = sorted(candidates, reverse=True)
-        for cand in candidates:
-            if cand not in used:
-                return cand
-        # Last-resort default
-        if default in half_gws and default not in used:
+    # WC1 / WC2: pick the latest non-colliding GW before the corresponding
+    # FH (so WC restructures squad just in time for FH). min_gw guards
+    # against early-season WC1 (FPL convention: ≥ GW4) and out-of-window
+    # WC2 (≥ GW21).
+    def _pick_wc(
+        half_gws: list[int], fh_gw: int | None, default: int, min_gw: int,
+    ) -> int | None:
+        if not half_gws:
+            return None
+        candidates = [g for g in half_gws if g >= min_gw]
+        if fh_gw is not None:
+            candidates = [g for g in candidates if g < fh_gw]
+        candidates = [g for g in candidates if g not in used]
+        if candidates:
+            return max(candidates)
+        if (
+            default in half_gws
+            and default >= min_gw
+            and default not in used
+            and (fh_gw is None or default < fh_gw)
+        ):
             return default
         return None
 
-    wc1 = _pick_wc(fh_gws, fh1, default=8)
+    wc1 = _pick_wc(fh_gws, fh1, default=8, min_gw=4)
     if wc1 is not None:
         used.add(wc1)
-    wc2 = _pick_wc(sh_gws, fh2, default=27)
+    wc2 = _pick_wc(sh_gws, fh2, default=27, min_gw=21)
     if wc2 is not None:
         used.add(wc2)
 
-    return ChipSchedule(wc1=wc1, fh1=fh1, wc2=wc2, fh2=fh2, bb=bb, tc=tc)
+    return ChipSchedule(
+        wc1=wc1, fh1=fh1, bb1=bb1, tc1=tc1,
+        wc2=wc2, fh2=fh2, bb2=bb2, tc2=tc2,
+    )

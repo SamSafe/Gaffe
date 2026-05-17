@@ -151,49 +151,30 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
             m.tc_bonus[w].fix(0.0)
             m.bb_bonus[w].fix(0.0)
     elif inputs.chip_schedule is not None:
-        # Phase 5: chip schedule forces activations to pre-decided GWs.
-        # For each chip type, find the target GW from the schedule, fix to 1
-        # if it's in the horizon, else fix all horizon GWs to 0.
+        # Phase 5+: chip schedule forces activations to pre-decided GWs.
+        # 25/26 ruleset: 8 slots — WC1/WC2/FH1/FH2/BB1/BB2/TC1/TC2.
+        # Each chip TYPE (wc, fh, bb, tc) has one shared m.z_* var per week;
+        # the schedule supplies up to 2 target GWs per type (one per half).
         schedule = inputs.chip_schedule
         used_chips_before = set(state.chips_used)
 
-        # WC: both WC1 and WC2 share the m.z_wc variable
-        wc_targets = []
-        for slot in ("WC1", "WC2"):
-            if slot in schedule and slot not in used_chips_before:
-                wc_targets.append(schedule[slot])
-        for w in H:
-            if w in wc_targets:
-                m.z_wc[w].fix(1)
-            else:
-                m.z_wc[w].fix(0)
+        def _targets_for_type(slot_names: tuple[str, ...]) -> list[int]:
+            return [
+                schedule[s]
+                for s in slot_names
+                if s in schedule and s not in used_chips_before
+            ]
 
-        # FH: same pattern (FH1, FH2 share m.z_fh)
-        fh_targets = []
-        for slot in ("FH1", "FH2"):
-            if slot in schedule and slot not in used_chips_before:
-                fh_targets.append(schedule[slot])
-        for w in H:
-            if w in fh_targets:
-                m.z_fh[w].fix(1)
-            else:
-                m.z_fh[w].fix(0)
+        wc_targets = _targets_for_type(("WC1", "WC2"))
+        fh_targets = _targets_for_type(("FH1", "FH2"))
+        bb_targets = _targets_for_type(("BB1", "BB2"))
+        tc_targets = _targets_for_type(("TC1", "TC2"))
 
-        # BB
-        bb_target = schedule.get("BB") if "BB" not in used_chips_before else None
         for w in H:
-            if w == bb_target:
-                m.z_bb[w].fix(1)
-            else:
-                m.z_bb[w].fix(0)
-
-        # TC
-        tc_target = schedule.get("TC") if "TC" not in used_chips_before else None
-        for w in H:
-            if w == tc_target:
-                m.z_tc[w].fix(1)
-            else:
-                m.z_tc[w].fix(0)
+            m.z_wc[w].fix(1 if w in wc_targets else 0)
+            m.z_fh[w].fix(1 if w in fh_targets else 0)
+            m.z_bb[w].fix(1 if w in bb_targets else 0)
+            m.z_tc[w].fix(1 if w in tc_targets else 0)
 
     # ── Squad shape ─────────────────────────────────────────────────────────
     def _squad_size(m, w):
@@ -412,9 +393,9 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
                     m.z_wc[w].setub(0)
                 elif (slot == "FH1" and _gw_in_first_half(w)) or (slot == "FH2" and not _gw_in_first_half(w)):
                     m.z_fh[w].setub(0)
-                elif slot == "BB":
+                elif (slot == "BB1" and _gw_in_first_half(w)) or (slot == "BB2" and not _gw_in_first_half(w)):
                     m.z_bb[w].setub(0)
-                elif slot == "TC":
+                elif (slot == "TC1" and _gw_in_first_half(w)) or (slot == "TC2" and not _gw_in_first_half(w)):
                     m.z_tc[w].setub(0)
             return
         # Slot is available: limit horizon activations to ≤ 1 in the eligible window
@@ -449,16 +430,34 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
                     "con_fh2",
                     Constraint(expr=sum(m.z_fh[w] for w in eligible) <= 1),
                 )
-        elif slot == "BB":
-            m.add_component(
-                "con_bb_once",
-                Constraint(expr=sum(m.z_bb[w] for w in H) <= 1),
-            )
-        elif slot == "TC":
-            m.add_component(
-                "con_tc_once",
-                Constraint(expr=sum(m.z_tc[w] for w in H) <= 1),
-            )
+        elif slot == "BB1":
+            eligible = [w for w in H if _gw_in_first_half(w)]
+            if eligible:
+                m.add_component(
+                    "con_bb1",
+                    Constraint(expr=sum(m.z_bb[w] for w in eligible) <= 1),
+                )
+        elif slot == "BB2":
+            eligible = [w for w in H if not _gw_in_first_half(w)]
+            if eligible:
+                m.add_component(
+                    "con_bb2",
+                    Constraint(expr=sum(m.z_bb[w] for w in eligible) <= 1),
+                )
+        elif slot == "TC1":
+            eligible = [w for w in H if _gw_in_first_half(w)]
+            if eligible:
+                m.add_component(
+                    "con_tc1",
+                    Constraint(expr=sum(m.z_tc[w] for w in eligible) <= 1),
+                )
+        elif slot == "TC2":
+            eligible = [w for w in H if not _gw_in_first_half(w)]
+            if eligible:
+                m.add_component(
+                    "con_tc2",
+                    Constraint(expr=sum(m.z_tc[w] for w in eligible) <= 1),
+                )
 
     if inputs.enable_chips:
         for slot in ALL_CHIP_SLOTS:
@@ -841,9 +840,9 @@ def extract_decisions(
     elif value(model.z_fh[first_w]) > 0.5:
         chip_played = "FH1" if _gw_in_first_half(first_w) else "FH2"
     elif value(model.z_bb[first_w]) > 0.5:
-        chip_played = "BB"
+        chip_played = "BB1" if _gw_in_first_half(first_w) else "BB2"
     elif value(model.z_tc[first_w]) > 0.5:
-        chip_played = "TC"
+        chip_played = "TC1" if _gw_in_first_half(first_w) else "TC2"
 
     hits = round(value(model.ht[first_w]))
 

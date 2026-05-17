@@ -110,10 +110,29 @@ def test_load_user_state_missing_raises():
         load_user_state(season_id=99, gameweek=5, team_id=99999)
 
 
-def test_chips_used_parsed_to_slot_codes():
+def test_chips_used_parsed_to_slot_codes_first_half():
+    # 3xc played in GW5 → TC1 (first-half slot).
     _insert_user_team(season_id=99, gameweek=5, team_id=12345, chips_used=["3xc"])
     state = load_user_state(season_id=99, gameweek=5, team_id=12345)
-    assert "TC" in state.chips_used
+    assert "TC1" in state.chips_used
+    assert "TC2" not in state.chips_used
+
+
+def test_chips_used_parsed_to_slot_codes_second_half():
+    # bboost played in GW25 → BB2 (second-half slot).
+    _insert_user_team(season_id=99, gameweek=25, team_id=12345, chips_used=["bboost"])
+    state = load_user_state(season_id=99, gameweek=25, team_id=12345)
+    assert "BB2" in state.chips_used
+    assert "BB1" not in state.chips_used
+
+
+def test_chips_used_accumulates_across_snapshots():
+    # WC played in GW8, FH played in GW18 (both first-half), TC played in GW25.
+    _insert_user_team(season_id=99, gameweek=8, team_id=12345, chips_used=["wildcard"])
+    _insert_user_team(season_id=99, gameweek=18, team_id=12345, chips_used=["freehit"])
+    _insert_user_team(season_id=99, gameweek=25, team_id=12345, chips_used=["3xc"])
+    state = load_user_state(season_id=99, gameweek=30, team_id=12345)
+    assert state.chips_used == frozenset({"WC1", "FH1", "TC2"})
 
 
 def test_status_drops_injured_suspended():

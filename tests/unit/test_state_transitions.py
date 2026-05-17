@@ -21,13 +21,15 @@ def test_cold_start_state() -> None:
 def test_chips_available_first_half_unused() -> None:
     s = BacktestState.cold_start(season_id=24)
     avail_gw1 = s.chips_available_for_gw(1)
-    # In GW1 (first half): WC1 + FH1 + BB + TC are eligible; WC2/FH2 not
+    # 25/26: first-half slots are WC1/FH1/BB1/TC1; second-half slots not eligible.
     assert "WC1" in avail_gw1
     assert "FH1" in avail_gw1
-    assert "BB" in avail_gw1
-    assert "TC" in avail_gw1
+    assert "BB1" in avail_gw1
+    assert "TC1" in avail_gw1
     assert "WC2" not in avail_gw1
     assert "FH2" not in avail_gw1
+    assert "BB2" not in avail_gw1
+    assert "TC2" not in avail_gw1
 
 
 def test_chips_available_second_half_unused() -> None:
@@ -35,22 +37,25 @@ def test_chips_available_second_half_unused() -> None:
     avail_gw20 = s.chips_available_for_gw(20)
     assert "WC2" in avail_gw20
     assert "FH2" in avail_gw20
-    assert "BB" in avail_gw20
+    assert "BB2" in avail_gw20
+    assert "TC2" in avail_gw20
     assert "WC1" not in avail_gw20
     assert "FH1" not in avail_gw20
+    assert "BB1" not in avail_gw20
+    assert "TC1" not in avail_gw20
 
 
 def test_chips_used_excluded() -> None:
     s = BacktestState(
         season_id=24,
         gameweek=10,
-        chips_used=frozenset({"WC1", "TC"}),
+        chips_used=frozenset({"WC1", "TC1"}),
     )
     avail = s.chips_available_for_gw(10)
     assert "WC1" not in avail
-    assert "TC" not in avail
+    assert "TC1" not in avail
     assert "FH1" in avail  # still available
-    assert "BB" in avail
+    assert "BB1" in avail
 
 
 def test_apply_gw_outcomes_no_transfers() -> None:
