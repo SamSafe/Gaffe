@@ -1,6 +1,31 @@
 # Phase 6 — Live Run (Design)
 
-Status: **draft, awaiting review.**
+Status: **v1 shipped (architecture complete); v2 needed for upcoming-GW recommend.**
+
+**v1 ships** (8d9bf14 + d6a0791):
+- Schema (`fact_user_team_snapshot`), ingest extension (`fetch_my_team` + `parse_my_team`), state builder, status filter (`i/n/s/u` drop + `d` attenuation), recommend pipeline, retrospective scorer, `fpl-bot live {ingest,recommend,retrospective}` CLI.
+- 141/141 tests pass. Live smoke verified: `fpl-bot live ingest` pulls bootstrap-static + fixtures + user-team picks cleanly.
+- Bonus: idempotency fix on vaastav ingest (d6a0791) — unblocks 25/26 historical data ingest.
+
+**v2 gap** surfaced during live smoke: the recommend pipeline reuses `_run_one_fold` (a backtest function) which produces predictions ONLY for GWs that have:
+1. fact_player_match rows (played fixtures), AND
+2. understat data (typically lagged by a few days post-match).
+
+For the **upcoming GW** (deadline-time recommend), neither (1) nor (2) is true yet. Result: `_run_one_fold` returns predictions for the most-recent-played GW range (e.g., 25/26 produced predictions for GW1-29), and the recommend pipeline raises `RuntimeError: No predictions for any GW in horizon starting at GW{N}` when N > last-predicted GW.
+
+**v2 scope** (documented but not implemented):
+- Add a `predict-only mode` to the feature builders (`features/minutes.py`, `features/goals.py`, `features/clean_sheet.py`) that produces per-(player, fixture) feature rows for UPCOMING fixtures using only rolling-from-past features (rolling features `shift(1).over(player_id)` work for unplayed fixtures because they look at PRIOR rows; the blocker is the `minutes >= 1` filter that drops unplayed fixtures from the feature table).
+- New entry point `eval/xpts_eval.run_predict_only(test_season, train_seasons, fixture_ids)` that:
+  - trains models on train_seasons (unchanged),
+  - builds prediction-mode feature rows for the specified UPCOMING fixture_ids,
+  - applies trained models,
+  - runs the joint xPts simulator,
+  - returns eval_df WITHOUT actuals (no `total_points` column — just predictions).
+- Update `live/recommend.py` to use `run_predict_only` when the test_season's most-recent prediction GW < target gameweek.
+
+Estimated effort: 1-2 days. Touches 3 feature builders + xpts_eval entry point + Phase 6 recommend wiring + tests.
+
+**Workaround in the meantime**: live recommend works for any GW where backtest predictions are available (e.g., 25/26 GW1-29 currently). Useful for retrospective comparison ("what would the bot have recommended last GW?") but not for the upcoming deadline.
 
 The bot is mature: 2584 on fold 24/25 backtest, all 5 validity gates pass, full Phase 1 → Phase 5 stack stable. Phase 6 ships it as a live production tool — pull the current FPL season state pre-deadline, run the rolling MILP, emit a human-actionable recommendation.
 
