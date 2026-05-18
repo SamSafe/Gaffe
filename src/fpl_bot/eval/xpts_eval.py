@@ -263,22 +263,43 @@ def _run_one_fold(
     n_iterations: int,
     seed: int,
     return_raw_samples: bool = False,
+    train_through_gw: int | None = None,
 ) -> tuple[XPtsFoldResult, pl.DataFrame, np.ndarray | None] | None:
     """Returns (fold_result, eval_df, raw_samples_or_None). raw_samples is a
     long-form polars DataFrame (player_id, fixture_id, iteration, xpts) when
-    return_raw_samples is True; None otherwise."""
-    minutes_pred = _train_minutes_predictor(train_seasons, test_season)
+    return_raw_samples is True; None otherwise.
+
+    If `train_through_gw` is set, additionally includes test_season's
+    GWs 1..train_through_gw in training (PIT-correct walk-forward retrain).
+    This affects minutes/goals/assists trainers AND the residual/alpha
+    fits derived from train_pm.
+    """
+    minutes_pred = _train_minutes_predictor(
+        train_seasons, test_season, train_through_gw=train_through_gw
+    )
     goals_pred = _train_goals_or_assists_predictor(
-        train_seasons, test_season, target="goals"
+        train_seasons, test_season, target="goals",
+        train_through_gw=train_through_gw,
     )
     assists_pred = _train_goals_or_assists_predictor(
-        train_seasons, test_season, target="assists"
+        train_seasons, test_season, target="assists",
+        train_through_gw=train_through_gw,
     )
     if minutes_pred.is_empty() or goals_pred.is_empty():
         return None
 
     positions_df = pit.all_player_positions()
-    train_pm = pit.all_player_match_with_kickoff(season_ids=train_seasons)
+    # For walk-forward: include test_season's pre-cutoff GWs in train_pm
+    # used for residual fit and per-position alphas.
+    train_pm_seasons = list(train_seasons)
+    if train_through_gw is not None:
+        train_pm_seasons = [*train_seasons, test_season]
+    train_pm = pit.all_player_match_with_kickoff(season_ids=train_pm_seasons)
+    if train_through_gw is not None:
+        train_pm = train_pm.filter(
+            (pl.col("season_id") != test_season)
+            | (pl.col("gameweek") <= train_through_gw)
+        )
     residual_df = fit_residual_dataset(train_pm, positions_df)
     event_source = EmpiricalResidualEventSource()
     event_source.fit(residual_df)

@@ -319,6 +319,76 @@ def _check_validity(
     return budget_ok, transfers_ok, chips_ok, no_leak_ok, errors
 
 
+def _build_walk_forward_eval_df(
+    *,
+    test_season: int,
+    train_seasons: list[int],
+    chunk_size: int,
+    n_iterations: int,
+    cache_dir: Path,
+    cache_predictions: bool,
+) -> pl.DataFrame:
+    """Build a combined eval_df via chunk-wise walk-forward retraining.
+
+    For each chunk [chunk_start, chunk_start+chunk_size), train on
+    train_seasons + test_season's GWs 1..chunk_start-1 and use those
+    predictions for the chunk. Chunk 0 (GW1..) uses the baseline train
+    (no test-season data) — same as the non-walk-forward path.
+
+    Eval_df rows for each chunk are filtered to the chunk's GWs to
+    avoid mixing different models' predictions for the same fixture.
+    Per-chunk parquet caches keep iteration fast.
+    """
+    train_str = "_".join(str(s) for s in train_seasons)
+    # Need fixture → gameweek mapping for chunk filtering
+    with session_scope() as _s:
+        fx_rows = _s.execute(
+            select(DimFixture.fixture_id, DimFixture.gameweek).where(
+                DimFixture.season_id == test_season
+            )
+        ).all()
+    fid_to_gw = {int(r.fixture_id): int(r.gameweek) for r in fx_rows}
+    all_gws = sorted(set(fid_to_gw.values()))
+    if not all_gws:
+        raise RuntimeError(f"No fixtures for season {test_season}")
+    max_gw = max(all_gws)
+
+    chunk_starts = list(range(1, max_gw + 1, chunk_size))
+    pieces: list[pl.DataFrame] = []
+    for chunk_start in chunk_starts:
+        chunk_end = min(chunk_start + chunk_size - 1, max_gw)
+        train_through = chunk_start - 1 if chunk_start > 1 else None
+        # Per-chunk cache
+        suffix = "baseline" if train_through is None else f"thru_gw{train_through}"
+        chunk_cache = cache_dir / f"season_{test_season}_train_{train_str}_{suffix}.parquet"
+        if cache_predictions and chunk_cache.exists():
+            eval_df = pl.read_parquet(chunk_cache)
+        else:
+            result = _run_one_fold(
+                train_seasons, test_season,
+                n_iterations=n_iterations, seed=42,
+                train_through_gw=train_through,
+            )
+            if result is None:
+                raise RuntimeError(
+                    f"Walk-forward fold failed at chunk_start={chunk_start}"
+                )
+            _, eval_df, _ = result
+            if cache_predictions:
+                eval_df.write_parquet(chunk_cache)
+        # Filter this chunk's slice
+        chunk_fixtures = [
+            fid for fid, gw in fid_to_gw.items() if chunk_start <= gw <= chunk_end
+        ]
+        slice_df = eval_df.filter(pl.col("fixture_id").is_in(chunk_fixtures))
+        pieces.append(slice_df)
+        print(
+            f"  walk-forward chunk GW{chunk_start}-{chunk_end} "
+            f"(train_through_gw={train_through}): {slice_df.shape[0]} rows"
+        )
+    return pl.concat(pieces, how="diagonal_relaxed")
+
+
 def backtest_season(
     test_season: int,
     train_seasons: list[int],
@@ -338,11 +408,30 @@ def backtest_season(
     transfer_penalty: float = 0.0,
     captain_quantile: float | None = None,
     position_calibration: dict[str, float] | None = None,
+    walk_forward_chunk: int | None = None,
 ) -> BacktestSeasonResult:
-    """Run rolling MILP backtest for one test season."""
+    """Run rolling MILP backtest for one test season.
+
+    If `walk_forward_chunk` is set (e.g., 5), the underlying boosters
+    are retrained every chunk_size GWs using only data prior to the
+    chunk start (PIT-correct). Predictions for chunk GWs come from the
+    chunk-specific model. Without `walk_forward_chunk`, the boosters
+    train once on `train_seasons` and predict for the whole test_season
+    (current default behavior).
+    """
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / f"season_{test_season}_train_{'_'.join(str(s) for s in train_seasons)}.parquet"
-    if cache_predictions and cache_path.exists():
+    train_str = "_".join(str(s) for s in train_seasons)
+    cache_path = cache_dir / f"season_{test_season}_train_{train_str}.parquet"
+    if walk_forward_chunk is not None:
+        eval_df = _build_walk_forward_eval_df(
+            test_season=test_season,
+            train_seasons=train_seasons,
+            chunk_size=walk_forward_chunk,
+            n_iterations=n_iterations,
+            cache_dir=cache_dir,
+            cache_predictions=cache_predictions,
+        )
+    elif cache_predictions and cache_path.exists():
         eval_df = pl.read_parquet(cache_path)
     else:
         result = _run_one_fold(

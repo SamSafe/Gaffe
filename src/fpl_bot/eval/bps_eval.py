@@ -96,12 +96,29 @@ def _ece(y_true: np.ndarray, p_pred: np.ndarray, n_bins: int = 10) -> float:
     return float(ece)
 
 
-def _train_minutes_predictor(train_seasons: list[int], test_season: int) -> pl.DataFrame:
+def _train_minutes_predictor(
+    train_seasons: list[int],
+    test_season: int,
+    *,
+    train_through_gw: int | None = None,
+) -> pl.DataFrame:
+    """Train minutes predictor and predict on test_season fixtures.
+
+    If `train_through_gw` is set, additionally includes test_season's
+    GWs 1..train_through_gw in the training set. Predictions are still
+    generated for ALL of test_season (the caller filters as needed).
+    Used by the walk-forward harness to PIT-correctly retrain at chunk
+    boundaries during the season.
+    """
     df = build_minutes_feature_table(season_ids=[*train_seasons, test_season])
     df = df.filter(pl.col("min_last_1").is_not_null())
-    train = df.filter(pl.col("season_id").is_in(train_seasons)).filter(
-        pl.col("minutes_bucket").is_not_null()
-    )
+    train_mask = pl.col("season_id").is_in(train_seasons)
+    if train_through_gw is not None:
+        train_mask = train_mask | (
+            (pl.col("season_id") == test_season)
+            & (pl.col("gameweek") <= train_through_gw)
+        )
+    train = df.filter(train_mask).filter(pl.col("minutes_bucket").is_not_null())
     test = df.filter(pl.col("season_id") == test_season)
     if train.is_empty() or test.is_empty():
         return pl.DataFrame()
@@ -119,13 +136,22 @@ def _train_goals_or_assists_predictor(
     test_season: int,
     *,
     target: str,
+    train_through_gw: int | None = None,
 ) -> pl.DataFrame:
+    """Train goals/assists predictor; see `_train_minutes_predictor` for
+    the `train_through_gw` semantics."""
     df = build_goals_feature_table(season_ids=[*train_seasons, test_season])
     label_col = GOALS_LABEL_COLUMNS[target]
     df = df.filter(pl.col(label_col).is_not_null()).filter(
         pl.col("minutes_factor").is_not_null()
     )
-    train = df.filter(pl.col("season_id").is_in(train_seasons))
+    train_mask = pl.col("season_id").is_in(train_seasons)
+    if train_through_gw is not None:
+        train_mask = train_mask | (
+            (pl.col("season_id") == test_season)
+            & (pl.col("gameweek") <= train_through_gw)
+        )
+    train = df.filter(train_mask)
     test = df.filter(pl.col("season_id") == test_season)
     if train.is_empty() or test.is_empty():
         return pl.DataFrame()
