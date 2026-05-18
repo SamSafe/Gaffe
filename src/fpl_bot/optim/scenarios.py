@@ -86,6 +86,33 @@ def aggregate_pts_by_player_gw_scenario(
     return agg.rename({"iteration": "scenario_id"})
 
 
+def captain_lower_quantile_per_gw(
+    pts_df: pl.DataFrame,
+    quantile: float = 0.25,
+) -> dict[tuple[int, int], float]:
+    """Compute the lower-quantile xPts per (player_id, gameweek) across
+    scenarios. Used as the captain reward signal to bias the MILP toward
+    minutes-reliable, low-downside captains rather than high-mean / high-
+    variance "boom or bust" picks.
+
+    `pts_df` is the output of `aggregate_pts_by_player_gw_scenario`:
+        columns: player_id, gameweek, scenario_id, xpts
+
+    Q25 by default — high enough to ignore freak 0-min outliers, low enough
+    to penalize variance. Returns a per-(player, gw) dict.
+    """
+    if not (0.0 < quantile < 1.0):
+        raise ValueError(f"quantile must be in (0,1); got {quantile}")
+    q = (
+        pts_df.group_by(["player_id", "gameweek"])
+        .agg(pl.col("xpts").quantile(quantile).alias("q_xpts"))
+    )
+    return {
+        (int(r["player_id"]), int(r["gameweek"])): float(r["q_xpts"])
+        for r in q.iter_rows(named=True)
+    }
+
+
 def make_pts_dict(
     pts_df: pl.DataFrame,
     candidates: list[int],

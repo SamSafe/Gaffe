@@ -96,6 +96,12 @@ class MilpInputs:
     # initial_squad is empty), (b) chip-protected GWs (WC/FH refund all
     # transfers in reality, so the penalty would over-bias).
     transfer_penalty: float = 0.0
+    # Phase 6 v3: separate captain-reward predictions. When set, the captain
+    # term `c[p,w] * pred[p,w]` uses these values instead of the regular
+    # `predictions` dict. Typical use: lower-quantile xPts (Q25) from SAA
+    # samples — biases captain choice toward low-downside picks. None falls
+    # back to `predictions` (regular mean-xPts behavior).
+    captain_predictions: dict[tuple[int, int], float] | None = None
 
 
 def _gw_in_first_half(gw: int) -> bool:
@@ -594,14 +600,19 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
         # gets EO-adjusted. Chip bonuses (tc_bonus, bb_bonus) are weekly aggregates
         # added to the objective WITHOUT EO adjustment in v1.0 (small effect; see
         # tc_bonus/bb_bonus comment near var definition).
-        # Captain reward is attenuated by the blank-risk factor: a player who's
-        # been missing minutes has a discounted captain-extra term, biasing the
-        # MILP toward minutes-reliable captains. The XI term (y * pred) is
-        # untouched because pred already bakes in the minutes-model expectation.
+        # Captain reward uses captain_predictions (e.g., SAA Q25) if provided,
+        # otherwise falls back to mean-xpts predictions. Then attenuated by the
+        # blank-risk factor. XI term uses mean-xpts (we don't want to under-
+        # value the squad just because variance is high).
         capt_atten = inputs.captain_attenuator or {}
+        capt_pred = inputs.captain_predictions
+        def _capt_pred(p, w):
+            if capt_pred is not None:
+                return capt_pred.get((p, w), pred.get((p, w), 0.0))
+            return pred.get((p, w), 0.0)
         rolling = sum(
             m.y[p, w] * pred.get((p, w), 0.0)
-            + m.c[p, w] * pred.get((p, w), 0.0) * capt_atten.get(p, 1.0)
+            + m.c[p, w] * _capt_pred(p, w) * capt_atten.get(p, 1.0)
             for p in m.P
             for w in m.W
         )

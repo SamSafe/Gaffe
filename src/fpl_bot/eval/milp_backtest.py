@@ -336,6 +336,7 @@ def backtest_season(
     raw_samples_dir: Path = Path("data/cache/xpts_raw_samples"),
     use_chip_schedule: bool = False,
     transfer_penalty: float = 1.0,
+    captain_quantile: float | None = None,
 ) -> BacktestSeasonResult:
     """Run rolling MILP backtest for one test season."""
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -375,6 +376,33 @@ def backtest_season(
     # Actual minutes per (player, gw) — needed by the auto-sub scorer to
     # detect XI blanks (minutes == 0).
     actual_minutes_by_pgw = _per_player_per_gw_actual_minutes(test_season)
+
+    # Captain quantile: load raw samples and compute lower-quantile xPts per
+    # (player, gw) for the captain reward term. Decouples captain decision
+    # from mean-xpts (which over-rewards high-variance "boom or bust" picks).
+    captain_predictions: dict[tuple[int, int], float] | None = None
+    if captain_quantile is not None:
+        from fpl_bot.optim.scenarios import (
+            aggregate_pts_by_player_gw_scenario as _agg,
+            captain_lower_quantile_per_gw,
+            load_raw_samples,
+        )
+        try:
+            _raw = load_raw_samples(
+                test_season=test_season,
+                train_seasons=train_seasons,
+                n_iterations=n_iterations,
+                cache_dir=raw_samples_dir,
+            )
+            _pts_df = _agg(_raw, n_scenarios=n_iterations)
+            captain_predictions = captain_lower_quantile_per_gw(
+                _pts_df, quantile=captain_quantile
+            )
+        except FileNotFoundError:
+            print(
+                f"  captain_quantile={captain_quantile} requested but raw "
+                f"samples not cached; falling back to mean xpts for captain."
+            )
 
     # SAA: load per-scenario raw samples and aggregate to (player, gw, scenario).
     pts_per_scenario: pl.DataFrame | None = None
@@ -570,6 +598,7 @@ def backtest_season(
             chip_schedule=chip_schedule,
             captain_attenuator=captain_attenuator,
             transfer_penalty=transfer_penalty,
+            captain_predictions=captain_predictions,
         )
 
         import time
