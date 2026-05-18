@@ -85,6 +85,11 @@ class MilpInputs:
     # default to "not yet played, MILP can still pick within horizon"
     # — but typically the scheduler covers all 6 slots).
     chip_schedule: dict[str, int] | None = None
+    # Phase 6 v3: captain blank-risk attenuator. Maps player_id → factor in
+    # [0, 1]; the captain term `c[p,w] * pred[p,w]` is multiplied by this
+    # factor so the MILP biases captain choice toward minutes-reliable
+    # players. None or 1.0 means no attenuation (the default).
+    captain_attenuator: dict[int, float] | None = None
 
 
 def _gw_in_first_half(gw: int) -> bool:
@@ -573,8 +578,14 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
         # gets EO-adjusted. Chip bonuses (tc_bonus, bb_bonus) are weekly aggregates
         # added to the objective WITHOUT EO adjustment in v1.0 (small effect; see
         # tc_bonus/bb_bonus comment near var definition).
+        # Captain reward is attenuated by the blank-risk factor: a player who's
+        # been missing minutes has a discounted captain-extra term, biasing the
+        # MILP toward minutes-reliable captains. The XI term (y * pred) is
+        # untouched because pred already bakes in the minutes-model expectation.
+        capt_atten = inputs.captain_attenuator or {}
         rolling = sum(
-            (m.y[p, w] + m.c[p, w]) * pred.get((p, w), 0.0)
+            m.y[p, w] * pred.get((p, w), 0.0)
+            + m.c[p, w] * pred.get((p, w), 0.0) * capt_atten.get(p, 1.0)
             for p in m.P
             for w in m.W
         )
@@ -620,9 +631,13 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
         # Captain contribution: per-scenario.
         # For w=1: c[p,1] is first-stage, mean_pts is its objective contribution.
         # For w≥2: c_s[p,w,s] varies per scenario, multiply by pts_s[p,w,s].
+        # Captain attenuator applies to captain reward only (not EO), same
+        # rationale as the deterministic objective.
+        capt_atten_saa = inputs.captain_attenuator or {}
         first_w = H[0]
         rolling_capt = sum(
-            m.c[p, first_w] * mean_pts[(p, first_w)] for p in m.P
+            m.c[p, first_w] * mean_pts[(p, first_w)] * capt_atten_saa.get(p, 1.0)
+            for p in m.P
         )
         eo_capt = sum(
             inputs.rho * eo.get(p, 0.0) * mean_pts[(p, first_w)] * m.c[p, first_w]
@@ -634,7 +649,7 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
             for s in S:
                 for p in m.P:
                     pts_pws = pts_s.get((p, w, s), 0.0)
-                    rolling_capt += (1.0 / n_s) * m.c_s[p, w, s] * pts_pws
+                    rolling_capt += (1.0 / n_s) * m.c_s[p, w, s] * pts_pws * capt_atten_saa.get(p, 1.0)
                     eo_capt += (1.0 / n_s) * inputs.rho * eo.get(p, 0.0) * pts_pws * m.c_s[p, w, s]
 
         # Per-scenario chip bonus averaged (only when chips are enabled —

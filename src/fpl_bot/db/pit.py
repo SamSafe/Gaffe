@@ -511,6 +511,62 @@ def season_player_status_snapshot(season_id: int) -> pl.DataFrame:
     )
 
 
+def recent_minutes_at_gw(
+    season_id: int, target_gw: int, lookback_gws: int = 3
+) -> dict[int, int]:
+    """Sum of `minutes` per player across the last `lookback_gws` finished GWs
+    strictly before `target_gw` for `season_id`.
+
+    PIT-correct by construction: filters on gameweek < target_gw. Used by the
+    backtest as a real-availability proxy when historical fact_player_status
+    is unavailable — a player with zero minutes across the lookback window is
+    effectively unavailable (injured / dropped / suspended).
+
+    Dedupes by latest recorded_at per (player_id, fixture_id) — same pattern
+    as `all_player_match_with_kickoff`.
+
+    Returns: player_id → total minutes in window. Players who appear in no
+    fixtures in the window are omitted (caller treats missing as 0).
+    """
+    from sqlalchemy import func as _func
+
+    from fpl_bot.db.models import DimFixture as _DimFixture
+
+    if lookback_gws < 1 or target_gw < 2:
+        return {}
+    lo = max(1, target_gw - lookback_gws)
+    with session_scope() as s:
+        latest = (
+            select(
+                FactPlayerMatch.player_id,
+                FactPlayerMatch.fixture_id,
+                _func.max(FactPlayerMatch.recorded_at).label("max_rec"),
+            )
+            .group_by(FactPlayerMatch.player_id, FactPlayerMatch.fixture_id)
+            .subquery("fpm_latest_rmin")
+        )
+        rows = s.execute(
+            select(
+                FactPlayerMatch.player_id,
+                FactPlayerMatch.minutes,
+            )
+            .join(
+                latest,
+                (latest.c.player_id == FactPlayerMatch.player_id)
+                & (latest.c.fixture_id == FactPlayerMatch.fixture_id)
+                & (latest.c.max_rec == FactPlayerMatch.recorded_at),
+            )
+            .join(_DimFixture, _DimFixture.fixture_id == FactPlayerMatch.fixture_id)
+            .where(_DimFixture.season_id == season_id)
+            .where(_DimFixture.gameweek >= lo)
+            .where(_DimFixture.gameweek < target_gw)
+        ).all()
+    out: dict[int, int] = {}
+    for r in rows:
+        out[int(r.player_id)] = out.get(int(r.player_id), 0) + int(r.minutes or 0)
+    return out
+
+
 def season_start_kickoff(season_id: int) -> dt.datetime | None:
     """Phase 6 v2: min(kickoff_utc) across dim_fixture for a season.
 

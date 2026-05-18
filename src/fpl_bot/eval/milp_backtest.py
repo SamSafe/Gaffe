@@ -35,6 +35,13 @@ from fpl_bot.optim.eo import eo_for_candidates
 from fpl_bot.optim.milp import MilpInputs, solve_rolling_horizon
 from fpl_bot.optim.state import BacktestState, GwDecisions, apply_gw_outcomes
 
+# Real-availability filter (Phase 6 v3): a player needs ≥ MIN_MINUTES_THRESHOLD
+# minutes over the prior MINUTES_LOOKBACK GWs to enter the candidate pool. 30
+# minutes across 3 GWs is conservative — long-term injury exclusion without
+# dropping single-GW rotation cases.
+MINUTES_LOOKBACK = 3
+MIN_MINUTES_THRESHOLD = 30
+
 
 @dataclass
 class GwBacktestRecord:
@@ -439,6 +446,35 @@ def backtest_season(
         )
         candidates_set &= set(valid_players)
         candidates_set |= set(state.squad)
+
+        # Real-availability filter (Phase 6 v3): drop candidates whose minutes
+        # over the prior MINUTES_LOOKBACK GWs total < MIN_MINUTES_THRESHOLD —
+        # the backtest analog of the live status_code in {i,n,s,u} filter.
+        # GW1 has no history, so this is a no-op there. Current-squad players
+        # are kept (the MILP must be able to transfer them out).
+        recent_min = pit.recent_minutes_at_gw(
+            test_season, gw, lookback_gws=MINUTES_LOOKBACK
+        )
+        captain_attenuator: dict[int, float] | None = None
+        if recent_min:
+            keep: set[int] = set()
+            for p in candidates_set:
+                if p in state.squad:
+                    keep.add(p)
+                    continue
+                if recent_min.get(p, 0) >= MIN_MINUTES_THRESHOLD:
+                    keep.add(p)
+            candidates_set = keep
+            # Captain blank-risk attenuator: 1.0 for full availability across
+            # the lookback (270 mins over 3 GWs), 0.0 for fully absent. Biases
+            # captain choice toward minutes-reliable players without affecting
+            # the XI pred (which already factors in minutes via the model).
+            max_minutes = MINUTES_LOOKBACK * 90
+            captain_attenuator = {
+                p: min(recent_min.get(p, 0) / max_minutes, 1.0)
+                for p in candidates_set
+            }
+
         candidates = sorted(candidates_set)
         if not candidates:
             result.validity_feasibility = False
@@ -508,6 +544,7 @@ def backtest_season(
             predictions_per_scenario=pts_per_scenario_dict,
             scenario_ids=scenario_ids,
             chip_schedule=chip_schedule,
+            captain_attenuator=captain_attenuator,
         )
 
         import time
