@@ -222,17 +222,45 @@ def generate_recommendation(
     candidates_set |= set(state.squad)  # always keep current squad
     candidates = sorted(candidates_set)
 
-    # 7. Prices + sell-tax for state.squad players
+    # 7. Prices + sell-tax for state.squad players. Phase 7 2.2: project
+    # sell_prices to horizon-end using the price-change predictor so the
+    # MILP's terminal-value chain rewards holding rising players. buy_prices
+    # stay at current (we pay today).
     buy_prices = {p: _resolve_price_at_gw(p, gameweek, prices_by_pgw) for p in candidates}
     sell_prices: dict[int, int] = {}
+    try:
+        from fpl_bot.live.price_predict import (
+            predict_one_step_price_deltas,
+            projected_horizon_sell_price,
+        )
+        deltas = predict_one_step_price_deltas(
+            season_id=season_id,
+            gameweek=gameweek,
+            candidates=list(candidates),
+            train_seasons=train_seasons,
+        )
+        price_predict_available = True
+    except Exception as exc:
+        # Fall back to flat sell_prices if the predictor can't run (no
+        # training data, missing features). Logged so it's visible in
+        # the smoke output.
+        print(f"  price-change predictor unavailable: {exc}; sell_prices = current")
+        deltas = {p: 0.0 for p in candidates}
+        price_predict_available = False
     for p in candidates:
         current = buy_prices[p]
+        delta = deltas.get(p, 0.0)
+        projected_horizon_end = (
+            projected_horizon_sell_price(current, delta, horizon)
+            if price_predict_available
+            else current
+        )
         basis = state.cost_basis.get(p) if p in state.squad else None
         if basis is not None:
-            tax = max(0, (current - basis) // 2)
-            sell_prices[p] = current - tax
+            tax = max(0, (projected_horizon_end - basis) // 2)
+            sell_prices[p] = projected_horizon_end - tax
         else:
-            sell_prices[p] = current
+            sell_prices[p] = projected_horizon_end
 
     pred_dict = {
         (p, w): pred_by_pgw_filtered.get((p, w), 0.0)
