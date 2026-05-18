@@ -140,6 +140,14 @@ def build_feature_table(season_ids: list[int] | None = None) -> pl.DataFrame:
         .alias("role_mismatch")
     )
 
+    # Phase 7 2.3 — corner / direct-FK taker flags. These complement
+    # `is_penalty_taker` for player-level assist + goal signal.
+    corner_pids, fk_pids = _resolved_set_piece_player_ids(season_ids)
+    pm = pm.with_columns(
+        pl.col("player_id").is_in(list(corner_pids)).cast(pl.Int8).alias("is_corner_taker"),
+        pl.col("player_id").is_in(list(fk_pids)).cast(pl.Int8).alias("is_fk_taker"),
+    )
+
     # Position one-hot from current snapshot
     positions = pit.all_player_positions()
     if not positions.is_empty():
@@ -216,6 +224,8 @@ FEATURE_COLUMNS: list[str] = [
     "opponent_lambda_market_xg",
     "was_home",
     "is_penalty_taker",
+    "is_corner_taker",
+    "is_fk_taker",
     "role_mismatch",
     "days_into_season",
     "gameweek",
@@ -344,6 +354,13 @@ def build_prediction_feature_table(
         .alias("role_mismatch")
     )
 
+    # Phase 7 2.3 — corner / direct-FK taker flags
+    corner_pids, fk_pids = _resolved_set_piece_player_ids([test_season])
+    cross = cross.with_columns(
+        pl.col("player_id").is_in(list(corner_pids)).cast(pl.Int8).alias("is_corner_taker"),
+        pl.col("player_id").is_in(list(fk_pids)).cast(pl.Int8).alias("is_fk_taker"),
+    )
+
     # 8. Position one-hot
     for code in POSITION_CODES:
         cross = cross.with_columns(
@@ -410,6 +427,35 @@ def _resolved_pk_takers(season_ids: list[int] | None) -> pl.DataFrame:
     if not rows:
         return pl.DataFrame()
     return pl.DataFrame(rows)
+
+
+def _resolved_set_piece_player_ids(season_ids: list[int] | None) -> tuple[set[int], set[int]]:
+    """Return (corner_taker_pids, direct_fk_taker_pids) across the requested seasons.
+
+    The yaml lists ordered rosters per team (top-1 corner, top-2 corner, ...).
+    For Phase 7 2.3 we use the simplest flag: "any taker" → 1, else 0. A
+    future v3 can give ordered weights (e.g., 0.6 for top-corner, 0.3 for
+    secondary, 0.1 for tertiary) — proportional to expected corner share.
+    """
+    raw = manual_overrides.set_piece_takers_raw()
+    web_to_pid = pit.web_name_to_player_id()
+    seasons = season_ids or list(raw.keys())
+    corner: set[int] = set()
+    fk: set[int] = set()
+    for season_id in seasons:
+        teams = raw.get(season_id, {})
+        for team_full, info in teams.items():
+            if not isinstance(info, dict):
+                continue
+            for name in info.get("corner", []) or []:
+                pid = web_to_pid.get(name)
+                if pid is not None:
+                    corner.add(pid)
+            for name in info.get("direct_fk", []) or []:
+                pid = web_to_pid.get(name)
+                if pid is not None:
+                    fk.add(pid)
+    return corner, fk
 
 
 def _resolved_role_mismatch_player_ids() -> set[int]:

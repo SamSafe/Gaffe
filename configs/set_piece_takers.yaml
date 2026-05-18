@@ -214,3 +214,13 @@
     penalty: Cunha
     direct_fk: [Cunha, Sarabia]
     corner: [Sarabia, Cunha, Aït-Nouri]
+
+# Phase 7 2.3 placeholder for 2025-26. Each team needs penalty / direct_fk /
+# corner taker(s) populated for the model's `is_corner_taker` and
+# `is_fk_taker` features to fire on 25/26 data. Until populated, feature
+# values default to 0 for all 25/26 players and the model gets no signal.
+#
+# Suggested workflow: copy entries from season 24 for teams that kept their
+# takers, update for known transfers, fill new entries for promoted clubs
+# (Burnley, Leeds, Sunderland).
+25: {}
