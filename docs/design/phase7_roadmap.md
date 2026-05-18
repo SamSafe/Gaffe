@@ -140,3 +140,42 @@ independently. I'll pause and check in:
 When all Tier 1 items are committed, I'll re-run the cross-fold diagnostic
 and multi-fold backtest to measure cumulative impact. Then we decide if
 Tier 2 is worth the effort or if we ship what we have.
+
+---
+
+## Tier 1 close-out — measured impact
+
+All 4 items shipped. Multi-fold validation (all v3 + all Tier 1 changes,
+default settings):
+
+| Fold | Bot | Template | Diff | Δ vs pre-Tier-1 |
+|---|---|---|---|---|
+| 21 | 2562 | 1735 | +827 | +67 |
+| 22 | 2380 | 1818 | +562 | −40 |
+| 23 | 2485 | 1756 | +729 | −36 |
+| 24 | 2406 | 2082 | +324 | +22 |
+| 25 | **1517** | 1466 | **+51** | **+196** |
+
+All 5 validity gates pass on every fold. **Net Tier 1 impact across all
+folds: +209 pts.** The headline win is +196 on 25/26 — the bot now
+beats template by +51 on the current season (vs −128 at session start).
+
+Small negatives on folds 22/23 (~−40 each) are within noise, driven by
+the LiveFPL EO snapshot being from May 2026 applied across all backtest
+GWs (documented lookahead approximation; identical caveat applies to
+the pre-existing overall_eo_snapshot). For LIVE recommend the EO blend
+is PIT-correct.
+
+### Cumulative session progress (1215 → 1517 on 25/26, +302, 68% of gap)
+
+| Stage | 25/26 bot | Δ |
+|---|---|---|
+| Session start | 1215 | — |
+| Phase 6 v3 polish (8-chip, BB fix, GW1-3 prior, etc.) | 1321 | +106 |
+| Tier 1.1 DefCon productionized | 1402 | +81 |
+| Tier 1.2 market_xg catch-up (football-data) | 1498 | +96 |
+| Tier 1.3 LiveFPL top10k EO blend | 1517 | +19 |
+| Tier 1.4 BPS audit (no change) | 1517 | 0 |
+| **Final** | **1517** | **+302** |
+
+Gap to user REDACTED_TEAM_ID (1661 over 29 played GWs): −144 (was −446 at start).
