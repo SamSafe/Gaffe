@@ -22,12 +22,12 @@ from fpl_bot.config import settings
 from fpl_bot.db import pit
 from fpl_bot.derive import dixon_coles
 from fpl_bot.ingest import audit as audit_module
-from fpl_bot.ingest import footballdata, fpl_api, understat, vaastav
+from fpl_bot.ingest import footballdata, fpl_api, oddsapi, understat, vaastav
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 console = Console()
 
-_SUPPORTED_SOURCES = {"fpl", "vaastav", "footballdata", "understat"}
+_SUPPORTED_SOURCES = {"fpl", "vaastav", "footballdata", "understat", "oddsapi"}
 
 
 @app.command()
@@ -111,6 +111,41 @@ def ingest(
                 f"[blue]parse_raw_footballdata(season_id={season_id})[/blue]"
             )
             counts = footballdata.parse_raw_footballdata(path, season_id=season_id)
+            for k, v in counts.items():
+                console.print(f"  {k}: {v}")
+
+    elif source == "oddsapi":
+        # Live pre-deadline odds via the-odds-api.com. Needs FPL_BOT_ODDS_API_KEY.
+        if not parse_only:
+            console.print("[blue]fetch_raw_oddsapi() — pulling live EPL odds[/blue]")
+            path = oddsapi.fetch_raw_oddsapi()
+            console.print(f"  → {path}")
+            meta = path.with_suffix(".meta.json")
+            if meta.exists():
+                import json as _json
+                m = _json.loads(meta.read_text())
+                console.print(
+                    f"  quota: remaining={m.get('remaining_requests')}  "
+                    f"used={m.get('used_requests')}"
+                )
+        if not raw_only:
+            if season_folder is None:
+                console.print(
+                    "[red]oddsapi parse requires --season-folder (current season, e.g. 2025-26)[/red]"
+                )
+                raise typer.Exit(1)
+            season_id_for_parse = int(season_folder.split("-")[0]) - 2000
+            today = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d")
+            raw_path = (
+                settings.raw_dir / "oddsapi" / today / "soccer_epl_h2h+spreads+totals.json"
+            )
+            if not raw_path.exists():
+                console.print(
+                    f"[yellow]No raw payload at {raw_path}; run without --parse-only first.[/yellow]"
+                )
+                raise typer.Exit(1)
+            console.print(f"[blue]parse_raw_oddsapi(season_id={season_id_for_parse})[/blue]")
+            counts = oddsapi.parse_raw_oddsapi(raw_path, season_id=season_id_for_parse)
             for k, v in counts.items():
                 console.print(f"  {k}: {v}")
 
