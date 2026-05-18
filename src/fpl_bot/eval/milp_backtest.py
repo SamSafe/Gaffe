@@ -364,8 +364,13 @@ def backtest_season(
     # mid-season). Blend with the prior season's last-5-GW mean actual_pts
     # with decaying weight per EARLY_GW_PRIOR_BLEND. Players new to PL (no
     # prior data) fall back to model-only.
-    if train_seasons:
-        prior_pts = pit.player_actual_pts_last_n_gws(max(train_seasons), n=5)
+    # Prior season for cold-start blend: the most recent train_season that
+    # ISN'T the test season (avoids circular "predict 25 with 25 last-5"
+    # if the caller deliberately includes test_season in train_seasons for
+    # in-sample experiments).
+    prior_train_seasons = [s for s in train_seasons if s != test_season]
+    if prior_train_seasons:
+        prior_pts = pit.player_actual_pts_last_n_gws(max(prior_train_seasons), n=5)
         if prior_pts:
             for (pid, gw), v in list(pred_by_pgw.items()):
                 blend_w = EARLY_GW_PRIOR_BLEND.get(gw)
