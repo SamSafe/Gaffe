@@ -42,6 +42,14 @@ from fpl_bot.optim.state import BacktestState, GwDecisions, apply_gw_outcomes
 MINUTES_LOOKBACK = 3
 MIN_MINUTES_THRESHOLD = 30
 
+# DefCon per-position shrinkage tuned on 25/26 (Phase 7 1.1). DEF needs
+# shrinkage (0.4) because the joint xPts model implicitly captures part of
+# defenders' DefCon via clean-sheet features. MID and FWD need full strength
+# (1.0) because their rolling features don't correlate with defensive stats.
+# Only applies to test_season=25 (the only season with defensive_contribution
+# data). For 26/27 onward, re-tune as a fresh season's data accumulates.
+DEFCON_PER_POSITION_SHRINKAGE = {"DEF": 0.4, "MID": 1.0, "FWD": 1.0}
+
 # Cold-start prior blend schedule. The joint xPts model relies on rolling
 # features; GW1 has none (default to position priors), GW2-3 have only 1-2
 # GWs of within-season data. The prior season's last-5-GW mean actual pts
@@ -410,6 +418,7 @@ def backtest_season(
     position_calibration: dict[str, float] | None = None,
     walk_forward_chunk: int | None = None,
     defcon_shrinkage: float | None = None,
+    defcon_per_position_shrinkage: dict[str, float] | None = DEFCON_PER_POSITION_SHRINKAGE,
 ) -> BacktestSeasonResult:
     """Run rolling MILP backtest for one test season.
 
@@ -498,13 +507,27 @@ def backtest_season(
     # the additive adjustment — values near 0.5 account for the fact
     # that the model already captures some DefCon implicitly through
     # rolling features.
-    if defcon_shrinkage is not None and test_season == 25:
+    if (
+        defcon_shrinkage is not None or defcon_per_position_shrinkage is not None
+    ) and test_season == 25:
         from fpl_bot.eval.defcon_adjustment import compute_defcon_adjustments
-        defcon = compute_defcon_adjustments(test_season=test_season)
-        for (pid, gw), v in list(pred_by_pgw.items()):
-            adj = defcon.get((pid, gw))
-            if adj is not None:
-                pred_by_pgw[(pid, gw)] = v + defcon_shrinkage * adj
+        # Per-position shrinkage takes precedence; otherwise fall back to the
+        # global scalar.
+        if defcon_per_position_shrinkage is not None:
+            defcon = compute_defcon_adjustments(
+                test_season=test_season,
+                per_position_shrinkage=defcon_per_position_shrinkage,
+            )
+            for (pid, gw), v in list(pred_by_pgw.items()):
+                adj = defcon.get((pid, gw))
+                if adj is not None:
+                    pred_by_pgw[(pid, gw)] = v + adj
+        else:
+            defcon = compute_defcon_adjustments(test_season=test_season)
+            for (pid, gw), v in list(pred_by_pgw.items()):
+                adj = defcon.get((pid, gw))
+                if adj is not None:
+                    pred_by_pgw[(pid, gw)] = v + defcon_shrinkage * adj
     # Actual minutes per (player, gw) — needed by the auto-sub scorer to
     # detect XI blanks (minutes == 0).
     actual_minutes_by_pgw = _per_player_per_gw_actual_minutes(test_season)

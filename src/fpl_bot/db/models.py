@@ -189,6 +189,15 @@ class FactPlayerMatch(Base):
     transfers_out: Mapped[int | None] = mapped_column(Integer)
     transfers_balance: Mapped[int | None] = mapped_column(Integer)
     selected: Mapped[int | None] = mapped_column(Integer)
+    # Phase 7 DefCon columns. Only populated for 25/26 onward (vaastav
+    # introduced the columns in 25/26; earlier seasons stay NULL).
+    # `defensive_contribution` is FPL's per-position threshold metric:
+    #   DEF: tackles + clearances_blocks_interceptions
+    #   MID/FWD: tackles + clearances_blocks_interceptions + recoveries
+    defensive_contribution: Mapped[int | None] = mapped_column(SmallInteger)
+    tackles: Mapped[int | None] = mapped_column(SmallInteger)
+    recoveries: Mapped[int | None] = mapped_column(SmallInteger)
+    clearances_blocks_interceptions: Mapped[int | None] = mapped_column(SmallInteger)
 
 
 class FactUnderstatPlayerMatch(Base):

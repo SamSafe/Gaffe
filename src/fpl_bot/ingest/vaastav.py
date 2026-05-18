@@ -261,6 +261,14 @@ def _ingest_one_gw_df(
                 transfers_out=row.get("transfers_out"),
                 transfers_balance=row.get("transfers_balance"),
                 selected=row.get("selected"),
+                # Phase 7 DefCon columns. Vaastav introduced these in
+                # 25/26; rows from earlier seasons get NULL via .get().
+                defensive_contribution=row.get("defensive_contribution"),
+                tackles=row.get("tackles"),
+                recoveries=row.get("recoveries"),
+                clearances_blocks_interceptions=row.get(
+                    "clearances_blocks_interceptions"
+                ),
             )
             # Idempotent within a transaction. `recorded_at` is server-side
             # `now()` which is stable across all rows in the same transaction,

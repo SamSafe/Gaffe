@@ -511,6 +511,71 @@ def season_player_status_snapshot(season_id: int) -> pl.DataFrame:
     )
 
 
+def defensive_contribution_per_player_per_gw(
+    season_id: int,
+) -> pl.DataFrame:
+    """Per-(player_id, gameweek) defensive_contribution stat for a season,
+    deduped to the latest recorded_at per (player, fixture). DGW handling:
+    sum across same-GW fixtures (one player can have 2 matches in a GW).
+
+    Returns columns: player_id, gameweek, defensive_contribution, minutes.
+    Only rows with non-null defensive_contribution are returned (the column
+    is only populated for FPL 25/26 onward).
+
+    Used by the DefCon adjustment helper to predict per-(player, gw) DefCon
+    points via PIT-correct rolling-rate estimate.
+    """
+    from sqlalchemy import func as _func
+
+    from fpl_bot.db.models import DimFixture as _DimFixture
+
+    with session_scope() as s:
+        latest = (
+            select(
+                FactPlayerMatch.player_id,
+                FactPlayerMatch.fixture_id,
+                _func.max(FactPlayerMatch.recorded_at).label("max_rec"),
+            )
+            .group_by(FactPlayerMatch.player_id, FactPlayerMatch.fixture_id)
+            .subquery("fpm_latest_dc")
+        )
+        rows = s.execute(
+            select(
+                FactPlayerMatch.player_id,
+                _DimFixture.gameweek,
+                FactPlayerMatch.defensive_contribution,
+                FactPlayerMatch.minutes,
+            )
+            .join(
+                latest,
+                (latest.c.player_id == FactPlayerMatch.player_id)
+                & (latest.c.fixture_id == FactPlayerMatch.fixture_id)
+                & (latest.c.max_rec == FactPlayerMatch.recorded_at),
+            )
+            .join(_DimFixture, _DimFixture.fixture_id == FactPlayerMatch.fixture_id)
+            .where(_DimFixture.season_id == season_id)
+            .where(FactPlayerMatch.defensive_contribution.isnot(None))
+        ).all()
+    if not rows:
+        return pl.DataFrame()
+    df = pl.DataFrame(
+        [
+            {
+                "player_id": int(r.player_id),
+                "gameweek": int(r.gameweek),
+                "defensive_contribution": int(r.defensive_contribution),
+                "minutes": int(r.minutes or 0),
+            }
+            for r in rows
+        ]
+    )
+    # DGW: sum across same-GW fixtures
+    return df.group_by(["player_id", "gameweek"]).agg(
+        pl.col("defensive_contribution").sum(),
+        pl.col("minutes").sum(),
+    )
+
+
 def player_actual_pts_last_n_gws(
     season_id: int, n: int = 5
 ) -> dict[int, float]:
