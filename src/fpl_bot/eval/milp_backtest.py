@@ -337,6 +337,7 @@ def backtest_season(
     use_chip_schedule: bool = False,
     transfer_penalty: float = 0.0,
     captain_quantile: float | None = None,
+    position_calibration: dict[str, float] | None = None,
 ) -> BacktestSeasonResult:
     """Run rolling MILP backtest for one test season."""
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -373,6 +374,25 @@ def backtest_season(
                 pred_by_pgw[(pid, gw)] = (
                     blend_w * prior_pts[pid] + (1 - blend_w) * v
                 )
+
+    # Per-position calibration (Phase 6 v3). The xPts model trained on
+    # 19-24 systematically under-predicts 25/26 by ~7% overall (FWD −22%,
+    # MID −12%, DEF neutral, GKP +14% over-prediction). Apply caller-
+    # supplied per-position scale factors to correct. For live use, factors
+    # are computed from completed-GW actuals (PIT-correct). For backtest,
+    # using full-season factors introduces small lookahead bias on a
+    # season-aggregated statistic (acceptable for measurement).
+    if position_calibration:
+        positions_lookup = (
+            pit.all_player_positions()
+            .to_pandas()
+            .set_index("player_id")["position_code"]
+            .to_dict()
+        )
+        for (pid, gw), v in list(pred_by_pgw.items()):
+            pos = positions_lookup.get(pid)
+            if pos and pos in position_calibration:
+                pred_by_pgw[(pid, gw)] = v * position_calibration[pos]
     # Actual minutes per (player, gw) — needed by the auto-sub scorer to
     # detect XI blanks (minutes == 0).
     actual_minutes_by_pgw = _per_player_per_gw_actual_minutes(test_season)
