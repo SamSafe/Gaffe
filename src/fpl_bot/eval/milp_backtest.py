@@ -335,7 +335,7 @@ def backtest_season(
     n_scenarios: int = 25,
     raw_samples_dir: Path = Path("data/cache/xpts_raw_samples"),
     use_chip_schedule: bool = False,
-    transfer_penalty: float = 1.0,
+    transfer_penalty: float = 0.0,
     captain_quantile: float | None = None,
 ) -> BacktestSeasonResult:
     """Run rolling MILP backtest for one test season."""
