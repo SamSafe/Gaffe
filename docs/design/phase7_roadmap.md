@@ -66,9 +66,20 @@ same tier are roughly independent and can be tackled in any order.
 - Wire into `eo_for_candidates` to blend top-10k with general EO (weight TBD; start 0.7 top10k + 0.3 general).
 - Acceptance: ρ-EO sweep shows improvement on retro vs general-EO-only.
 
-**1.4 25/26 BPS audit** (half day — quick verification, possibly already correct)
-- Confirm whether FPL changed BPS scoring matrix in 25/26 (vs the DefCon addition which is a separate score). If unchanged, no work needed; document and close.
-- If changed: populate `bps_rule_set` table with 25/26 deltas; wire `score_bps_known_events` to look up by season_id.
+**1.4 25/26 BPS audit** ✅ DONE — no changes needed
+- Empirical audit: for each position, sampled single-goal scorers (no
+  assist, no card, no OG) and computed remainder = bps − (6 for 60min
+  appearance + 12 if DEF CS + GC deductions). Remainders cluster around
+  the existing values (DEF=24, MID=18, FWD=12) with small variance from
+  unaccounted BPS sources (shots, passes, tackles) — consistent with
+  unchanged scoring matrix.
+- FPL 25/26 rule changes are:
+  1. Defensive Contribution Points (DefCon) — SEPARATE +2 pts category
+     (handled by Phase 7 1.1)
+  2. BPS scoring matrix — UNCHANGED
+  3. No other rule changes affecting prediction-relevant scoring
+- `bps_rule_set` table remains empty; the hard-coded constants in
+  `fpl_bot/models/bps.py` already match 25/26's reality.
 
 ### Tier 2 — Significant effort, high reward
 
