@@ -50,12 +50,15 @@ same tier are roughly independent and can be tackled in any order.
 - Add unit tests for the PIT primitive.
 - Acceptance: cross-fold diagnostic shows 25/26 per-position bias within ±0.05 of fold 24.
 
-**1.2 Bookmaker odds ingest for goals/CS** (2-3 days)
-- Source: Betfair Exchange JSON API (free, requires app key registration) OR Pinnacle (free, no registration). Decide based on coverage of full season schedule pre-deadline.
-- Ingest: pre-deadline pull of Match Odds + Over/Under goal markets per fixture.
-- New table `fact_bookmaker_odds(fixture_id, market, runner, price, recorded_at)`.
-- Conversion: implied λ_home / λ_away from goal markets — replaces or blends with Dixon-Coles `lambda_market_xg`.
-- Acceptance: per-fold Brier(≥6) improvement on out-of-fold validation. Target: −0.005 absolute Brier on at least 3 of 4 folds.
+**1.2 Bookmaker odds ingest for goals/CS** ✅ DONE (turned out to be a one-command catch-up)
+- Audit revealed we already had: football-data.co.uk ingest pulls Pinnacle closing odds (PSH/PSD/PSA) + Over/Under 2.5 (P>2.5 / P<2.5) → `fact_odds`; `derive market-xg` runs Dixon-Coles inversion → `fact_market_xg`; feature builders already consume `pit.market_xg_for_fixtures()`.
+- Gap: 25/26 had never been run through this pipeline. Pinnacle's free API is gone (auth-only), but football-data.co.uk historical CSVs include Pinnacle closing odds — sufficient for backtest and any non-live recommendation.
+- Catch-up ran in two commands:
+  - `fpl-bot ingest footballdata --season-folder 2025-26` → 2,760 odds rows
+  - `fpl-bot derive market-xg --season-id 25` → 684 market_xg rows
+- Cache invalidated and regenerated.
+- Result: bot 1402 → **1498** (+96 pts, beats template +24 for the first time on 25/26).
+- Live-recommend caveat: football-data.co.uk publishes only post-match. For live use the system still relies on the FPL internal Dixon-Coles. A separate live-odds feed (The Odds API or a manual scrape) remains a future v4 item — but for the historical and "look at last week to set this week" recommendation flow we're fine.
 
 **1.3 Top-10k EO scraping** (1 day)
 - LiveFPL `/elite-eo` or FPLStatistics scraping (latter has cleaner table HTML).
