@@ -334,6 +334,7 @@ def backtest_season(
     n_scenarios: int = 25,
     raw_samples_dir: Path = Path("data/cache/xpts_raw_samples"),
     use_chip_schedule: bool = False,
+    transfer_penalty: float = 1.0,
 ) -> BacktestSeasonResult:
     """Run rolling MILP backtest for one test season."""
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -564,6 +565,7 @@ def backtest_season(
             scenario_ids=scenario_ids,
             chip_schedule=chip_schedule,
             captain_attenuator=captain_attenuator,
+            transfer_penalty=transfer_penalty,
         )
 
         import time

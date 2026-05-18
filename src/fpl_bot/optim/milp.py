@@ -90,6 +90,12 @@ class MilpInputs:
     # factor so the MILP biases captain choice toward minutes-reliable
     # players. None or 1.0 means no attenuation (the default).
     captain_attenuator: dict[int, float] | None = None
+    # Phase 6 v3: per-transfer penalty in pts. Subtracts `transfer_penalty *
+    # num_buys` from the objective, raising the bar for free transfers (which
+    # otherwise cost 0 in the MILP). Excludes (a) cold-start fill (when
+    # initial_squad is empty), (b) chip-protected GWs (WC/FH refund all
+    # transfers in reality, so the penalty would over-bias).
+    transfer_penalty: float = 0.0
 
 
 def _gw_in_first_half(gw: int) -> bool:
@@ -559,6 +565,16 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
     # Terminal value V_T applied to squad at last horizon week.
     last_w = H[-1]
 
+    # Build the set of GWs to exempt from the per-transfer penalty:
+    # cold-start fill week (no prior squad) + chip-refunded weeks (WC/FH).
+    transfer_penalty_exempt_gws: set[int] = set()
+    if not initial_squad:
+        transfer_penalty_exempt_gws.add(first_w)
+    if inputs.chip_schedule:
+        for _slot in ("WC1", "WC2", "FH1", "FH2"):
+            if _slot in inputs.chip_schedule:
+                transfer_penalty_exempt_gws.add(inputs.chip_schedule[_slot])
+
     # Terminal value coefficients (per player at horizon-tip)
     if inputs.full_predictions is not None:
         term_coefs = terminal_value_coefficients(
@@ -600,7 +616,13 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
         chip_bonus = sum(m.tc_bonus[w] + m.bb_bonus[w] for w in m.W)
         hits = sum(HIT_COST * m.ht[w] for w in m.W)
         terminal = sum(term_coefs.get(p, 0.0) * m.x[p, last_w] for p in m.P)
-        return rolling - eo_term + chip_bonus - hits + terminal
+        transfer_pen = inputs.transfer_penalty * sum(
+            m.bin[p, w]
+            for p in m.P
+            for w in m.W
+            if w not in transfer_penalty_exempt_gws
+        )
+        return rolling - eo_term + chip_bonus - hits + terminal - transfer_pen
 
     def _obj_saa(m):
         # SAA: average over scenarios. XI is first-stage (single y[p,w]);
@@ -664,7 +686,16 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
             chip_bonus_saa = 0.0
         hits = sum(HIT_COST * m.ht[w] for w in m.W)
         terminal = sum(term_coefs.get(p, 0.0) * m.x[p, last_w] for p in m.P)
-        return rolling_xi + rolling_capt - eo_xi - eo_capt + chip_bonus_saa - hits + terminal
+        transfer_pen = inputs.transfer_penalty * sum(
+            m.bin[p, w]
+            for p in m.P
+            for w in m.W
+            if w not in transfer_penalty_exempt_gws
+        )
+        return (
+            rolling_xi + rolling_capt - eo_xi - eo_capt
+            + chip_bonus_saa - hits + terminal - transfer_pen
+        )
 
     if inputs.use_saa:
         m.objective = Objective(rule=_obj_saa, sense=maximize)
