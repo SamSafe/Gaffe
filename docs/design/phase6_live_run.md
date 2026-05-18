@@ -248,3 +248,68 @@ Reported (not gated):
 - Day 3: retrospective + live smoke + commit
 
 Roughly **2-3 days** of focused work.
+
+---
+
+## 10. v3 polish session — gap-driver investigation (May 2026)
+
+Triggered by the first live retrospective: bot scored 1215 across 29 played GWs of 25/26 vs the user's actual 1661 (gap −446). 11 commits shipped, +106 pts net (1215 → 1321), 28% of the gap closed out-of-sample. All 143 tests pass after.
+
+### 10.1 Multi-fold validation (confirmed the bot generalizes)
+
+Same code, all five folds, transfer_penalty=0:
+
+| Fold | GWs | Bot | Template | Diff |
+|---|---|---|---|---|
+| 21 | 38 | 2495 | 1723 | **+772** |
+| 22 | 37 | 2420 | 1938 | **+482** |
+| 23 | 38 | 2521 | 1799 | **+722** |
+| 24 | 38 | 2384 | 2088 | **+296** |
+| 25 | 29 | 1321 | 1449 | **−128** |
+
+The bot crushes buy-and-hold on every historical fold. 25/26 is the lone outlier — a model-calibration issue, not an optimizer issue (see §10.3).
+
+### 10.2 What worked
+
+| Fix | Commit | Notes |
+|---|---|---|
+| 8-chip ruleset (2× each WC/FH/BB/TC, split halves) | 5df26fe | FPL changed the rules for 25/26; we'd been modeling 24/25's 6-chip set. |
+| BB no-DGW fallback prefers latest GW (not GW1) | 51410c6 | 25/26 first half has zero DGWs. Old fallback picked highest-total-xPts GW = GW1 (position-default prior inflates that). New fallback waits till the squad is tuned. |
+| GW1-3 cold-start prior blend | 07a46f0 + 5599118 | The joint xPts model has no rolling features at GW1. Blends predictions with prior season's last-5-GW mean actual_pts: weight 0.7 / 0.5 / 0.3 for GW1/2/3. Picks up Salah-tier signal pre-rolling-features. |
+| alpha-shadow bug fix | 5599118 | The GW1 prior loop had `alpha = GW1_PRIOR_BLEND` which silently overwrote the function-param `alpha`, corrupting terminal-value coefficient. Renamed to `blend_w`. |
+| Retrain with played 25/26 GWs (in-sample) | 14d1102 | +71 pts in-sample (1342 → 1413). Closes most of the 25/26 gap to template. Use train_seasons=[19..25] for any LIVE GW recommend going forward — PIT-correct since the target GW is in the future. |
+
+### 10.3 The 25/26 calibration finding
+
+The xPts model trained on 19-24 **systematically under-predicts 25/26**:
+
+| Position | Pred mean | Actual mean | Bias |
+|---|---|---|---|
+| GKP | 0.88 | 0.76 | **+0.12** (over) |
+| DEF | 1.23 | 1.26 | −0.02 |
+| MID | 1.08 | 1.21 | **−0.13** |
+| FWD | 1.04 | 1.26 | **−0.22** |
+
+Every single GW is under-predicted by 70-130 pts. Decile 8 of predictions (very-good-not-elite) is under-predicted by 21%. Likely cause: FPL 25/26 introduced new scoring rules (defender contribution, revised minutes thresholds) that shifted the feature→label relationship.
+
+### 10.4 What didn't work (negative results, infrastructure shipped)
+
+| Attempt | Commit | Outcome |
+|---|---|---|
+| Minutes-based candidate filter + captain blank-risk attenuator | 024e8aa | +1 pt only. Top-N-by-xpts candidate filter already excluded most blank-prone players. |
+| Captain via SAA lower-quantile (Q10..Q50) | 7cdd3f5 | All quantiles UNDER-performed mean (Q25: 1262 vs mean 1342). Hypothesis falsified — the model's mean-xpts captain ranking is already well-tuned; quantile picks oscillate between modes. |
+| transfer_penalty in MILP objective | eaf106b → 2cf7fac | Sweep on 25/26 alone said 1.0 was best (+12). Multi-fold sweep revealed 1.0 is net **−41 across folds**. Reverted to 0.0 default. The original +12 was a calibration accident. |
+| position_calibration scale-up (full-pred and captain-only) | 04a4d0f | Both hurt (−76 and −36 vs no-cal). Within-position rankings unchanged by uniform scaling; only the budget allocation shifts, and not in a productive direction. |
+
+### 10.5 What remains (v4 candidates)
+
+1. **Walk-forward retrain harness** — per-GW retraining (only on data prior to each test GW) gives a clean out-of-sample retrain measurement. Current retrain experiment is in-sample for 25/26. Cost: ~38× per-fold training, but each train is small (~30s). Doable as a nightly batch job.
+2. **Live lineup signal ingest** — press conferences, Twitter, official-lineup-on-the-day. The largest remaining gap (~248 pts to user) is news the bot can't see.
+3. **Per-player calibration** (vs aggregate position) — the position-aggregate calibration didn't help, but per-player calibration tuned to under-predicted breakout players might. Risky (overfitting); needs cross-validation.
+4. **Transfer cost-benefit recalibration** with explicit predicted-gain-variance modeling — instead of a flat threshold, scale the penalty by the prediction's confidence interval. Needs SAA-derived variance per player.
+
+### 10.6 Operational notes for live use
+
+- **Default `train_seasons` for live recommend should evolve with the season.** Pre-26/27 start, use `[19,20,21,22,23,24,25]`. Once 26/27 ingest is running, append 26.
+- **GW1 prior data dependency:** `pit.player_actual_pts_last_n_gws(prior_season, n=5)` requires `fact_player_match` rows from the prior season's last 5 GWs. If vaastav hasn't ingested the prior season's tail yet, the prior is silently empty and the cold-start falls back to model-only. Watch for this in early-season runs.
+- **Cache invalidation:** when `train_seasons` changes, the prediction cache key changes too — old caches stick around. Periodically clean `data/cache/xpts_predictions/` and `data/cache/xpts_raw_samples/`.
