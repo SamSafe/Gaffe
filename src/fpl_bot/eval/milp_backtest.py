@@ -42,6 +42,11 @@ from fpl_bot.optim.state import BacktestState, GwDecisions, apply_gw_outcomes
 MINUTES_LOOKBACK = 3
 MIN_MINUTES_THRESHOLD = 30
 
+# GW1 cold-start prior blend weight. The model's GW1 e_xpts is compressed
+# (~0.25 pt top-10 spread); blending heavily with prior-season-last-5 actual
+# pts (~10 pt spread) restores the signal needed for captain/squad picks.
+GW1_PRIOR_BLEND = 0.7
+
 
 @dataclass
 class GwBacktestRecord:
@@ -345,9 +350,23 @@ def backtest_season(
         if cache_predictions:
             eval_df.write_parquet(cache_path)
 
-    # Aggregate to per-(player, gw) predictions and actuals
+    # Aggregate to per(player, gw) predictions and actuals
     pred_by_pgw = _per_player_per_gw_predictions(eval_df)
     actual_by_pgw = _per_player_per_gw_actuals(eval_df)
+
+    # GW1 cold-start prior (Phase 6 v3). The joint xPts model has no rolling
+    # features at GW1 and defaults to position priors, compressing top-player
+    # e_xpts to a ~0.25 pt spread (vs ~5 pt spread mid-season). Blend with the
+    # prior season's last-5-GW mean actual_pts to restore captain/squad signal.
+    # Players new to PL (no prior data) fall back to model-only.
+    if train_seasons:
+        prior_pts = pit.player_actual_pts_last_n_gws(max(train_seasons), n=5)
+        if prior_pts:
+            alpha = GW1_PRIOR_BLEND
+            for (pid, gw), v in list(pred_by_pgw.items()):
+                if gw != 1 or pid not in prior_pts:
+                    continue
+                pred_by_pgw[(pid, gw)] = alpha * prior_pts[pid] + (1 - alpha) * v
     # Actual minutes per (player, gw) — needed by the auto-sub scorer to
     # detect XI blanks (minutes == 0).
     actual_minutes_by_pgw = _per_player_per_gw_actual_minutes(test_season)

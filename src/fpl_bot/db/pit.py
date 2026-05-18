@@ -511,6 +511,64 @@ def season_player_status_snapshot(season_id: int) -> pl.DataFrame:
     )
 
 
+def player_actual_pts_last_n_gws(
+    season_id: int, n: int = 5
+) -> dict[int, float]:
+    """Mean `total_points` per fixture across the LAST `n` finished GWs of
+    `season_id`. Used as a GW1 cold-start prior for the next season.
+
+    Cross-season identity: `player_id` is the stable FPL `code` (not the
+    per-season element id), so a player_id in season N+1 = same player in
+    season N. Promoted teams' players don't appear and naturally fall back
+    to the model's default xPts.
+
+    Dedupes by latest recorded_at per (player_id, fixture_id), same pattern
+    as `all_player_match_with_kickoff`.
+    """
+    from sqlalchemy import func as _func
+
+    from fpl_bot.db.models import DimFixture as _DimFixture
+
+    with session_scope() as s:
+        max_gw = s.execute(
+            select(_func.max(_DimFixture.gameweek)).where(
+                _DimFixture.season_id == season_id
+            )
+        ).scalar()
+        if max_gw is None:
+            return {}
+        lo = max(1, int(max_gw) - n + 1)
+        latest = (
+            select(
+                FactPlayerMatch.player_id,
+                FactPlayerMatch.fixture_id,
+                _func.max(FactPlayerMatch.recorded_at).label("max_rec"),
+            )
+            .group_by(FactPlayerMatch.player_id, FactPlayerMatch.fixture_id)
+            .subquery("fpm_latest_prior")
+        )
+        rows = s.execute(
+            select(
+                FactPlayerMatch.player_id,
+                FactPlayerMatch.total_points,
+            )
+            .join(
+                latest,
+                (latest.c.player_id == FactPlayerMatch.player_id)
+                & (latest.c.fixture_id == FactPlayerMatch.fixture_id)
+                & (latest.c.max_rec == FactPlayerMatch.recorded_at),
+            )
+            .join(_DimFixture, _DimFixture.fixture_id == FactPlayerMatch.fixture_id)
+            .where(_DimFixture.season_id == season_id)
+            .where(_DimFixture.gameweek >= lo)
+            .where(_DimFixture.gameweek <= int(max_gw))
+        ).all()
+    by_pid: dict[int, list[int]] = {}
+    for r in rows:
+        by_pid.setdefault(int(r.player_id), []).append(int(r.total_points or 0))
+    return {pid: sum(pts) / len(pts) for pid, pts in by_pid.items()}
+
+
 def recent_minutes_at_gw(
     season_id: int, target_gw: int, lookback_gws: int = 3
 ) -> dict[int, int]:
