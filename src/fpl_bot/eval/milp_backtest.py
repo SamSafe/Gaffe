@@ -409,6 +409,7 @@ def backtest_season(
     captain_quantile: float | None = None,
     position_calibration: dict[str, float] | None = None,
     walk_forward_chunk: int | None = None,
+    defcon_shrinkage: float | None = None,
 ) -> BacktestSeasonResult:
     """Run rolling MILP backtest for one test season.
 
@@ -487,6 +488,23 @@ def backtest_season(
             pos = positions_lookup.get(pid)
             if pos and pos in position_calibration:
                 pred_by_pgw[(pid, gw)] = v * position_calibration[pos]
+
+    # DefCon (Phase 6 v3): FPL 2025/26 added +2 pts for defenders with
+    # ≥10 defensive contributions (tackles + CBI) and +2 for MID/FWD
+    # with ≥12 defensive contributions (+ recoveries). The xPts model
+    # trained on 19-24 doesn't know this rule; the cross-fold diagnostic
+    # showed DEF bias flipped from over- to under-prediction on 25/26
+    # consistent with the new rule. `defcon_shrinkage` ∈ [0, 1] scales
+    # the additive adjustment — values near 0.5 account for the fact
+    # that the model already captures some DefCon implicitly through
+    # rolling features.
+    if defcon_shrinkage is not None and test_season == 25:
+        from fpl_bot.eval.defcon_adjustment import compute_defcon_adjustments
+        defcon = compute_defcon_adjustments(test_season=test_season)
+        for (pid, gw), v in list(pred_by_pgw.items()):
+            adj = defcon.get((pid, gw))
+            if adj is not None:
+                pred_by_pgw[(pid, gw)] = v + defcon_shrinkage * adj
     # Actual minutes per (player, gw) — needed by the auto-sub scorer to
     # detect XI blanks (minutes == 0).
     actual_minutes_by_pgw = _per_player_per_gw_actual_minutes(test_season)
