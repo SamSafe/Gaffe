@@ -22,12 +22,12 @@ from fpl_bot.config import settings
 from fpl_bot.db import pit
 from fpl_bot.derive import dixon_coles
 from fpl_bot.ingest import audit as audit_module
-from fpl_bot.ingest import footballdata, fpl_api, oddsapi, understat, vaastav
+from fpl_bot.ingest import footballdata, fpl_api, livefpl, oddsapi, understat, vaastav
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 console = Console()
 
-_SUPPORTED_SOURCES = {"fpl", "vaastav", "footballdata", "understat", "oddsapi"}
+_SUPPORTED_SOURCES = {"fpl", "vaastav", "footballdata", "understat", "oddsapi", "livefpl"}
 
 
 @app.command()
@@ -111,6 +111,49 @@ def ingest(
                 f"[blue]parse_raw_footballdata(season_id={season_id})[/blue]"
             )
             counts = footballdata.parse_raw_footballdata(path, season_id=season_id)
+            for k, v in counts.items():
+                console.print(f"  {k}: {v}")
+
+    elif source == "livefpl":
+        if season_folder is None:
+            console.print(
+                "[red]livefpl requires --season-folder (current season, e.g. 2025-26)[/red]"
+            )
+            raise typer.Exit(1)
+        season_id_for_parse = int(season_folder.split("-")[0]) - 2000
+        if not parse_only:
+            console.print("[blue]fetch_raw_livefpl() — scraping LiveFPL /EO[/blue]")
+            path = livefpl.fetch_raw_livefpl()
+            console.print(f"  → {path}")
+        if not raw_only:
+            today = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d")
+            raw_path = settings.raw_dir / "livefpl" / today / "EO.html"
+            if not raw_path.exists():
+                console.print(
+                    f"[yellow]No raw payload at {raw_path}; run without --parse-only first.[/yellow]"
+                )
+                raise typer.Exit(1)
+            # GW from FPL bootstrap: pick the next-up event. For now require it
+            # via CLI later; for the smoke we hardcode discovery via FPL API.
+            import json as _json
+            import urllib.request as _ur
+            with _ur.urlopen(
+                "https://fantasy.premierleague.com/api/bootstrap-static/", timeout=20
+            ) as r:
+                bootstrap = _json.loads(r.read())
+            current_gw = next(
+                (e["id"] for e in bootstrap["events"] if e.get("is_next") or e.get("is_current")),
+                None,
+            )
+            if current_gw is None:
+                console.print("[yellow]Could not infer current GW from bootstrap[/yellow]")
+                raise typer.Exit(1)
+            console.print(
+                f"[blue]parse_raw_livefpl(season_id={season_id_for_parse}, gw={current_gw})[/blue]"
+            )
+            counts = livefpl.parse_raw_livefpl(
+                raw_path, season_id=season_id_for_parse, gameweek=current_gw
+            )
             for k, v in counts.items():
                 console.print(f"  {k}: {v}")
 
