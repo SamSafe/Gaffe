@@ -179,3 +179,58 @@ is PIT-correct.
 | **Final** | **1517** | **+302** |
 
 Gap to user REDACTED_TEAM_ID (1661 over 29 played GWs): −144 (was −446 at start).
+
+---
+
+## Tier 2 close-out
+
+All 3 items shipped as live-only infrastructure (no measurable backtest
+impact, by design — these signals activate at recommend time):
+
+**2.1 News extractor** (commit `2c1eea4`)
+- Major scope simplification: FPL bootstrap-static already provides a
+  per-player `news` text field (294/839 players had news at smoke time).
+  Building a third-party scraper was unnecessary.
+- Parses "Expected back DD MMM" and "out for the season" patterns into
+  structured return_date / out_for_season flags. 27 of 295 newsy players
+  have parseable return dates.
+- Live recommend now keeps players in the candidate pool when they're
+  currently excluded by status_code but have a return-date inside the
+  horizon; their pre-return GW pred is forced to 0 via news_attenuator.
+  The MILP can then transfer them in for their first available GW.
+- 6 new unit tests; 176 total pass.
+
+**2.2 Price-change predictor wire-in** (commit `a795cd1`)
+- Phase 3.5 trained the multinomial price-change model. This commit
+  loads it on demand (per train_seasons key) and predicts E[Δ] per
+  candidate via the latest pre-GW feature row.
+- Live recommend's sell_prices now project to horizon-end (current +
+  capped × horizon weeks) so the MILP's terminal-value chain rewards
+  holding rising players. buy_prices stay at current.
+- Graceful degradation if the predictor can't run (logged, falls back).
+
+**2.3 Set-piece corner/FK features** (commit `e09b31c`)
+- Two new binary features (`is_corner_taker`, `is_fk_taker`) join
+  `is_penalty_taker` in the goals/assists feature pipeline.
+- configs/set_piece_takers.yaml: 25 season is an empty stub — needs
+  manual population for the features to fire on 25/26 data.
+- 8 new tests; resolver verified on season 24 entries.
+
+**Multi-fold validation, post-Tier-2:**
+
+  fold | bot  | template | diff | delta-vs-Tier-1
+    21 | 2562 |  1735    | +827 | 0
+    22 | 2380 |  1818    | +562 | 0
+    23 | 2485 |  1756    | +729 | 0
+    24 | 2410 |  2082    | +328 | +4 (solver noise)
+    25 | 1517 |  1466    | +51  | 0
+
+All gates pass. Bot continues to beat template by +51 to +827 across
+every fold.
+
+### Session-cumulative summary
+
+Started: bot 1215 on 25/26, −446 below user.
+Ended:   bot 1517 on 25/26, −144 below user (68% of gap closed).
+Tests:   176 pass.
+Commits: 19 in the session (8 v3 polish + 11 Phase 7).
