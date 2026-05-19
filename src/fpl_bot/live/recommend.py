@@ -56,13 +56,27 @@ class RecommendationContext:
 def _attenuate_predictions(
     pred_by_pgw: dict[tuple[int, int], float],
     overrides: LiveStatusOverrides,
+    *,
+    news_attenuator: dict[tuple[int, int], float] | None = None,
+    unexclude_returning: set[int] | None = None,
 ) -> dict[tuple[int, int], float]:
-    """Multiply pred by attenuator for doubtful players; drop excluded."""
+    """Multiply pred by attenuator for doubtful players; drop excluded.
+
+    Phase 7 2.1: `news_attenuator` is a per-(player, gw) multiplier from
+    parsed news text (e.g., 0.0 for the GWs a player is out, no entry for
+    GWs after their return-date). `unexclude_returning` lists players who
+    are currently in excluded_player_ids but have a return-date inside the
+    horizon — we KEEP them as candidates so the MILP can pick them for
+    post-return GWs.
+    """
     out: dict[tuple[int, int], float] = {}
+    unexcl = unexclude_returning or set()
     for (pid, gw), v in pred_by_pgw.items():
-        if pid in overrides.excluded_player_ids:
+        if pid in overrides.excluded_player_ids and pid not in unexcl:
             continue
         mult = overrides.xpts_attenuator.get(pid, 1.0)
+        if news_attenuator is not None:
+            mult *= news_attenuator.get((pid, gw), 1.0)
         out[(pid, gw)] = v * mult
     return out
 
@@ -169,9 +183,36 @@ def generate_recommendation(
     # 2. Load user state from latest snapshot
     state = load_user_state(season_id=season_id, gameweek=gameweek, team_id=team_id)
 
-    # 3. Status overrides — applied BEFORE candidate filter
+    # 3. Status overrides — applied BEFORE candidate filter.
+    # Phase 7 2.1: parse FPL news text for return dates; players currently
+    # excluded but returning inside the horizon are un-excluded (kept as
+    # candidates) with their pre-return GW pred zeroed.
     overrides = load_status_overrides(candidate_player_ids=all_players)
-    pred_by_pgw_filtered = _attenuate_predictions(pred_by_pgw, overrides)
+    from fpl_bot.live.news_extract import (
+        build_pred_attenuator,
+        latest_news_per_player,
+        return_gw_for_date,
+    )
+    horizon_gws_for_news = list(range(gameweek, gameweek + horizon))
+    news_attenuator = build_pred_attenuator(
+        season_id=season_id, horizon_gws=horizon_gws_for_news
+    )
+    # Un-exclude players who have a return-date strictly inside the horizon
+    unexclude_returning: set[int] = set()
+    for ex in latest_news_per_player(season_id=season_id):
+        if ex.return_date is None or ex.out_for_season:
+            continue
+        rg = return_gw_for_date(ex.return_date, season_id)
+        if rg is None or rg > max(horizon_gws_for_news):
+            continue
+        if ex.player_id in overrides.excluded_player_ids:
+            unexclude_returning.add(ex.player_id)
+    pred_by_pgw_filtered = _attenuate_predictions(
+        pred_by_pgw,
+        overrides,
+        news_attenuator=news_attenuator,
+        unexclude_returning=unexclude_returning,
+    )
 
     # 4. Team / position / price resolution (same as backtest)
     teams = _team_id_per_player_for_season(season_id, all_players)
@@ -185,7 +226,8 @@ def generate_recommendation(
     valid_players = [
         p
         for p in all_players
-        if p in positions and p in teams and p not in overrides.excluded_player_ids
+        if p in positions and p in teams
+        and (p not in overrides.excluded_player_ids or p in unexclude_returning)
     ]
 
     # 5. Chip schedule + DGW set (Phase 5)
