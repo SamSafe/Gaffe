@@ -31,3 +31,10 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code transient lock (not config)
+.claude/scheduled_tasks.lock
+
+# Generated artifacts — regenerable, not source
+data/models/
+data/live/
