@@ -142,6 +142,26 @@ def build_feature_table(season_ids: list[int] | None = None) -> pl.DataFrame:
         .alias("xg_buildup_per_90_last_5"),
     )
 
+    # Finishing skill (Phase 7 model #1). The cross-fold diagnostic showed
+    # the model under-predicts elite FWDs (top deciles bias −0.57 to −0.95)
+    # because it predicts ≈xG, but clinical finishers consistently BEAT xG.
+    # finishing_skill = rolling (npg − npxg) per 90 over a long window (10) —
+    # positive = over-performs xG. The model can then boost predictions for
+    # genuinely elite finishers. Long window damps small-sample luck.
+    pm = pm.with_columns(
+        (
+            ((pl.col("npg") - pl.col("npxg")) / minutes_factor)
+            .shift(1)
+            .over("player_id")
+        ).alias("_finishing_delta_prev")
+    )
+    pm = pm.with_columns(
+        pl.col("_finishing_delta_prev")
+        .rolling_mean(window_size=10, min_samples=3)
+        .over("player_id")
+        .alias("finishing_skill_last_10")
+    )
+
     # ── Market xG join (player's team and opponent for this fixture) ──────────
     market = pit.market_xg_for_fixtures()
     if not market.is_empty():
@@ -293,6 +313,7 @@ FEATURE_COLUMNS: list[str] = [
     "key_passes_per_90_last_10",
     "xg_chain_per_90_last_5",
     "xg_buildup_per_90_last_5",
+    "finishing_skill_last_10",
     "team_lambda_market_xg",
     "opponent_lambda_market_xg",
     "team_goals_for_last_5",
@@ -436,8 +457,11 @@ def build_prediction_feature_table(
         )
 
     # 6. Join rolling features from each player's last historical row.
-    #    Take ONLY the rolling-feature columns; bring in via player_id.
-    rolling_cols = [c for c in FEATURE_COLUMNS if "per_90" in c]
+    #    Take ONLY the player-rolling-feature columns; bring in via player_id.
+    #    (Team-form cols are handled separately above via team joins.)
+    _player_rolling = [c for c in FEATURE_COLUMNS if "per_90" in c]
+    _player_rolling.append("finishing_skill_last_10")
+    rolling_cols = _player_rolling
     if not per_player_rolling.is_empty():
         keep = ["player_id"] + [c for c in rolling_cols if c in per_player_rolling.columns]
         rolling = per_player_rolling.select(keep)
