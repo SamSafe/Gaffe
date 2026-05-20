@@ -419,6 +419,7 @@ def backtest_season(
     walk_forward_chunk: int | None = None,
     defcon_shrinkage: float | None = None,
     defcon_per_position_shrinkage: dict[str, float] | None = DEFCON_PER_POSITION_SHRINKAGE,
+    fwd_calibration: bool = False,
 ) -> BacktestSeasonResult:
     """Run rolling MILP backtest for one test season.
 
@@ -528,6 +529,25 @@ def backtest_season(
                 adj = defcon.get((pid, gw))
                 if adj is not None:
                     pred_by_pgw[(pid, gw)] = v + defcon_shrinkage * adj
+
+    # FWD isotonic calibration (Phase 7 model #1b). Corrects the chronic
+    # elite-FWD under-prediction with a monotonic map fit on OTHER folds'
+    # held-out FWD (pred, actual) pairs. PIT-clean: the test season is never
+    # in the fit set.
+    if fwd_calibration:
+        from fpl_bot.models.fwd_calibration import fit_fwd_calibrator
+        calibrator = fit_fwd_calibrator(test_season, cache_dir=cache_dir)
+        if calibrator is not None:
+            positions_lookup = (
+                pit.all_player_positions()
+                .to_pandas()
+                .set_index("player_id")["position_code"]
+                .to_dict()
+            )
+            for (pid, gw), v in list(pred_by_pgw.items()):
+                if positions_lookup.get(pid) == "FWD":
+                    pred_by_pgw[(pid, gw)] = calibrator.transform(v)
+
     # Actual minutes per (player, gw) — needed by the auto-sub scorer to
     # detect XI blanks (minutes == 0).
     actual_minutes_by_pgw = _per_player_per_gw_actual_minutes(test_season)
