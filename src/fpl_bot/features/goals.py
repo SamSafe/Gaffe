@@ -16,6 +16,51 @@ from fpl_bot.features import manual_overrides
 POSITION_CODES = ("GKP", "DEF", "MID", "FWD")
 
 
+def _team_rolling_form(season_ids: list[int] | None) -> pl.DataFrame:
+    """Per-(team_id, fixture_id) rolling attack/defense form (Phase 7 model #3).
+
+    Returns columns: team_id, fixture_id, team_goals_for_last_5,
+    team_goals_conceded_last_5. PIT-correct via shift(1).over(team_id) before
+    the rolling window. These complement the bookmaker-derived market_xg
+    (a point-in-time line) with the team's *recent trajectory*.
+    """
+    pm = pit.all_player_match_with_kickoff(season_ids=season_ids)
+    if pm.is_empty():
+        return pl.DataFrame()
+    pm = pm.filter(pl.col("goals_conceded").is_not_null())
+    pm = pm.with_columns(
+        pl.when(pl.col("was_home"))
+        .then(pl.col("home_team_id"))
+        .otherwise(pl.col("away_team_id"))
+        .alias("team_id"),
+    )
+    # goals_conceded is per-player (time-on-pitch); the full-90 starter has the
+    # team total → aggregate with max. goals_for = sum of teammate goals.
+    tf = pm.group_by(["team_id", "fixture_id"]).agg(
+        pl.first("kickoff_utc").alias("kickoff_utc"),
+        pl.col("goals").sum().alias("team_goals_for"),
+        pl.col("goals_conceded").max().alias("team_goals_conceded"),
+    )
+    tf = tf.sort(by=["team_id", "kickoff_utc"])
+    tf = tf.with_columns(
+        pl.col("team_goals_for").cast(pl.Float32).shift(1).over("team_id").alias("gf_prev"),
+        pl.col("team_goals_conceded").cast(pl.Float32).shift(1).over("team_id").alias("gc_prev"),
+    )
+    tf = tf.with_columns(
+        pl.col("gf_prev")
+        .rolling_mean(window_size=5, min_samples=1)
+        .over("team_id")
+        .alias("team_goals_for_last_5"),
+        pl.col("gc_prev")
+        .rolling_mean(window_size=5, min_samples=1)
+        .over("team_id")
+        .alias("team_goals_conceded_last_5"),
+    )
+    return tf.select(
+        "team_id", "fixture_id", "team_goals_for_last_5", "team_goals_conceded_last_5"
+    )
+
+
 def build_feature_table(season_ids: list[int] | None = None) -> pl.DataFrame:
     """Build the goals/assists feature matrix.
 
@@ -116,6 +161,34 @@ def build_feature_table(season_ids: list[int] | None = None) -> pl.DataFrame:
         pm = pm.with_columns(
             pl.lit(None).alias("team_lambda_market_xg"),
             pl.lit(None).alias("opponent_lambda_market_xg"),
+        )
+
+    # ── Team rolling form join (Phase 7 model #3) ─────────────────────────────
+    # Recent attack/defense trajectory, complementing the point-in-time
+    # market λ. opponent_goals_conceded_last_5 is the sharpest single signal
+    # for a player's goal chance (facing a leaky defense).
+    team_form = _team_rolling_form(season_ids)
+    if not team_form.is_empty():
+        own_form = team_form.select(
+            pl.col("fixture_id"),
+            pl.col("team_id").alias("player_team_id"),
+            pl.col("team_goals_for_last_5"),
+            pl.col("team_goals_conceded_last_5"),
+        )
+        opp_form = team_form.select(
+            pl.col("fixture_id"),
+            pl.col("team_id").alias("opponent_team_id"),
+            pl.col("team_goals_for_last_5").alias("opponent_goals_for_last_5"),
+            pl.col("team_goals_conceded_last_5").alias("opponent_goals_conceded_last_5"),
+        )
+        pm = pm.join(own_form, on=["fixture_id", "player_team_id"], how="left")
+        pm = pm.join(opp_form, on=["fixture_id", "opponent_team_id"], how="left")
+    else:
+        pm = pm.with_columns(
+            pl.lit(None).cast(pl.Float64).alias("team_goals_for_last_5"),
+            pl.lit(None).cast(pl.Float64).alias("team_goals_conceded_last_5"),
+            pl.lit(None).cast(pl.Float64).alias("opponent_goals_for_last_5"),
+            pl.lit(None).cast(pl.Float64).alias("opponent_goals_conceded_last_5"),
         )
 
     # ── Manual override joins ─────────────────────────────────────────────────
@@ -222,6 +295,10 @@ FEATURE_COLUMNS: list[str] = [
     "xg_buildup_per_90_last_5",
     "team_lambda_market_xg",
     "opponent_lambda_market_xg",
+    "team_goals_for_last_5",
+    "team_goals_conceded_last_5",
+    "opponent_goals_for_last_5",
+    "opponent_goals_conceded_last_5",
     "was_home",
     "is_penalty_taker",
     "is_corner_taker",
@@ -321,6 +398,42 @@ def build_prediction_feature_table(
         )
     for c in ("team_lambda_market_xg", "opponent_lambda_market_xg"):
         cross = cross.with_columns(pl.col(c).cast(pl.Float64))
+
+    # 5b. Team rolling form (Phase 7 model #3). For upcoming fixtures, use
+    # each team's LATEST played-fixture form (carried forward).
+    team_form = _team_rolling_form([test_season])
+    if not team_form.is_empty():
+        gw_lookup = pit.upcoming_fixtures(
+            team_form["fixture_id"].unique().to_list()
+        ).select("fixture_id", "gameweek")
+        latest_form = (
+            team_form.join(gw_lookup, on="fixture_id", how="left")
+            .sort(["team_id", "gameweek"])
+            .group_by("team_id", maintain_order=True)
+            .agg(
+                pl.col("team_goals_for_last_5").last(),
+                pl.col("team_goals_conceded_last_5").last(),
+            )
+        )
+        own_form = latest_form.select(
+            pl.col("team_id").alias("player_team_id"),
+            pl.col("team_goals_for_last_5"),
+            pl.col("team_goals_conceded_last_5"),
+        )
+        opp_form = latest_form.select(
+            pl.col("team_id").alias("opponent_team_id"),
+            pl.col("team_goals_for_last_5").alias("opponent_goals_for_last_5"),
+            pl.col("team_goals_conceded_last_5").alias("opponent_goals_conceded_last_5"),
+        )
+        cross = cross.join(own_form, on="player_team_id", how="left")
+        cross = cross.join(opp_form, on="opponent_team_id", how="left")
+    else:
+        cross = cross.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("team_goals_for_last_5"),
+            pl.lit(None, dtype=pl.Float64).alias("team_goals_conceded_last_5"),
+            pl.lit(None, dtype=pl.Float64).alias("opponent_goals_for_last_5"),
+            pl.lit(None, dtype=pl.Float64).alias("opponent_goals_conceded_last_5"),
+        )
 
     # 6. Join rolling features from each player's last historical row.
     #    Take ONLY the rolling-feature columns; bring in via player_id.
