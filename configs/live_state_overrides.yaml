@@ -1,0 +1,15 @@
+# Optional exact live-state overrides.
+#
+# Shape:
+# season_id:
+#   gameweek:
+#     team_id:
+#       bank_tenths: 61
+#       free_transfers: 2
+#       chips_used: [WC1, BB2]
+#       cost_basis:
+#         118748: 125
+#
+# Leave empty unless the public FPL endpoint lacks exact current state and
+# authenticated `FPL_BOT_FPL_COOKIE` ingest is unavailable.
+{}

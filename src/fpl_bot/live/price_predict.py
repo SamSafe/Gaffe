@@ -15,6 +15,7 @@ from functools import lru_cache
 
 import polars as pl
 
+from fpl_bot.config import settings
 from fpl_bot.features.price_change import (
     FEATURE_COLUMNS,
     build_feature_table,
@@ -29,6 +30,12 @@ from fpl_bot.models.price_change import (
 @lru_cache(maxsize=4)
 def _trained_model_for(train_seasons_key: tuple[int, ...]) -> TrainedPriceChangeModel:
     """Train (and cache) the model on the given train seasons."""
+    if not settings.enable_shelved_price_predictor:
+        raise RuntimeError(
+            "Phase 3.5 price-change predictor is disabled by default because "
+            "its walk-forward gates failed; validate v2 snapshot features "
+            "before enabling FPL_BOT_ENABLE_SHELVED_PRICE_PREDICTOR."
+        )
     train_df = build_feature_table(list(train_seasons_key))
     train_df = train_df.drop_nulls(LABEL_COLUMN)
     return train_price_change_model(train_df, FEATURE_COLUMNS)
@@ -67,7 +74,7 @@ def predict_one_step_price_deltas(
     deltas = model.predict_expected_delta(feats_X.select(FEATURE_COLUMNS))
     out: dict[int, float] = {
         int(pid): float(d)
-        for pid, d in zip(feats_X["player_id"].to_list(), deltas)
+        for pid, d in zip(feats_X["player_id"].to_list(), deltas, strict=True)
     }
     for pid in candidates:
         out.setdefault(pid, 0.0)
@@ -91,4 +98,4 @@ def projected_horizon_sell_price(
     """
     capped = max(-cap_per_gw_tenths, min(cap_per_gw_tenths, expected_delta_per_gw))
     projected = current_price_tenths + capped * horizon_weeks
-    return max(1, int(round(projected)))
+    return max(1, round(projected))

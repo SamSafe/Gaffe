@@ -272,7 +272,12 @@ def live_ingest(
         console.print(f"  {k}: {v}")
 
     console.print(f"[blue]my-team team_id={team_id} gw={gameweek}[/blue]")
-    mt_raw = fpl_api.fetch_my_team(team_id=team_id, gameweek=gameweek)
+    if settings.fpl_cookie:
+        console.print("[blue]authenticated current my-team[/blue]")
+        mt_raw = fpl_api.fetch_current_my_team(team_id=team_id)
+    else:
+        console.print("[yellow]FPL_BOT_FPL_COOKIE not set; using public historical picks endpoint[/yellow]")
+        mt_raw = fpl_api.fetch_my_team(team_id=team_id, gameweek=gameweek)
     n = fpl_api.parse_my_team(
         mt_raw, season_id=season_id, gameweek=gameweek, team_id=team_id
     )

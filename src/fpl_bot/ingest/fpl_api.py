@@ -252,6 +252,120 @@ def fetch_my_team(team_id: int, gameweek: int) -> Path:
     return raw_path
 
 
+def fetch_current_my_team(team_id: int) -> Path:
+    """Fetch the authenticated current-squad endpoint.
+
+    This endpoint is the only FPL source that exposes exact purchase price,
+    selling price, bank and free-transfer state before the deadline. It
+    requires `FPL_BOT_FPL_COOKIE` to be set to the full browser Cookie header
+    from an authenticated fantasy.premierleague.com session.
+    """
+    if not settings.fpl_cookie:
+        raise RuntimeError(
+            "Authenticated my-team ingest requires FPL_BOT_FPL_COOKIE "
+            "with a logged-in fantasy.premierleague.com Cookie header."
+        )
+    url = f"{FPL_BASE}/my-team/{team_id}/"
+    raw_path = _today_dir("fpl_api") / f"my_team_auth_{team_id}.json"
+    with audit_fetch(source="fpl_api", url=url, user_agent=settings.user_agent) as audit:
+        with httpx.Client(
+            headers={
+                "User-Agent": settings.user_agent,
+                "Cookie": settings.fpl_cookie,
+            },
+            timeout=settings.request_timeout_seconds,
+        ) as client:
+            r = client.get(url)
+            audit.response_code = r.status_code
+            r.raise_for_status()
+            payload = r.content
+        audit.byte_size = len(payload)
+        audit.content_hash = sha256(payload).hexdigest()
+        audit.raw_path = str(raw_path)
+        raw_path.write_bytes(payload)
+    return raw_path
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _latest_status_price(player_id: int) -> int:
+    with session_scope() as s:
+        stmt = (
+            FactPlayerStatus.__table__.select()
+            .where(FactPlayerStatus.player_id == player_id)
+            .order_by(FactPlayerStatus.recorded_at.desc())
+            .limit(1)
+        )
+        row = s.execute(stmt).first()
+    return int(row.price_tenths) if row is not None else 50
+
+
+def _bank_and_free_transfers(payload: dict) -> tuple[int, int]:
+    """Extract bank + remaining free transfers from either payload shape.
+
+    Authenticated `my-team` exposes a `transfers` block. The public historical
+    picks endpoint does not expose the current FT allowance; for that shape we
+    use a conservative default of 1 and let manual overrides correct it.
+    """
+    transfers = payload.get("transfers") or {}
+    entry_history = payload.get("entry_history") or {}
+
+    bank = _coerce_int(
+        transfers.get("bank", entry_history.get("bank", 0)),
+        default=0,
+    )
+
+    if "free_transfers" in transfers:
+        return bank, max(0, _coerce_int(transfers.get("free_transfers"), default=1))
+    if "free_transfers" in entry_history:
+        return bank, max(0, _coerce_int(entry_history.get("free_transfers"), default=1))
+
+    limit = transfers.get("limit")
+    made = transfers.get("made")
+    if limit is not None:
+        return bank, max(0, _coerce_int(limit, default=1) - _coerce_int(made, default=0))
+
+    return bank, 1
+
+
+def _chips_used_from_payload(payload: dict) -> list[str]:
+    """Best-effort chip extraction.
+
+    The public endpoint only carries `active_chip` for that GW. Authenticated
+    payloads vary across seasons, so this recognizes common active/played
+    shapes but leaves exact season-slot correction to the live override file
+    when needed.
+    """
+    out: list[str] = []
+    active_chip = payload.get("active_chip")
+    if active_chip:
+        out.append(str(active_chip))
+
+    for chip in payload.get("chips", []) or []:
+        if not isinstance(chip, dict):
+            continue
+        name = chip.get("name")
+        if not name:
+            continue
+        status = str(chip.get("status_for_entry") or chip.get("status") or "").lower()
+        if status == "active":
+            out.append(str(name))
+
+    # Keep order but drop duplicates.
+    deduped: list[str] = []
+    for name in out:
+        if name not in deduped:
+            deduped.append(name)
+    return deduped
+
+
 def parse_my_team(
     raw_path: Path,
     season_id: int,
@@ -272,11 +386,8 @@ def parse_my_team(
     """
     payload = json.loads(raw_path.read_text())
     picks = payload.get("picks", [])
-    entry_history = payload.get("entry_history", {})
-    active_chip = payload.get("active_chip")
-    chips_used: list[str] = [active_chip] if active_chip else []
-    bank_tenths = entry_history.get("bank", 0)
-    free_transfers = entry_history.get("event_transfers", 0)  # approximate; FPL exposes only transfers used
+    chips_used = _chips_used_from_payload(payload)
+    bank_tenths, free_transfers = _bank_and_free_transfers(payload)
 
     with session_scope() as s:
         # Resolve element_id → stable player_id
@@ -294,23 +405,23 @@ def parse_my_team(
             player_id = element_to_pid.get(element_id)
             if player_id is None:
                 continue  # promoted player not in xref yet; skip
-            # Get current price from latest fact_player_status snapshot
-            stmt = (
-                FactPlayerStatus.__table__.select()
-                .where(FactPlayerStatus.player_id == player_id)
-                .order_by(FactPlayerStatus.recorded_at.desc())
-                .limit(1)
+            current_price = _latest_status_price(player_id)
+            purchase_price = _coerce_int(
+                pick.get("purchase_price", pick.get("purchase_price_tenths")),
+                default=current_price,
             )
-            row = s.execute(stmt).first()
-            price_tenths = int(row.price_tenths) if row is not None else 50
+            selling_price = _coerce_int(
+                pick.get("selling_price", pick.get("selling_price_tenths")),
+                default=current_price,
+            )
 
             ins = pg_insert(FactUserTeamSnapshot).values(
                 season_id=season_id,
                 gameweek=gameweek,
                 team_id=team_id,
                 player_id=player_id,
-                purchase_price_tenths=price_tenths,
-                selling_price_tenths=price_tenths,
+                purchase_price_tenths=purchase_price,
+                selling_price_tenths=selling_price,
                 multiplier=int(pick.get("multiplier", 1)),
                 is_captain=bool(pick.get("is_captain", False)),
                 is_vice=bool(pick.get("is_vice_captain", False)),

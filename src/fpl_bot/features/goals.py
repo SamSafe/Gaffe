@@ -581,7 +581,7 @@ def _resolved_set_piece_player_ids(season_ids: list[int] | None) -> tuple[set[in
     fk: set[int] = set()
     for season_id in seasons:
         teams = raw.get(season_id, {})
-        for team_full, info in teams.items():
+        for _team_full, info in teams.items():
             if not isinstance(info, dict):
                 continue
             for name in info.get("corner", []) or []:

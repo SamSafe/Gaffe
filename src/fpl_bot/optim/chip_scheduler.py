@@ -187,7 +187,7 @@ def make_chip_schedule(
                 .filter(~pl.col("gameweek").is_in(list(used)))
                 .group_by("gameweek")
                 .agg(pl.col("e_xpts").max().alias("max_e_xpts"))
-                .sort("max_e_xpts", descending=True)
+                .sort(["max_e_xpts", "gameweek"], descending=[True, False])
             )
             tc = int(per_gw_max[0, "gameweek"]) if not per_gw_max.is_empty() else None
         return tc
@@ -263,3 +263,41 @@ def make_chip_schedule(
         wc1=wc1, fh1=fh1, bb1=bb1, tc1=tc1,
         wc2=wc2, fh2=fh2, bb2=bb2, tc2=tc2,
     )
+
+
+def free_hit_gws(chip_schedule: dict[str, int] | None) -> set[int]:
+    """Free Hit GWs in a schedule dict."""
+    if not chip_schedule:
+        return set()
+    return {
+        gw
+        for slot, gw in chip_schedule.items()
+        if slot in {"FH1", "FH2"}
+    }
+
+
+def horizon_before_free_hit(
+    horizon_gws: list[int],
+    chip_schedule: dict[str, int] | None,
+) -> list[int]:
+    """Avoid modeling a future Free Hit as a persistent squad.
+
+    The current MILP has one squad state variable, so it cannot represent a
+    temporary FH squad and the reverted permanent squad in the same horizon.
+    If a future FH lies inside the horizon, stop the lookahead before it. If
+    FH is the current GW, keep only that GW; the caller should also suppress
+    terminal value for the solve.
+    """
+    if not horizon_gws:
+        return horizon_gws
+    fhs = free_hit_gws(chip_schedule)
+    if not fhs:
+        return horizon_gws
+    first_w = horizon_gws[0]
+    future_fhs = sorted(gw for gw in fhs if gw in horizon_gws)
+    if not future_fhs:
+        return horizon_gws
+    first_fh = future_fhs[0]
+    if first_fh == first_w:
+        return [first_w]
+    return [gw for gw in horizon_gws if gw < first_fh]

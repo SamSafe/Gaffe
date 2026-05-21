@@ -67,6 +67,12 @@ uv run fpl-bot live recommend \
     --train-seasons 19,20,21,22,23,24,25,26
 ```
 
+For exact current bank, free transfers, purchase prices, and sell prices,
+set `FPL_BOT_FPL_COOKIE` to the full logged-in `fantasy.premierleague.com`
+Cookie header before `live ingest`. Without it, the bot uses the public
+historical picks endpoint and `configs/live_state_overrides.yaml` can patch
+bank, free transfers, chips used, and cost basis locally.
+
 Output lands in `data/live/recommendations/season_26/gw_<GW>/recommendation.md`.
 
 ## After the gameweek closes (optional, for tracking)
@@ -103,7 +109,9 @@ adjust with your own team-news read, not gospel.
 
 - The Odds API: 500 requests/month free. Weekly pull = 3 requests
   (h2h + spreads + totals × 1 region). ~12/month — comfortable.
-- LiveFPL + FFS + football-data + FPL API: free, no key.
+- FPL API: free. Exact current-squad ingest needs your own logged-in cookie,
+  not a paid API key.
+- LiveFPL + FFS + football-data: free, no key.
 - Check `data/raw/oddsapi/<date>/*.meta.json` for remaining quota.
 
 ## Troubleshooting

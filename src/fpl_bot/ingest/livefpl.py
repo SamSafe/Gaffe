@@ -93,7 +93,7 @@ def parse_raw_livefpl(
         "skipped_unmapped_player": 0,
         "skipped_parse_error": 0,
     }
-    web_to_pid, full_team_to_short = _build_lookups(season_id)
+    web_to_pid, _ = _build_lookups(season_id)
     rows = _ROW_RE.findall(html)
     counts["rows_seen"] = len(rows)
 
@@ -106,7 +106,6 @@ def parse_raw_livefpl(
             # cells: [id, type, web_name, team, top10k_eo, top10k_c, top10k_tc,
             #         overall_eo, overall_c, overall_tc, score]
             web_name = _clean(cells[2])
-            team_name = _clean(cells[3])
             try:
                 t10_eo = _pct(cells[4])
                 t10_c = _pct(cells[5])

@@ -7,12 +7,14 @@ import json
 import pytest
 from sqlalchemy import delete
 
+from fpl_bot.config import settings
 from fpl_bot.db.models import FactPlayerStatus, FactUserTeamSnapshot
 from fpl_bot.db.session import session_scope
 from fpl_bot.live.state_builder import (
     DROP_STATUSES,
     LiveStatusOverrides,
     load_status_overrides,
+    load_user_sell_prices,
     load_user_state,
 )
 
@@ -40,6 +42,7 @@ def _insert_user_team(
     bank: int = 25,
     ft: int = 2,
     chips_used: list[str] | None = None,
+    sell_prices: dict[int, int] | None = None,
 ) -> None:
     """players: list of (player_id, purchase_price, position, is_captain, is_vice)."""
     if players is None:
@@ -48,6 +51,7 @@ def _insert_user_team(
     now = dt.datetime.now(dt.UTC)
     with session_scope() as s:
         for pid, price, pos, cap, vc in players:
+            sell_price = sell_prices.get(pid, price) if sell_prices else price
             s.add(
                 FactUserTeamSnapshot(
                     season_id=season_id,
@@ -56,7 +60,7 @@ def _insert_user_team(
                     player_id=pid,
                     recorded_at=now,
                     purchase_price_tenths=price,
-                    selling_price_tenths=price,
+                    selling_price_tenths=sell_price,
                     multiplier=2 if cap else (3 if False else 1),
                     is_captain=cap,
                     is_vice=vc,
@@ -103,6 +107,43 @@ def test_load_user_state_basic():
     assert state.bank == 25
     assert state.free_transfers == 2
     assert len(state.cost_basis) == 15
+
+
+def test_load_user_state_applies_local_override(tmp_path, monkeypatch):
+    override_path = tmp_path / "live_state_overrides.yaml"
+    override_path.write_text(
+        """
+99:
+  5:
+    12345:
+      bank_tenths: 61
+      free_transfers: 4
+      chips_used: [WC1, FH1]
+      cost_basis:
+        90000: 42
+""".strip()
+    )
+    monkeypatch.setattr(settings, "live_state_overrides_path", override_path)
+    _insert_user_team(season_id=99, gameweek=5, team_id=12345)
+
+    state = load_user_state(season_id=99, gameweek=5, team_id=12345)
+
+    assert state.bank == 61
+    assert state.free_transfers == 4
+    assert state.chips_used == frozenset({"WC1", "FH1"})
+    assert state.cost_basis[90000] == 42
+
+
+def test_load_user_sell_prices_uses_latest_snapshot_values():
+    _insert_user_team(
+        season_id=99,
+        gameweek=5,
+        team_id=12345,
+        sell_prices={90000: 49, 90001: 53},
+    )
+    sell_prices = load_user_sell_prices(season_id=99, gameweek=6, team_id=12345)
+    assert sell_prices[90000] == 49
+    assert sell_prices[90001] == 53
 
 
 def test_load_user_state_missing_raises():

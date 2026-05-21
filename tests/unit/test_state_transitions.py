@@ -145,6 +145,45 @@ def test_apply_gw_outcomes_chip_waives_ft_consumption() -> None:
     assert "WC1" in new_state.chips_used
 
 
+def test_apply_gw_outcomes_free_hit_reverts_squad_and_bank() -> None:
+    """FH transfers are temporary: next-GW state keeps the pre-FH squad."""
+    s = BacktestState(
+        season_id=24,
+        gameweek=18,
+        squad=frozenset({100, 200}),
+        bank=10,
+        free_transfers=1,
+        cost_basis={100: 80, 200: 70},
+    )
+    decisions = GwDecisions(
+        gameweek=18,
+        squad=frozenset({300, 400}),
+        starting_xi=frozenset({300, 400}),
+        captain=300,
+        vice=400,
+        transferred_in=frozenset({300, 400}),
+        transferred_out=frozenset({100, 200}),
+        chip_played="FH1",
+        hits=0,
+        objective_value=0.0,
+    )
+    new_state = apply_gw_outcomes(
+        s,
+        decisions,
+        actual_prices={
+            100: {"sell": 80},
+            200: {"sell": 70},
+            300: {"buy": 90},
+            400: {"buy": 60},
+        },
+    )
+    assert new_state.squad == s.squad
+    assert new_state.bank == s.bank
+    assert new_state.cost_basis == s.cost_basis
+    assert new_state.free_transfers == 2
+    assert "FH1" in new_state.chips_used
+
+
 def test_apply_gw_outcomes_ft_caps_at_5() -> None:
     """FT count caps at 5 even with multi-week buildup."""
     s = BacktestState(

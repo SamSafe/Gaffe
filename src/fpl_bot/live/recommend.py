@@ -28,13 +28,19 @@ from fpl_bot.eval.xpts_eval import _run_one_fold, run_predict_only
 from fpl_bot.live.state_builder import (
     LiveStatusOverrides,
     load_status_overrides,
+    load_user_sell_prices,
     load_user_state,
 )
 from fpl_bot.optim.candidate_filter import select_candidates
-from fpl_bot.optim.chip_scheduler import make_chip_schedule
+from fpl_bot.optim.chip_scheduler import (
+    free_hit_gws,
+    horizon_before_free_hit,
+    make_chip_schedule,
+)
 from fpl_bot.optim.eo import eo_for_candidates
 from fpl_bot.optim.fixture_analytics import load_fixture_analytics
 from fpl_bot.optim.milp import MilpInputs, solve_rolling_horizon
+from fpl_bot.optim.prediction_postprocess import apply_prediction_postprocessing
 
 OUTPUT_ROOT = Path("data/live/recommendations")
 
@@ -177,11 +183,22 @@ def generate_recommendation(
     if not pred_by_pgw:
         raise RuntimeError(f"Could not generate predictions for season {season_id}")
 
+    pred_by_pgw = apply_prediction_postprocessing(
+        pred_by_pgw,
+        season_id=season_id,
+        train_seasons=train_seasons,
+        cache_dir=cache_dir,
+        extend_defcon_future=True,
+    )
+
     all_gws = sorted({gw for (_, gw) in pred_by_pgw if gw > 0})
     all_players = sorted({pid for (pid, _) in pred_by_pgw})
 
     # 2. Load user state from latest snapshot
     state = load_user_state(season_id=season_id, gameweek=gameweek, team_id=team_id)
+    exact_sell_prices = load_user_sell_prices(
+        season_id=season_id, gameweek=gameweek, team_id=team_id
+    )
 
     # 3. Status overrides — applied BEFORE candidate filter.
     # Phase 7 2.1: parse FPL news text for return dates; players currently
@@ -248,10 +265,12 @@ def generate_recommendation(
 
     # 6. Candidate set for the current GW horizon
     horizon_gws = [w for w in range(gameweek, gameweek + horizon) if w in all_gws]
+    horizon_gws = horizon_before_free_hit(horizon_gws, chip_schedule)
     if not horizon_gws:
         raise RuntimeError(
             f"No predictions for any GW in horizon starting at GW{gameweek}"
         )
+    is_current_free_hit = gameweek in free_hit_gws(chip_schedule)
     horizon_pred = pred_df.filter(pl.col("gameweek").is_in(horizon_gws))
     candidates_set = select_candidates(
         season_id=season_id,
@@ -299,8 +318,11 @@ def generate_recommendation(
         )
         basis = state.cost_basis.get(p) if p in state.squad else None
         if basis is not None:
-            tax = max(0, (projected_horizon_end - basis) // 2)
-            sell_prices[p] = projected_horizon_end - tax
+            if price_predict_available:
+                tax = max(0, (projected_horizon_end - basis) // 2)
+                sell_prices[p] = projected_horizon_end - tax
+            else:
+                sell_prices[p] = exact_sell_prices.get(p, projected_horizon_end)
         else:
             sell_prices[p] = projected_horizon_end
 
@@ -327,7 +349,7 @@ def generate_recommendation(
         alpha=alpha,
         beta=beta,
         enable_chips=True,
-        full_predictions=pred_df,
+        full_predictions=None if is_current_free_hit else pred_df,
         chip_schedule=chip_schedule,
     )
 

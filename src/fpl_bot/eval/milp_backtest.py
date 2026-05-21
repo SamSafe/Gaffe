@@ -31,8 +31,13 @@ from fpl_bot.db.models import DimFixture, FactPlayerMatch
 from fpl_bot.db.session import session_scope
 from fpl_bot.eval.xpts_eval import _run_one_fold
 from fpl_bot.optim.candidate_filter import select_candidates
+from fpl_bot.optim.chip_scheduler import free_hit_gws, horizon_before_free_hit
 from fpl_bot.optim.eo import eo_for_candidates
 from fpl_bot.optim.milp import MilpInputs, solve_rolling_horizon
+from fpl_bot.optim.prediction_postprocess import (
+    DEFCON_PER_POSITION_SHRINKAGE,
+    apply_prediction_postprocessing,
+)
 from fpl_bot.optim.state import BacktestState, GwDecisions, apply_gw_outcomes
 
 # Real-availability filter (Phase 6 v3): a player needs ≥ MIN_MINUTES_THRESHOLD
@@ -41,20 +46,6 @@ from fpl_bot.optim.state import BacktestState, GwDecisions, apply_gw_outcomes
 # dropping single-GW rotation cases.
 MINUTES_LOOKBACK = 3
 MIN_MINUTES_THRESHOLD = 30
-
-# DefCon per-position shrinkage tuned on 25/26 (Phase 7 1.1). DEF needs
-# shrinkage (0.4) because the joint xPts model implicitly captures part of
-# defenders' DefCon via clean-sheet features. MID and FWD need full strength
-# (1.0) because their rolling features don't correlate with defensive stats.
-# Only applies to test_season=25 (the only season with defensive_contribution
-# data). For 26/27 onward, re-tune as a fresh season's data accumulates.
-DEFCON_PER_POSITION_SHRINKAGE = {"DEF": 0.4, "MID": 1.0, "FWD": 1.0}
-
-# Cold-start prior blend schedule. The joint xPts model relies on rolling
-# features; GW1 has none (default to position priors), GW2-3 have only 1-2
-# GWs of within-season data. The prior season's last-5-GW mean actual pts
-# is blended in with decaying weight as the rolling features accumulate.
-EARLY_GW_PRIOR_BLEND = {1: 0.7, 2: 0.5, 3: 0.3}
 
 
 @dataclass
@@ -285,11 +276,18 @@ def _check_validity(
     errors: list[str] = []
     decisions = record.decisions
 
-    # Budget: squad cost + bank ≤ entering bank + sum(price for transferred-out)
+    # Budget: for normal weeks, squad cost + resulting bank must fit within
+    # entering team value. On Free Hit, state_after.bank has already reverted
+    # to the permanent squad's bank, so validate only the temporary FH squad
+    # cost against entering team value.
     squad_cost = sum(prices.get(p, 0) for p in decisions.squad)
-    if squad_cost + state_after.bank > state_before.bank + sum(
-        prices.get(p, 0) for p in state_before.squad
-    ) + 1:  # tolerance for rounding
+    entering_value = state_before.bank + sum(prices.get(p, 0) for p in state_before.squad)
+    checked_value = (
+        squad_cost
+        if decisions.chip_played in ("FH1", "FH2")
+        else squad_cost + state_after.bank
+    )
+    if checked_value > entering_value + 1:  # tolerance for rounding
         errors.append(
             f"GW{record.gameweek} budget violation: cost {squad_cost} + bank {state_after.bank} > entering"
         )
@@ -458,95 +456,16 @@ def backtest_season(
     pred_by_pgw = _per_player_per_gw_predictions(eval_df)
     actual_by_pgw = _per_player_per_gw_actuals(eval_df)
 
-    # Early-GW cold-start prior (Phase 6 v3). The joint xPts model relies on
-    # rolling features; GW1 has none, GW2-3 have only 1-2 GWs of within-season
-    # data. Top-player e_xpts spread is compressed to ~0.25 pts at GW1 (vs ~5
-    # mid-season). Blend with the prior season's last-5-GW mean actual_pts
-    # with decaying weight per EARLY_GW_PRIOR_BLEND. Players new to PL (no
-    # prior data) fall back to model-only.
-    # Prior season for cold-start blend: the most recent train_season that
-    # ISN'T the test season (avoids circular "predict 25 with 25 last-5"
-    # if the caller deliberately includes test_season in train_seasons for
-    # in-sample experiments).
-    prior_train_seasons = [s for s in train_seasons if s != test_season]
-    if prior_train_seasons:
-        prior_pts = pit.player_actual_pts_last_n_gws(max(prior_train_seasons), n=5)
-        if prior_pts:
-            for (pid, gw), v in list(pred_by_pgw.items()):
-                blend_w = EARLY_GW_PRIOR_BLEND.get(gw)
-                if blend_w is None or pid not in prior_pts:
-                    continue
-                pred_by_pgw[(pid, gw)] = (
-                    blend_w * prior_pts[pid] + (1 - blend_w) * v
-                )
-
-    # Per-position calibration (Phase 6 v3). The xPts model trained on
-    # 19-24 systematically under-predicts 25/26 by ~7% overall (FWD −22%,
-    # MID −12%, DEF neutral, GKP +14% over-prediction). Apply caller-
-    # supplied per-position scale factors to correct. For live use, factors
-    # are computed from completed-GW actuals (PIT-correct). For backtest,
-    # using full-season factors introduces small lookahead bias on a
-    # season-aggregated statistic (acceptable for measurement).
-    if position_calibration:
-        positions_lookup = (
-            pit.all_player_positions()
-            .to_pandas()
-            .set_index("player_id")["position_code"]
-            .to_dict()
-        )
-        for (pid, gw), v in list(pred_by_pgw.items()):
-            pos = positions_lookup.get(pid)
-            if pos and pos in position_calibration:
-                pred_by_pgw[(pid, gw)] = v * position_calibration[pos]
-
-    # DefCon (Phase 6 v3): FPL 2025/26 added +2 pts for defenders with
-    # ≥10 defensive contributions (tackles + CBI) and +2 for MID/FWD
-    # with ≥12 defensive contributions (+ recoveries). The xPts model
-    # trained on 19-24 doesn't know this rule; the cross-fold diagnostic
-    # showed DEF bias flipped from over- to under-prediction on 25/26
-    # consistent with the new rule. `defcon_shrinkage` ∈ [0, 1] scales
-    # the additive adjustment — values near 0.5 account for the fact
-    # that the model already captures some DefCon implicitly through
-    # rolling features.
-    if (
-        defcon_shrinkage is not None or defcon_per_position_shrinkage is not None
-    ) and test_season == 25:
-        from fpl_bot.eval.defcon_adjustment import compute_defcon_adjustments
-        # Per-position shrinkage takes precedence; otherwise fall back to the
-        # global scalar.
-        if defcon_per_position_shrinkage is not None:
-            defcon = compute_defcon_adjustments(
-                test_season=test_season,
-                per_position_shrinkage=defcon_per_position_shrinkage,
-            )
-            for (pid, gw), v in list(pred_by_pgw.items()):
-                adj = defcon.get((pid, gw))
-                if adj is not None:
-                    pred_by_pgw[(pid, gw)] = v + adj
-        else:
-            defcon = compute_defcon_adjustments(test_season=test_season)
-            for (pid, gw), v in list(pred_by_pgw.items()):
-                adj = defcon.get((pid, gw))
-                if adj is not None:
-                    pred_by_pgw[(pid, gw)] = v + defcon_shrinkage * adj
-
-    # FWD isotonic calibration (Phase 7 model #1b). Corrects the chronic
-    # elite-FWD under-prediction with a monotonic map fit on OTHER folds'
-    # held-out FWD (pred, actual) pairs. PIT-clean: the test season is never
-    # in the fit set.
-    if fwd_calibration:
-        from fpl_bot.models.fwd_calibration import fit_fwd_calibrator
-        calibrator = fit_fwd_calibrator(test_season, cache_dir=cache_dir)
-        if calibrator is not None:
-            positions_lookup = (
-                pit.all_player_positions()
-                .to_pandas()
-                .set_index("player_id")["position_code"]
-                .to_dict()
-            )
-            for (pid, gw), v in list(pred_by_pgw.items()):
-                if positions_lookup.get(pid) == "FWD":
-                    pred_by_pgw[(pid, gw)] = calibrator.transform(v)
+    pred_by_pgw = apply_prediction_postprocessing(
+        pred_by_pgw,
+        season_id=test_season,
+        train_seasons=train_seasons,
+        position_calibration=position_calibration,
+        defcon_shrinkage=defcon_shrinkage,
+        defcon_per_position_shrinkage=defcon_per_position_shrinkage,
+        fwd_calibration=fwd_calibration,
+        cache_dir=cache_dir,
+    )
 
     # Actual minutes per (player, gw) — needed by the auto-sub scorer to
     # detect XI blanks (minutes == 0).
@@ -559,9 +478,12 @@ def backtest_season(
     if captain_quantile is not None:
         from fpl_bot.optim.scenarios import (
             aggregate_pts_by_player_gw_scenario as _agg,
+        )
+        from fpl_bot.optim.scenarios import (
             captain_lower_quantile_per_gw,
             load_raw_samples,
         )
+
         try:
             _raw = load_raw_samples(
                 test_season=test_season,
@@ -659,8 +581,10 @@ def backtest_season(
         effective_horizon = 1 if not state.squad else horizon
         # Build horizon (this gw + horizon-1 lookahead, capped at last GW)
         horizon_gws = [w for w in range(gw, gw + effective_horizon) if w in all_gws]
+        horizon_gws = horizon_before_free_hit(horizon_gws, chip_schedule)
         if not horizon_gws:
             continue
+        is_current_free_hit = gw in free_hit_gws(chip_schedule)
 
         # Candidate filter using horizon predictions + current squad
         horizon_pred = pred_df.filter(pl.col("gameweek").is_in(horizon_gws))
@@ -766,7 +690,7 @@ def backtest_season(
             alpha=alpha,
             beta=beta,
             enable_chips=enable_chips,
-            full_predictions=pred_df,
+            full_predictions=None if is_current_free_hit else pred_df,
             use_saa=use_saa,
             predictions_per_scenario=pts_per_scenario_dict,
             scenario_ids=scenario_ids,

@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Any
 
+import yaml
 from sqlalchemy import func as sa_func
 from sqlalchemy import select
 
+from fpl_bot.config import settings
 from fpl_bot.db.models import FactPlayerStatus, FactUserTeamSnapshot
 from fpl_bot.db.session import session_scope
 from fpl_bot.optim.state import SECOND_HALF_FIRST_GW, BacktestState
@@ -38,6 +41,85 @@ _CHIP_NAME_MAP = {
     "bboost": "BB",
     "3xc": "TC",
 }
+
+
+def _as_int_key_map(value: Any) -> dict[int, Any]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[int, Any] = {}
+    for k, v in value.items():
+        try:
+            out[int(k)] = v
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _live_state_override(
+    *, season_id: int, gameweek: int, team_id: int
+) -> dict[str, Any]:
+    """Read optional local live-state overrides.
+
+    Accepted YAML shape:
+
+    season_id:
+      gameweek:
+        team_id:
+          bank_tenths: 61
+          free_transfers: 2
+          chips_used: [WC1, BB2]
+          cost_basis: {118748: 125}
+          squad: [118748, ...]   # optional full replacement
+    """
+    path = settings.live_state_overrides_path
+    if not path.exists():
+        return {}
+    raw = yaml.safe_load(path.read_text()) or {}
+    season_block = _as_int_key_map(raw).get(season_id, {})
+    gw_block = _as_int_key_map(season_block).get(gameweek, {})
+    team_block = _as_int_key_map(gw_block).get(team_id, {})
+    return team_block if isinstance(team_block, dict) else {}
+
+
+def _apply_live_state_override(
+    state: BacktestState,
+    *,
+    season_id: int,
+    gameweek: int,
+    team_id: int,
+) -> BacktestState:
+    override = _live_state_override(
+        season_id=season_id, gameweek=gameweek, team_id=team_id
+    )
+    if not override:
+        return state
+
+    squad = state.squad
+    if "squad" in override:
+        squad = frozenset(int(p) for p in override.get("squad") or [])
+
+    cost_basis = dict(state.cost_basis)
+    raw_basis = override.get("cost_basis") or override.get("purchase_prices")
+    if isinstance(raw_basis, dict):
+        for pid, price in raw_basis.items():
+            try:
+                cost_basis[int(pid)] = int(price)
+            except (TypeError, ValueError):
+                continue
+
+    chips_used = state.chips_used
+    if "chips_used" in override:
+        chips_used = frozenset(str(c) for c in (override.get("chips_used") or []))
+
+    return BacktestState(
+        season_id=state.season_id,
+        gameweek=state.gameweek,
+        squad=squad,
+        bank=int(override.get("bank_tenths", state.bank)),
+        free_transfers=int(override.get("free_transfers", state.free_transfers)),
+        chips_used=chips_used,
+        cost_basis=cost_basis,
+    )
 
 
 def _resolve_chip_history(
@@ -168,7 +250,7 @@ def load_user_state(
         through_gw=snapshot_gw,
     )
 
-    return BacktestState(
+    state = BacktestState(
         season_id=season_id,
         gameweek=gameweek,
         squad=frozenset(squad_ids),
@@ -177,6 +259,65 @@ def load_user_state(
         chips_used=frozenset(chips_used_resolved),
         cost_basis=cost_basis,
     )
+    return _apply_live_state_override(
+        state, season_id=season_id, gameweek=gameweek, team_id=team_id
+    )
+
+
+def load_user_sell_prices(
+    *,
+    season_id: int,
+    gameweek: int,
+    team_id: int,
+) -> dict[int, int]:
+    """Latest exact sell prices from the user-team snapshot.
+
+    Returns an empty dict when only older public snapshots are available or
+    before `live ingest` has been run. Authenticated `my-team` ingest fills
+    `selling_price_tenths`; public ingest stores current price as an
+    approximation.
+    """
+    with session_scope() as s:
+        max_gw_row = s.execute(
+            select(sa_func.max(FactUserTeamSnapshot.gameweek)).where(
+                (FactUserTeamSnapshot.season_id == season_id)
+                & (FactUserTeamSnapshot.team_id == team_id)
+                & (FactUserTeamSnapshot.gameweek <= gameweek)
+            )
+        ).scalar()
+        if max_gw_row is None:
+            return {}
+        snapshot_gw = int(max_gw_row)
+        latest = (
+            select(
+                FactUserTeamSnapshot.player_id,
+                sa_func.max(FactUserTeamSnapshot.recorded_at).label("max_rec"),
+            )
+            .where(
+                (FactUserTeamSnapshot.season_id == season_id)
+                & (FactUserTeamSnapshot.gameweek == snapshot_gw)
+                & (FactUserTeamSnapshot.team_id == team_id)
+            )
+            .group_by(FactUserTeamSnapshot.player_id)
+            .subquery("uts_sell_latest")
+        )
+        rows = s.execute(
+            select(
+                FactUserTeamSnapshot.player_id,
+                FactUserTeamSnapshot.selling_price_tenths,
+            )
+            .join(
+                latest,
+                (latest.c.player_id == FactUserTeamSnapshot.player_id)
+                & (latest.c.max_rec == FactUserTeamSnapshot.recorded_at),
+            )
+            .where(
+                (FactUserTeamSnapshot.season_id == season_id)
+                & (FactUserTeamSnapshot.gameweek == snapshot_gw)
+                & (FactUserTeamSnapshot.team_id == team_id)
+            )
+        ).all()
+    return {int(r.player_id): int(r.selling_price_tenths) for r in rows}
 
 
 def load_status_overrides(

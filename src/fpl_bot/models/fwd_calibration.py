@@ -26,9 +26,6 @@ import polars as pl
 from sklearn.isotonic import IsotonicRegression
 
 from fpl_bot.db import pit
-from fpl_bot.db.models import DimFixture
-from fpl_bot.db.session import session_scope
-from sqlalchemy import select
 
 # Default fold caches used to source out-of-fold FWD pairs.
 _FOLD_CACHES = {
@@ -56,16 +53,6 @@ class FwdCalibrator:
         return self.iso.predict(arr)
 
 
-def _fixture_to_gw(season_id: int) -> dict[int, int]:
-    with session_scope() as s:
-        rows = s.execute(
-            select(DimFixture.fixture_id, DimFixture.gameweek).where(
-                DimFixture.season_id == season_id
-            )
-        ).all()
-    return {int(r.fixture_id): int(r.gameweek) for r in rows}
-
-
 def _fwd_pairs_from_cache(
     cache_path: Path, season_id: int, fwd_player_ids: set[int]
 ) -> list[tuple[float, float]]:
@@ -75,7 +62,7 @@ def _fwd_pairs_from_cache(
     df = pl.read_parquet(cache_path)
     if df.is_empty() or "total_points" not in df.columns:
         return []
-    fid_to_gw = _fixture_to_gw(season_id)
+    fid_to_gw = pit.fixture_gameweeks_for_season(season_id)
     df = df.with_columns(
         pl.col("fixture_id").replace_strict(fid_to_gw, default=0).alias("gameweek")
     ).filter(pl.col("gameweek") > 0)

@@ -95,20 +95,22 @@ def apply_gw_outcomes(
     """
     transfers_out = decisions.transferred_out
     transfers_in = decisions.transferred_in
+    is_free_hit = decisions.chip_played in ("FH1", "FH2")
 
     bank_after = state.bank
     new_cost_basis = dict(state.cost_basis)
-    for p in transfers_out:
-        sell_price = actual_prices.get(p, {}).get("sell")
-        if sell_price is None:
-            # No sell price supplied: fall back to cost basis (cold-start safety).
-            sell_price = new_cost_basis.get(p, 0)
-        bank_after += sell_price
-        new_cost_basis.pop(p, None)
-    for p in transfers_in:
-        buy_price = actual_prices.get(p, {}).get("buy", 0)
-        bank_after -= buy_price
-        new_cost_basis[p] = buy_price
+    if not is_free_hit:
+        for p in transfers_out:
+            sell_price = actual_prices.get(p, {}).get("sell")
+            if sell_price is None:
+                # No sell price supplied: fall back to cost basis (cold-start safety).
+                sell_price = new_cost_basis.get(p, 0)
+            bank_after += sell_price
+            new_cost_basis.pop(p, None)
+        for p in transfers_in:
+            buy_price = actual_prices.get(p, {}).get("buy", 0)
+            bank_after -= buy_price
+            new_cost_basis[p] = buy_price
 
     # Chips
     chips_after = set(state.chips_used)
@@ -124,17 +126,12 @@ def apply_gw_outcomes(
     consumed = 0 if chip_waives_ft else min(transfers_used, state.free_transfers)
     ft_next = min(5, state.free_transfers + 1 - consumed)
 
-    # FH reverts squad next GW; v1 marks chip used but leaves squad as-is —
-    # next-GW MILP must force the squad back to pre-FH. v1 simplification:
-    # we model FH as a one-week roster swap inside the MILP horizon only;
-    # if the rolling solve plays FH at horizon-tip, the next solve uses the
-    # state's squad which we keep frozen at pre-FH for that case.
-    # (Phase 5 chip-DP handles cross-horizon FH coordination.)
+    squad_after = state.squad if is_free_hit else decisions.squad
 
     return BacktestState(
         season_id=state.season_id,
         gameweek=state.gameweek + 1,
-        squad=decisions.squad,
+        squad=squad_after,
         bank=bank_after,
         free_transfers=ft_next,
         chips_used=frozenset(chips_after),

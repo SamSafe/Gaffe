@@ -466,6 +466,19 @@ def upcoming_fixtures(fixture_ids: list[int]) -> pl.DataFrame:
     )
 
 
+def fixture_gameweeks_for_season(season_id: int) -> dict[int, int]:
+    """Map fixture_id to gameweek for one season."""
+    from fpl_bot.db.models import DimFixture as _DimFixture
+
+    with session_scope() as s:
+        rows = s.execute(
+            select(_DimFixture.fixture_id, _DimFixture.gameweek).where(
+                _DimFixture.season_id == season_id
+            )
+        ).all()
+    return {int(r.fixture_id): int(r.gameweek) for r in rows}
+
+
 def season_player_status_snapshot(season_id: int) -> pl.DataFrame:
     """Phase 6 v2: latest (player_id, team_id, position_code) per player for
     a season, taken from fact_player_status (most recent recorded_at).
@@ -505,6 +518,39 @@ def season_player_status_snapshot(season_id: int) -> pl.DataFrame:
                 "player_id": int(r.player_id),
                 "team_id": int(r.team_id),
                 "position_code": r.position_code,
+            }
+            for r in rows
+        ]
+    )
+
+
+def all_player_status_snapshots(season_id: int) -> pl.DataFrame:
+    """All stored FPL status snapshots for a season.
+
+    Returns raw snapshot rows for offline feature builders that need repeated
+    intra-week observations. The caller is responsible for PIT-safe ordering
+    and lag/label construction.
+    """
+    with session_scope() as s:
+        rows = s.execute(
+            select(
+                FactPlayerStatus.player_id,
+                FactPlayerStatus.season_id,
+                FactPlayerStatus.recorded_at,
+                FactPlayerStatus.price_tenths,
+                FactPlayerStatus.selected_by_percent,
+            ).where(FactPlayerStatus.season_id == season_id)
+        ).all()
+    if not rows:
+        return pl.DataFrame()
+    return pl.DataFrame(
+        [
+            {
+                "player_id": int(r.player_id),
+                "season_id": int(r.season_id),
+                "recorded_at": r.recorded_at,
+                "price_tenths": int(r.price_tenths),
+                "selected_by_percent": float(r.selected_by_percent or 0.0),
             }
             for r in rows
         ]

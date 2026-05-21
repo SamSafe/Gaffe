@@ -19,6 +19,19 @@ class Settings(BaseSettings):
     # https://the-odds-api.com (500 req/mo).
     odds_api_key: str | None = None
 
+    # Optional. Full Cookie header copied from an authenticated
+    # fantasy.premierleague.com browser session. Enables exact current-squad
+    # `my-team/{team_id}` ingest: purchase prices, sell prices, bank and FT.
+    fpl_cookie: str | None = None
+
+    # Optional local overrides for exact live state when authenticated FPL
+    # ingest is unavailable.
+    live_state_overrides_path: Path = Path("configs/live_state_overrides.yaml")
+
+    # The historical GW-end price model failed its gates. Keep it disabled by
+    # default; v2 snapshot features can be validated before re-enabling.
+    enable_shelved_price_predictor: bool = False
+
     @property
     def raw_dir(self) -> Path:
         self.raw_data_dir.mkdir(parents=True, exist_ok=True)

@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import polars as pl
 
-from fpl_bot.optim.chip_scheduler import ChipSchedule, make_chip_schedule
+from fpl_bot.optim.chip_scheduler import (
+    ChipSchedule,
+    free_hit_gws,
+    horizon_before_free_hit,
+    make_chip_schedule,
+)
 from fpl_bot.optim.fixture_analytics import SeasonFixtureAnalytics
 
 
@@ -141,3 +146,14 @@ def test_as_dict_skips_none():
     )
     d = sched.as_dict()
     assert d == {"WC1": 8, "FH1": 18, "BB2": 25}
+
+
+def test_horizon_stops_before_future_free_hit():
+    sched = {"FH1": 18, "BB1": 19}
+    assert horizon_before_free_hit([15, 16, 17, 18, 19], sched) == [15, 16, 17]
+
+
+def test_horizon_keeps_only_current_free_hit_gw():
+    sched = {"FH1": 18}
+    assert horizon_before_free_hit([18, 19, 20], sched) == [18]
+    assert free_hit_gws(sched) == {18}
