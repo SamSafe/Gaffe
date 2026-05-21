@@ -1,9 +1,5 @@
 # Gaffe
 
-*(French: a blunder. Also a nod to "the gaffer" — British slang for the
-football manager. Both readings are intentional: it manages your team, and
-it will occasionally get one wrong — use your own judgement.)*
-
 A Fantasy Premier League decision bot: a probabilistic prediction stack
 (expected points per player per gameweek) feeding a mixed-integer linear
 program (MILP) that picks the squad, starting XI, captain, transfers, and
