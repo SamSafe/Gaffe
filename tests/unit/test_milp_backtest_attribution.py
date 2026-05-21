@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from fpl_bot.eval.milp_backtest import _build_gw_attribution
+from fpl_bot.eval.milp_backtest import (
+    _build_gw_attribution,
+    _postprocess_captain_decision,
+)
 from fpl_bot.optim.scorer import ScorerInputs, score_gw
 from fpl_bot.optim.state import GwDecisions
 
@@ -102,3 +105,21 @@ def test_bench_boost_has_no_lineup_regret() -> None:
 
     assert record.lineup_regret == 0
     assert record.lineup_oracle_xi == XI
+
+
+def test_postprocess_captain_decision_uses_alternate_score_within_xi() -> None:
+    decisions = _decisions(captain=21, vice=22)
+    updated = _postprocess_captain_decision(
+        decisions,
+        gameweek=3,
+        captain_predictions={
+            (23, 3): 9.0,
+            (24, 3): 8.0,
+            (25, 3): 20.0,  # bench player: ignored
+        },
+    )
+
+    assert updated.captain == 23
+    assert updated.vice == 24
+    assert updated.starting_xi == decisions.starting_xi
+    assert updated.squad == decisions.squad

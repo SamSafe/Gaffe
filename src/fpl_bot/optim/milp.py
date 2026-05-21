@@ -96,10 +96,10 @@ class MilpInputs:
     # initial_squad is empty), (b) chip-protected GWs (WC/FH refund all
     # transfers in reality, so the penalty would over-bias).
     transfer_penalty: float = 0.0
-    # Phase 6 v3: separate captain-reward predictions. When set, the captain
+    # Phase 6 v3+: separate captain-reward predictions. When set, the captain
     # term `c[p,w] * pred[p,w]` uses these values instead of the regular
-    # `predictions` dict. Typical use: lower-quantile xPts (Q25) from SAA
-    # samples — biases captain choice toward low-downside picks. None falls
+    # `predictions` dict. Typical uses: lower-quantile xPts for conservative
+    # blank avoidance, or haul-adjusted xPts for upside chasing. None falls
     # back to `predictions` (regular mean-xPts behavior).
     captain_predictions: dict[tuple[int, int], float] | None = None
 
@@ -600,7 +600,7 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
         # gets EO-adjusted. Chip bonuses (tc_bonus, bb_bonus) are weekly aggregates
         # added to the objective WITHOUT EO adjustment in v1.0 (small effect; see
         # tc_bonus/bb_bonus comment near var definition).
-        # Captain reward uses captain_predictions (e.g., SAA Q25) if provided,
+        # Captain reward uses captain_predictions if provided,
         # otherwise falls back to mean-xpts predictions. Then attenuated by the
         # blank-risk factor. XI term uses mean-xpts (we don't want to under-
         # value the squad just because variance is high).

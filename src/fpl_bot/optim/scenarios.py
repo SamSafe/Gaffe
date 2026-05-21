@@ -113,6 +113,47 @@ def captain_lower_quantile_per_gw(
     }
 
 
+def captain_haul_score_per_gw(
+    pts_df: pl.DataFrame,
+    *,
+    threshold: float = 6.0,
+    weight: float = 1.0,
+) -> dict[tuple[int, int], float]:
+    """Compute a captain-specific score that rewards upside in simulations.
+
+    Mean xPts is still the base score. The haul term adds
+    `weight * E[max(xPts - threshold, 0)]`, so the value stays in points units
+    while favoring players whose simulated distribution contains capturable
+    ceiling outcomes.
+    """
+    if threshold < 0:
+        raise ValueError(f"threshold must be non-negative; got {threshold}")
+    if weight < 0:
+        raise ValueError(f"weight must be non-negative; got {weight}")
+
+    score = (
+        pts_df.group_by(["player_id", "gameweek"])
+        .agg(
+            pl.col("xpts").mean().alias("mean_xpts"),
+            pl.when(pl.col("xpts") > threshold)
+            .then(pl.col("xpts") - threshold)
+            .otherwise(0.0)
+            .mean()
+            .alias("mean_excess_haul"),
+        )
+        .with_columns(
+            (
+                pl.col("mean_xpts")
+                + float(weight) * pl.col("mean_excess_haul")
+            ).alias("captain_score")
+        )
+    )
+    return {
+        (int(r["player_id"]), int(r["gameweek"])): float(r["captain_score"])
+        for r in score.iter_rows(named=True)
+    }
+
+
 def make_pts_dict(
     pts_df: pl.DataFrame,
     candidates: list[int],

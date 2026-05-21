@@ -400,6 +400,31 @@ def _score_decisions(
     ).gw_points
 
 
+def _postprocess_captain_decision(
+    decisions: GwDecisions,
+    *,
+    gameweek: int,
+    captain_predictions: dict[tuple[int, int], float] | None,
+) -> GwDecisions:
+    """Pick captain/vice from the solved XI using an alternate captain score."""
+    if not captain_predictions:
+        return decisions
+
+    xi = sorted(decisions.starting_xi)
+    if len(xi) < 2:
+        return decisions
+
+    ranked = sorted(
+        xi,
+        key=lambda player_id: (
+            captain_predictions.get((player_id, gameweek), 0.0),
+            -player_id,
+        ),
+        reverse=True,
+    )
+    return replace(decisions, captain=ranked[0], vice=ranked[1])
+
+
 def _oracle_captain_points(
     *,
     decisions: GwDecisions,
@@ -669,6 +694,9 @@ def backtest_season(
     use_chip_schedule: bool = False,
     transfer_penalty: float = 0.0,
     captain_quantile: float | None = None,
+    captain_haul_weight: float = 0.0,
+    captain_haul_threshold: float = 6.0,
+    captain_postprocess: bool = False,
     position_calibration: dict[str, float] | None = None,
     walk_forward_chunk: int | None = None,
     defcon_shrinkage: float | None = None,
@@ -684,6 +712,9 @@ def backtest_season(
     train once on `train_seasons` and predict for the whole test_season
     (current default behavior).
     """
+    if captain_quantile is not None and captain_haul_weight > 0:
+        raise ValueError("captain_quantile and captain_haul_weight are mutually exclusive")
+
     cache_dir.mkdir(parents=True, exist_ok=True)
     train_str = "_".join(str(s) for s in train_seasons)
     cache_path = cache_dir / f"season_{test_season}_train_{train_str}.parquet"
@@ -727,15 +758,17 @@ def backtest_season(
     # detect XI blanks (minutes == 0).
     actual_minutes_by_pgw = _per_player_per_gw_actual_minutes(test_season)
 
-    # Captain quantile: load raw samples and compute lower-quantile xPts per
-    # (player, gw) for the captain reward term. Decouples captain decision
-    # from mean-xpts (which over-rewards high-variance "boom or bust" picks).
+    # Captain alternate scoring: load raw samples and compute a captain-only
+    # reward term. Decouples captain decision from the XI mean-xPts term.
+    # `captain_quantile` is conservative; `captain_haul_weight` is aggressive
+    # and rewards simulated ceiling outcomes above `captain_haul_threshold`.
     captain_predictions: dict[tuple[int, int], float] | None = None
-    if captain_quantile is not None:
+    if captain_quantile is not None or captain_haul_weight > 0:
         from fpl_bot.optim.scenarios import (
             aggregate_pts_by_player_gw_scenario as _agg,
         )
         from fpl_bot.optim.scenarios import (
+            captain_haul_score_per_gw,
             captain_lower_quantile_per_gw,
             load_raw_samples,
         )
@@ -748,12 +781,27 @@ def backtest_season(
                 cache_dir=raw_samples_dir,
             )
             _pts_df = _agg(_raw, n_scenarios=n_iterations)
-            captain_predictions = captain_lower_quantile_per_gw(
-                _pts_df, quantile=captain_quantile
-            )
+            if captain_quantile is not None:
+                captain_predictions = captain_lower_quantile_per_gw(
+                    _pts_df, quantile=captain_quantile
+                )
+            else:
+                captain_predictions = captain_haul_score_per_gw(
+                    _pts_df,
+                    threshold=captain_haul_threshold,
+                    weight=captain_haul_weight,
+                )
         except FileNotFoundError:
+            mode = (
+                f"captain_quantile={captain_quantile}"
+                if captain_quantile is not None
+                else (
+                    f"captain_haul_weight={captain_haul_weight}, "
+                    f"captain_haul_threshold={captain_haul_threshold}"
+                )
+            )
             print(
-                f"  captain_quantile={captain_quantile} requested but raw "
+                f"  {mode} requested but raw "
                 f"samples not cached; falling back to mean xpts for captain."
             )
 
@@ -953,7 +1001,7 @@ def backtest_season(
             chip_schedule=chip_schedule,
             captain_attenuator=captain_attenuator,
             transfer_penalty=transfer_penalty,
-            captain_predictions=captain_predictions,
+            captain_predictions=None if captain_postprocess else captain_predictions,
         )
 
         import time
@@ -975,6 +1023,11 @@ def backtest_season(
             result.validity_feasibility = False
             result.validity_failures.append(f"GW{gw}: solver failed ({exc})")
             break
+        decisions = _postprocess_captain_decision(
+            decisions,
+            gameweek=gw,
+            captain_predictions=captain_predictions if captain_postprocess else None,
+        )
         solve_time = time.time() - t0
 
         # Compute actual GW points with FPL auto-sub + auto-vice rules.
