@@ -20,7 +20,8 @@ Performance metrics (reported):
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from itertools import combinations, permutations
 from pathlib import Path
 
 import polars as pl
@@ -61,6 +62,36 @@ class GwBacktestRecord:
     solve_status: str
 
 
+@dataclass(frozen=True)
+class GwAttributionRecord:
+    """Per-GW points-loss decomposition against hindsight oracles.
+
+    These fields are diagnostics only. They intentionally do not feed back
+    into the optimizer; their job is to show which model layer deserves the
+    next upgrade.
+    """
+
+    gameweek: int
+    bot_points: int
+    captain_oracle_points: int
+    captain_regret: int
+    captain_oracle_captain: int | None
+    captain_oracle_vice: int | None
+    lineup_base_points: int
+    lineup_oracle_base_points: int
+    lineup_regret: int
+    lineup_oracle_xi: frozenset[int]
+    transferred_in_actual_points: int
+    transferred_out_actual_points: int
+    transfer_immediate_gain: int
+    top_actual_player_id: int | None
+    top_actual_player_points: int
+    top_actual_in_squad: bool
+    top_actual_in_candidates: bool
+    best_candidate_not_owned_id: int | None
+    best_candidate_not_owned_points: int
+
+
 @dataclass
 class BacktestSeasonResult:
     test_season: int
@@ -69,6 +100,7 @@ class BacktestSeasonResult:
     beta: float
     horizon: int
     gw_records: list[GwBacktestRecord] = field(default_factory=list)
+    attribution_records: list[GwAttributionRecord] = field(default_factory=list)
     # Validity gates (all must pass to ship)
     validity_feasibility: bool = True
     validity_budget: bool = True
@@ -323,6 +355,230 @@ def _check_validity(
     no_leak_ok = True
 
     return budget_ok, transfers_ok, chips_ok, no_leak_ok, errors
+
+
+def _is_bench_boost_chip(chip: str | None) -> bool:
+    return chip in ("BB", "BB1", "BB2")
+
+
+def _xi_formation_valid(xi: frozenset[int], positions: dict[int, str]) -> bool:
+    if len(xi) != 11:
+        return False
+    counts = {"GKP": 0, "DEF": 0, "MID": 0, "FWD": 0}
+    for player_id in xi:
+        position = positions.get(player_id)
+        if position not in counts:
+            return False
+        counts[position] += 1
+    return (
+        counts["GKP"] == 1
+        and counts["DEF"] >= 3
+        and counts["MID"] >= 2
+        and counts["FWD"] >= 1
+        and sum(counts.values()) == 11
+    )
+
+
+def _score_decisions(
+    *,
+    decisions: GwDecisions,
+    actual_pts: dict[int, int],
+    actual_minutes: dict[int, int],
+    positions: dict[int, str],
+    bench_order_xpts: dict[int, float],
+) -> int:
+    from fpl_bot.optim.scorer import ScorerInputs, score_gw
+
+    return score_gw(
+        ScorerInputs(
+            decisions=decisions,
+            actual_pts=actual_pts,
+            actual_minutes=actual_minutes,
+            positions=positions,
+            bench_order_xpts=bench_order_xpts,
+        )
+    ).gw_points
+
+
+def _oracle_captain_points(
+    *,
+    decisions: GwDecisions,
+    bot_points: int,
+    actual_pts: dict[int, int],
+    actual_minutes: dict[int, int],
+    positions: dict[int, str],
+    bench_order_xpts: dict[int, float],
+) -> tuple[int, int | None, int | None]:
+    """Best same-XI score if captain/vice were picked with hindsight."""
+    xi = tuple(sorted(decisions.starting_xi))
+    best_points = bot_points
+    best_captain = decisions.captain
+    best_vice = decisions.vice
+
+    if len(xi) < 2:
+        return best_points, best_captain, best_vice
+
+    for captain, vice in permutations(xi, 2):
+        candidate = replace(decisions, captain=captain, vice=vice)
+        points = _score_decisions(
+            decisions=candidate,
+            actual_pts=actual_pts,
+            actual_minutes=actual_minutes,
+            positions=positions,
+            bench_order_xpts=bench_order_xpts,
+        )
+        if points > best_points:
+            best_points = points
+            best_captain = captain
+            best_vice = vice
+
+    return best_points, best_captain, best_vice
+
+
+def _lineup_base_points(
+    *,
+    decisions: GwDecisions,
+    scoring_players: frozenset[int],
+    actual_pts: dict[int, int],
+) -> int:
+    players = (
+        decisions.squad
+        if _is_bench_boost_chip(decisions.chip_played)
+        else scoring_players
+    )
+    return sum(actual_pts.get(p, 0) for p in players) - 4 * decisions.hits
+
+
+def _oracle_lineup_base_points(
+    *,
+    decisions: GwDecisions,
+    actual_pts: dict[int, int],
+    positions: dict[int, str],
+    bot_lineup_base_points: int,
+) -> tuple[int, frozenset[int]]:
+    """Best valid XI base points from the owned squad, excluding captain multiplier."""
+    if _is_bench_boost_chip(decisions.chip_played):
+        return bot_lineup_base_points, decisions.starting_xi
+
+    best_points = bot_lineup_base_points
+    best_xi = decisions.starting_xi
+    for xi_tuple in combinations(sorted(decisions.squad), 11):
+        xi = frozenset(xi_tuple)
+        if not _xi_formation_valid(xi, positions):
+            continue
+        points = sum(actual_pts.get(p, 0) for p in xi) - 4 * decisions.hits
+        if points > best_points:
+            best_points = points
+            best_xi = xi
+    return best_points, best_xi
+
+
+def _gw_actuals(
+    *,
+    gw: int,
+    actual_by_pgw: dict[tuple[int, int], int],
+) -> list[tuple[int, int]]:
+    return [
+        (player_id, points)
+        for (player_id, gameweek), points in actual_by_pgw.items()
+        if gameweek == gw
+    ]
+
+
+def _build_gw_attribution(
+    *,
+    gw: int,
+    decisions: GwDecisions,
+    bot_points: int,
+    final_scoring_players: frozenset[int],
+    actual_pts_this_gw: dict[int, int],
+    actual_minutes_this_gw: dict[int, int],
+    actual_by_pgw: dict[tuple[int, int], int],
+    positions: dict[int, str],
+    bench_order_xpts: dict[int, float],
+    candidates: set[int],
+) -> GwAttributionRecord:
+    captain_points, captain, vice = _oracle_captain_points(
+        decisions=decisions,
+        bot_points=bot_points,
+        actual_pts=actual_pts_this_gw,
+        actual_minutes=actual_minutes_this_gw,
+        positions=positions,
+        bench_order_xpts=bench_order_xpts,
+    )
+    lineup_base = _lineup_base_points(
+        decisions=decisions,
+        scoring_players=final_scoring_players,
+        actual_pts=actual_pts_this_gw,
+    )
+    lineup_oracle, lineup_oracle_xi = _oracle_lineup_base_points(
+        decisions=decisions,
+        actual_pts=actual_pts_this_gw,
+        positions=positions,
+        bot_lineup_base_points=lineup_base,
+    )
+
+    all_actuals = _gw_actuals(gw=gw, actual_by_pgw=actual_by_pgw)
+    top_actual_id: int | None = None
+    top_actual_points = 0
+    if all_actuals:
+        top_actual_id, top_actual_points = max(
+            all_actuals, key=lambda item: (item[1], -item[0])
+        )
+
+    best_candidate_not_owned_id: int | None = None
+    best_candidate_not_owned_points = 0
+    not_owned_candidate_actuals = [
+        (player_id, points)
+        for player_id, points in all_actuals
+        if player_id in candidates and player_id not in decisions.squad
+    ]
+    if not_owned_candidate_actuals:
+        best_candidate_not_owned_id, best_candidate_not_owned_points = max(
+            not_owned_candidate_actuals,
+            key=lambda item: (item[1], -item[0]),
+        )
+
+    if decisions.transferred_out:
+        transferred_in_points = sum(
+            actual_by_pgw.get((player_id, gw), 0)
+            for player_id in decisions.transferred_in
+        )
+        transferred_out_points = sum(
+            actual_by_pgw.get((player_id, gw), 0)
+            for player_id in decisions.transferred_out
+        )
+        transfer_gain = (
+            transferred_in_points
+            - transferred_out_points
+            - 4 * decisions.hits
+        )
+    else:
+        transferred_in_points = 0
+        transferred_out_points = 0
+        transfer_gain = 0
+
+    return GwAttributionRecord(
+        gameweek=gw,
+        bot_points=bot_points,
+        captain_oracle_points=captain_points,
+        captain_regret=max(0, captain_points - bot_points),
+        captain_oracle_captain=captain,
+        captain_oracle_vice=vice,
+        lineup_base_points=lineup_base,
+        lineup_oracle_base_points=lineup_oracle,
+        lineup_regret=max(0, lineup_oracle - lineup_base),
+        lineup_oracle_xi=lineup_oracle_xi,
+        transferred_in_actual_points=transferred_in_points,
+        transferred_out_actual_points=transferred_out_points,
+        transfer_immediate_gain=transfer_gain,
+        top_actual_player_id=top_actual_id,
+        top_actual_player_points=top_actual_points,
+        top_actual_in_squad=top_actual_id in decisions.squad if top_actual_id else False,
+        top_actual_in_candidates=top_actual_id in candidates if top_actual_id else False,
+        best_candidate_not_owned_id=best_candidate_not_owned_id,
+        best_candidate_not_owned_points=best_candidate_not_owned_points,
+    )
 
 
 def _build_walk_forward_eval_df(
@@ -745,6 +1001,20 @@ def backtest_season(
             )
         )
         gw_points = scorer_out.gw_points
+        result.attribution_records.append(
+            _build_gw_attribution(
+                gw=gw,
+                decisions=decisions,
+                bot_points=gw_points,
+                final_scoring_players=scorer_out.starting_xi_final,
+                actual_pts_this_gw=actual_pts_this_gw,
+                actual_minutes_this_gw=actual_minutes_this_gw,
+                actual_by_pgw=actual_by_pgw,
+                positions=positions_dict,
+                bench_order_xpts=bench_order_xpts,
+                candidates=set(candidates),
+            )
+        )
 
         # Apply outcomes → next state. Pass the cost-basis-aware sell prices
         # so apply_gw_outcomes' bank update matches what the MILP solved against.
@@ -858,4 +1128,81 @@ def format_performance_report(result: BacktestSeasonResult) -> str:
         f"  Total hits taken:   {sum(r.decisions.hits for r in result.gw_records)}",
         f"  Chips played:       {[r.decisions.chip_played for r in result.gw_records if r.decisions.chip_played]}",
     ]
+    return "\n".join(lines)
+
+
+def format_attribution_report(result: BacktestSeasonResult, top_n: int = 5) -> str:
+    records = result.attribution_records
+    if not records:
+        return (
+            f"Attribution — season 20{result.test_season}/"
+            f"{(result.test_season+1)%100:02d}\n\n  No attribution records."
+        )
+
+    captain_total = sum(r.captain_regret for r in records)
+    lineup_total = sum(r.lineup_regret for r in records)
+    transfer_total = sum(r.transfer_immediate_gain for r in records)
+    top_in_squad = sum(1 for r in records if r.top_actual_in_squad)
+    top_in_candidates = sum(1 for r in records if r.top_actual_in_candidates)
+
+    lines = [
+        f"Attribution — season 20{result.test_season}/{(result.test_season+1)%100:02d}",
+        "",
+        f"  Bot points:                         {result.perf_total_points}",
+        f"  Captain regret, same XI:            +{captain_total}",
+        f"  Lineup/bench regret, owned squad:   +{lineup_total}",
+        f"  Same-GW transfer immediate gain:    {transfer_total:+d}",
+        f"  GW top scorer already in squad:     {top_in_squad}/{len(records)}",
+        f"  GW top scorer in candidate pool:    {top_in_candidates}/{len(records)}",
+    ]
+
+    captain_leaks = sorted(records, key=lambda r: r.captain_regret, reverse=True)
+    captain_leaks = [r for r in captain_leaks if r.captain_regret > 0][:top_n]
+    if captain_leaks:
+        lines.extend(["", "  Biggest captain leaks:"])
+        for r in captain_leaks:
+            lines.append(
+                f"    GW{r.gameweek}: +{r.captain_regret} "
+                f"(bot {r.bot_points}, oracle {r.captain_oracle_points}, "
+                f"cap {r.captain_oracle_captain})"
+            )
+
+    lineup_leaks = sorted(records, key=lambda r: r.lineup_regret, reverse=True)
+    lineup_leaks = [r for r in lineup_leaks if r.lineup_regret > 0][:top_n]
+    if lineup_leaks:
+        lines.extend(["", "  Biggest lineup/bench leaks:"])
+        for r in lineup_leaks:
+            lines.append(
+                f"    GW{r.gameweek}: +{r.lineup_regret} "
+                f"(base {r.lineup_base_points}->{r.lineup_oracle_base_points})"
+            )
+
+    missed_top = [
+        r for r in records
+        if r.top_actual_player_id is not None and not r.top_actual_in_squad
+    ]
+    missed_top.sort(key=lambda r: r.top_actual_player_points, reverse=True)
+    if missed_top:
+        lines.extend(["", "  Highest missed GW scorers:"])
+        for r in missed_top[:top_n]:
+            lines.append(
+                f"    GW{r.gameweek}: player {r.top_actual_player_id} "
+                f"scored {r.top_actual_player_points} "
+                f"(candidate={r.top_actual_in_candidates})"
+            )
+
+    candidate_misses = [
+        r for r in records
+        if r.best_candidate_not_owned_id is not None
+        and r.best_candidate_not_owned_points > 0
+    ]
+    candidate_misses.sort(key=lambda r: r.best_candidate_not_owned_points, reverse=True)
+    if candidate_misses:
+        lines.extend(["", "  Best unowned candidates by GW:"])
+        for r in candidate_misses[:top_n]:
+            lines.append(
+                f"    GW{r.gameweek}: player {r.best_candidate_not_owned_id} "
+                f"scored {r.best_candidate_not_owned_points}"
+            )
+
     return "\n".join(lines)
