@@ -253,7 +253,7 @@ wheels = [
 ]
 
 [[package]]
-name = "fpl-bot"
+name = "gaffe"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

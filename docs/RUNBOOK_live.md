@@ -13,7 +13,7 @@ posted, before lineups leak).
 
 2. **Ingest the new-season FPL bootstrap** (players, teams, fixtures, prices):
    ```bash
-   uv run fpl-bot ingest fpl
+   uv run gaffe ingest fpl
    ```
 
 3. **Decide `train_seasons`.** Until 26/27 has ~5+ played GWs, train on
@@ -44,25 +44,25 @@ Run in this order. Each step is idempotent.
 
 ```bash
 # 1. Refresh FPL state — prices, status_code, news, your squad.
-uv run fpl-bot ingest fpl
-uv run fpl-bot live ingest --team-id <YOUR_TEAM_ID> --gameweek <GW>
+uv run gaffe ingest fpl
+uv run gaffe live ingest --team-id <YOUR_TEAM_ID> --gameweek <GW>
 
 # 2. Pull pre-deadline bookmaker odds (The Odds API, ~3 requests).
 #    Needs FPL_BOT_ODDS_API_KEY in .env (500 req/mo free tier).
-uv run fpl-bot ingest oddsapi --season-folder 2026-27
+uv run gaffe ingest oddsapi --season-folder 2026-27
 
 # 3. Pull top-10k effective ownership (LiveFPL scrape).
-uv run fpl-bot ingest livefpl --season-folder 2026-27
+uv run gaffe ingest livefpl --season-folder 2026-27
 
 # 4. (When vaastav publishes the played GWs) refresh match data for
 #    rolling features + DefCon. vaastav lags ~a few days post-match.
-uv run fpl-bot ingest vaastav --parse-only --season-folder 2026-27
+uv run gaffe ingest vaastav --parse-only --season-folder 2026-27
 
 # 5. Derive market_xg from the freshly-ingested odds.
-uv run fpl-bot derive market-xg --season-id 26
+uv run gaffe derive market-xg --season-id 26
 
 # 6. Generate the recommendation.
-uv run fpl-bot live recommend \
+uv run gaffe live recommend \
     --team-id <YOUR_TEAM_ID> --gameweek <GW> \
     --train-seasons 19,20,21,22,23,24,25,26
 ```
@@ -78,7 +78,7 @@ Output lands in `data/live/recommendations/season_26/gw_<GW>/recommendation.md`.
 ## After the gameweek closes (optional, for tracking)
 
 ```bash
-uv run fpl-bot live retrospective --team-id <YOUR_TEAM_ID> --gameweek <GW>
+uv run gaffe live retrospective --team-id <YOUR_TEAM_ID> --gameweek <GW>
 ```
 Appends `actuals.json` with realized points (auto-sub + auto-vice scored).
 
@@ -119,7 +119,7 @@ adjust with your own team-news read, not gospel.
 - **"No predictions for GW N"**: the prediction cache doesn't cover GW N.
   The live recommend falls back to the predict-only path automatically; if
   it errors, confirm `ingest fpl` ran (fixtures must exist in dim_fixture).
-- **"No user-team snapshot"**: run `fpl-bot live ingest` first; for an
+- **"No user-team snapshot"**: run `gaffe live ingest` first; for an
   upcoming GW it falls back to the latest snapshot at-or-before that GW.
 - **market_xg empty for the season**: run steps 2 + 5 (ingest oddsapi →
   derive market-xg). Without it the bot loses its main edge.

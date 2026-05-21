@@ -1,4 +1,8 @@
-# fpl-bot
+# Gaffe
+
+*(French: a blunder. Also a nod to "the gaffer" — British slang for the
+football manager. Both readings are intentional: it manages your team, and
+it will occasionally get one wrong — use your own judgement.)*
 
 A Fantasy Premier League decision bot: a probabilistic prediction stack
 (expected points per player per gameweek) feeding a mixed-integer linear
@@ -12,7 +16,7 @@ chip timing under FPL's budget/formation/transfer rules.
 **On AI authorship.** This project was built almost entirely by AI coding
 agents under human direction. 69 of 72 commits carry a `Co-Authored-By:
 Claude` trailer; the bulk was written by Claude Code (Claude Opus), with
-some later changes by OpenAI Codex. A human (the repo owner) set the
+some later changes by OpenAI Codex. A human set the
 goals, made the calls, reviewed output, and ran the experiments — but the
 design docs, code, tests, and most of this README are AI-generated. If
 you're evaluating this as a portfolio piece or auditing it for
@@ -25,7 +29,7 @@ comparable to a good-but-not-great human, fully automated. It does **not**
 reach top-20k. Two reasons, measured rather than asserted:
 
 - The bot's edge over a naive buy-and-hold baseline comes almost entirely
-  from **bookmaker odds**. With odds disabled it *loses* to buy-and-hold
+  from **bookmaker odds**. With odds disabled it _loses_ to buy-and-hold
   (measured: −70 pts over 29 GWs). Its skill is essentially "read the
   betting market and optimize around it." The betting market is efficient,
   so that caps the ceiling.
@@ -90,7 +94,7 @@ with `uv`.
 
 ```
 src/fpl_bot/
-  cli/        typer CLI entrypoint (`fpl-bot ...`)
+  cli/        typer CLI entrypoint (`gaffe ...`)
   db/         SQLAlchemy models + point-in-time (PIT) query layer
   ingest/     data-source ingest (fpl, vaastav, understat, footballdata, oddsapi, livefpl)
   derive/     Dixon-Coles odds → market xG
@@ -109,7 +113,7 @@ tests/        unit + leakage (point-in-time) tests
 ```bash
 uv sync --all-extras
 uv run alembic upgrade head           # needs a PostgreSQL DB (see fpl_bot/config.py)
-uv run fpl-bot ingest fpl             # pull current FPL bootstrap
+uv run gaffe ingest fpl             # pull current FPL bootstrap
 uv run pytest tests/ -q               # 194 unit + leakage tests
 ```
 
