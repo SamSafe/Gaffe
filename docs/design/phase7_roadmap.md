@@ -178,7 +178,7 @@ is PIT-correct.
 | Tier 1.4 BPS audit (no change) | 1517 | 0 |
 | **Final** | **1517** | **+302** |
 
-Gap to user REDACTED_TEAM_ID (1661 over 29 played GWs): −144 (was −446 at start).
+Gap to user (my team) (1661 over 29 played GWs): −144 (was −446 at start).
 
 ---
 

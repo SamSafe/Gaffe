@@ -38,3 +38,6 @@ Thumbs.db
 # Generated artifacts — regenerable, not source
 data/models/
 data/live/
+
+# Local Claude Code workflow config (machine-specific; may contain team_id)
+.claude/settings.json
