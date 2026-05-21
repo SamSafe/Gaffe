@@ -250,13 +250,26 @@ live_app = typer.Typer(help="Phase 6 live-run commands (ingest + recommend).")
 app.add_typer(live_app, name="live")
 
 
+def _resolve_team_id(team_id: int | None) -> int:
+    """Resolve --team-id, falling back to settings.team_id (FPL_BOT_TEAM_ID
+    in .env). Errors clearly if neither is set."""
+    resolved = team_id if team_id is not None else settings.team_id
+    if resolved is None:
+        console.print(
+            "[red]No team id. Pass --team-id or set FPL_BOT_TEAM_ID in .env.[/red]"
+        )
+        raise typer.Exit(1)
+    return resolved
+
+
 @live_app.command("ingest")
 def live_ingest(
-    team_id: Annotated[int, typer.Option("--team-id", envvar="FPL_TEAM_ID")],
     gameweek: Annotated[int, typer.Option("--gameweek")],
+    team_id: Annotated[int | None, typer.Option("--team-id", envvar="FPL_TEAM_ID")] = None,
     season_id: Annotated[int, typer.Option("--season-id")] = 25,
 ) -> None:
     """Pull bootstrap-static + fixtures + my-team for the user's live state."""
+    team_id = _resolve_team_id(team_id)
     from fpl_bot.ingest import fpl_api
 
     console.print("[blue]bootstrap-static[/blue]")
@@ -286,14 +299,15 @@ def live_ingest(
 
 @live_app.command("recommend")
 def live_recommend(
-    team_id: Annotated[int, typer.Option("--team-id", envvar="FPL_TEAM_ID")],
     gameweek: Annotated[int, typer.Option("--gameweek")],
+    team_id: Annotated[int | None, typer.Option("--team-id", envvar="FPL_TEAM_ID")] = None,
     season_id: Annotated[int, typer.Option("--season-id")] = 25,
     train_seasons: Annotated[
         str, typer.Option("--train-seasons", help="comma-separated")
     ] = "19,20,21,22,23,24",
 ) -> None:
     """Run Phase 5 stack + status overrides; emit markdown + JSON recommendation."""
+    team_id = _resolve_team_id(team_id)
     from fpl_bot.live.recommend import generate_recommendation
 
     ts = [int(s) for s in train_seasons.split(",") if s.strip()]
@@ -306,12 +320,13 @@ def live_recommend(
 
 @live_app.command("retrospective")
 def live_retrospective(
-    team_id: Annotated[int, typer.Option("--team-id", envvar="FPL_TEAM_ID")],
     gameweek: Annotated[int, typer.Option("--gameweek")],
+    team_id: Annotated[int | None, typer.Option("--team-id", envvar="FPL_TEAM_ID")] = None,
     season_id: Annotated[int, typer.Option("--season-id")] = 25,
 ) -> None:
     """Post-GW: pull actuals (assumes bootstrap-static re-ingest after GW close),
     apply auto-sub scorer to the prior recommendation, write actuals.json."""
+    team_id = _resolve_team_id(team_id)
     from fpl_bot.live.retrospective import compute_retrospective
 
     p = compute_retrospective(season_id=season_id, gameweek=gameweek, team_id=team_id)

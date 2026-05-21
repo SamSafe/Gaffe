@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     user_agent: str = "fpl-bot/0.1 (research; non-commercial)"
     request_timeout_seconds: float = 30.0
 
+    # Your FPL entry/team id. Set FPL_BOT_TEAM_ID in .env so live commands
+    # can omit --team-id (and so it never lives in tracked files / history).
+    team_id: int | None = None
+
     # Optional. Required only for `fpl-bot ingest oddsapi`. Free tier at
     # https://the-odds-api.com (500 req/mo).
     odds_api_key: str | None = None
