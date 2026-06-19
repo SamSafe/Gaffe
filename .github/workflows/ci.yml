@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: lint + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      # Lint only the maintained library + tests. One-off experiment scripts
+      # (scripts/) and generated migrations (alembic/versions/) are not gated.
+      - name: Ruff lint
+        run: uv run ruff check src tests
+
+      # Full suite: 194 unit + leakage tests. None require a live PostgreSQL
+      # (DB-touching code is exercised via fixtures/mocks), so no service is
+      # needed here. The `integration` marker covers tests that do.
+      - name: Pytest
+        run: uv run pytest tests/ -q
