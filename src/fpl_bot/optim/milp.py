@@ -42,6 +42,10 @@ HIT_COST = 4
 # Big-M for chip-suppression of hits. 15 max transfers × 4 hit cost = 60; use 100 for safety.
 HIT_BIGM = 100
 
+# Default CBC random seed. Pinning it makes single-threaded solves
+# reproducible run-to-run (see solve_milp docstring). Arbitrary fixed value.
+DEFAULT_CBC_SEED = 20252026
+
 
 @dataclass
 class MilpInputs:
@@ -728,6 +732,7 @@ def solve_milp(
     *,
     time_limit_s: int = 120,
     mip_rel_gap: float = 0.01,
+    random_seed: int | None = DEFAULT_CBC_SEED,
 ) -> dict:
     """Solve the MILP via CBC (subprocess on LP file). Returns metadata.
 
@@ -741,6 +746,17 @@ def solve_milp(
     CBC is a decades-stable open-source solver, bundled with PuLP, and
     invoked via subprocess so any internal state is fully isolated per
     solve. Slower than HiGHS optimal but rock-solid.
+
+    **Reproducibility**: CBC's heuristics use internal randomization, so
+    on large degenerate models the same inputs can yield different (but
+    equally near-optimal) incumbents run-to-run — the source of the
+    ~±28 pts/season backtest variance documented in the README. Pinning
+    `random_seed` (CBC `randomCbcSeed` + `randomSeed`) makes a single-
+    threaded solve deterministic, so backtest comparisons are reproducible.
+    Pass `random_seed=None` to restore the old unseeded behaviour. NOTE:
+    this does not *shrink* the gap-induced spread of valid solutions, it
+    only fixes which one you get — quantifying any noise reduction needs a
+    multi-fold backtest, not asserted here.
     """
     import contextlib
     import os
@@ -762,10 +778,20 @@ def solve_milp(
 
     try:
         cbc_path = _cbc_binary_path()
-        # CBC CLI: timeLimit + ratio (gap), solve, write solution.
+        # CBC CLI: [seed], timeLimit + ratio (gap), solve, write solution.
+        # Params are parsed left-to-right and must precede `solve`.
+        seed_args: list[str] = []
+        if random_seed is not None:
+            seed_args = [
+                "randomCbcSeed",
+                str(random_seed),
+                "randomSeed",
+                str(random_seed),
+            ]
         cmd = [
             cbc_path,
             lp_path,
+            *seed_args,
             "seconds",
             str(time_limit_s),
             "ratio",
@@ -921,10 +947,11 @@ def solve_rolling_horizon(
     inputs: MilpInputs,
     *,
     time_limit_s: int = 120,
+    random_seed: int | None = DEFAULT_CBC_SEED,
 ) -> tuple[GwDecisions, dict]:
     """End-to-end: build, solve, extract first-week decisions."""
     model = build_milp(inputs)
-    meta = solve_milp(model, time_limit_s=time_limit_s)
+    meta = solve_milp(model, time_limit_s=time_limit_s, random_seed=random_seed)
     if meta["termination"] not in ("optimal", "feasible"):
         raise RuntimeError(f"MILP failed: {meta}")
     decisions = extract_decisions(model, inputs)
