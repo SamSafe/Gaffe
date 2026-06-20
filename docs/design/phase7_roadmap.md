@@ -30,7 +30,7 @@ same tier are roughly independent and can be tackled in any order.
 | 14 | Bookmaker odds (goal probabilities) | ❌ | Internal Dixon-Coles used instead. Free APIs exist (Pinnacle, Betfair Exchange). |
 | 15 | Top-10k EO | ❌ | LiveFPL / FPLStatistics scrape needed. |
 | 16 | Set-piece taker rotation | ⚠️ | Manual penalty-taker list exists; no per-week rotation tracking. |
-| 17 | Suspension carry-over (yellow → 5/10/15) | ❌ | Not tracked. Small impact. |
+| 17 | Suspension carry-over (yellow → 5/10/15) | ✅ | [`suspension_adjustment.py`](src/fpl_bot/eval/suspension_adjustment.py). PIT card-accounting zeroes banned player/GW preds. Measured +68 (25/26) / +86 (24/25). See Tier-3 close-out. |
 | 18 | Price-change predictor | ⚠️ Built, not active | Phase 3.5 has a transfer-balance model; not wired into prediction pipeline. |
 | 19 | Manager rotation patterns | ❌ | Pep-style rotation isn't modeled. |
 | 20 | Fixture congestion (3-in-7) | ❌ | Each fixture treated independently. |
@@ -234,3 +234,48 @@ Started: bot 1215 on 25/26, −446 below user.
 Ended:   bot 1517 on 25/26, −144 below user (68% of gap closed).
 Tests:   176 pass.
 Commits: 19 in the session (8 v3 polish + 11 Phase 7).
+
+---
+
+## Tier 3 close-out (later session)
+
+Backtests in this session are **reproducible**: CBC now runs with a pinned
+random seed (`DEFAULT_CBC_SEED`), so same-config off/on comparisons are
+deterministic and a non-zero delta is signal, not the ±28 pt solver noise.
+Caveat learned the hard way: seeding fixes *branching* but not whether a
+hard solve finishes inside the 120 s limit — under CPU contention a heavy
+GW can stop early with no incumbent and fail a validity gate (observed once
+on a 24/25 run; a clean solo re-run passed). Run folds un-contended.
+
+**3.1 Suspension carry-over — ✅ SHIPPED, default on.**
+PIT card-accounting (`compute_suspended_player_gws`) zeroes a banned
+player's GW prediction in the shared post-processing path (backtest + live).
+Triggers: red → 1-match (conservative; violent-conduct reds indistinguishable
+in data, and under-banning beats benching an available player); 5/10/15
+yellows by GW19/32/EOS → 1/2/3 matches. Measured, same-seed off→on:
+
+| Fold | bot off | bot on | Δ bot | gates |
+|---|---|---|---|---|
+| 24 (24/25) | 2451 | 2537 | **+86** | ✓ both |
+| 25 (25/26) | 1562 | 1630 | **+68** | ✓ both |
+
+Larger than the original 5–15 pt estimate — 25/26 alone had 72 red cards.
+
+**3.2 Manager rotation patterns — still ❌.** Next-best backtestable item.
+
+### Measured negative (kept off)
+
+**FWD isotonic calibration** (`fwd_calibration`, [model #1b](src/fpl_bot/models/fwd_calibration.py)):
+intended to correct the −0.57…−0.95 elite-FWD under-prediction, but
+measured **−27 pts on 25/26** (deterministic, seeded) — bending the whole
+FWD curve up distorts captaincy and nearly doubles mean solve time. Stays
+off by default; the existing default was right, now with evidence on the
+live season. The under-prediction is real but isotonic recalibration is the
+wrong fix; the structural Poisson-on-xG cause is the open question.
+
+### Live-only / off-season-blocked
+
+**Bookmaker odds in the live path** remains the highest-leverage open item
+(the bot's entire measured edge is the odds), but it can't be validated
+off-season — no EPL fixtures until Aug 2026. `ingest/oddsapi.py` exists;
+wiring it into live `market_xg` is best done against the 26/27 season.
