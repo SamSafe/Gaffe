@@ -4,7 +4,8 @@ The trained xPts stack emits raw per-(player, GW) expectations. Several
 production adjustments are deliberately outside that model:
   - early-season prior blend when rolling features are sparse;
   - per-position or per-player calibration experiments;
-  - DefCon additive points for seasons where FPL exposes the stat.
+  - DefCon additive points for seasons where FPL exposes the stat;
+  - domestic-suspension carry-over (zero a banned player's GW prediction).
 
 Keeping these in one module prevents the live path from drifting away from
 the validated backtest path.
@@ -29,6 +30,7 @@ def apply_prediction_postprocessing(
     defcon_per_position_shrinkage: dict[str, float] | None = DEFCON_PER_POSITION_SHRINKAGE,
     extend_defcon_future: bool = False,
     fwd_calibration: bool = False,
+    apply_suspension: bool = True,
     cache_dir: Path = Path("data/cache/xpts_predictions"),
 ) -> dict[tuple[int, int], float]:
     """Return a post-processed copy of raw xPts predictions.
@@ -53,7 +55,29 @@ def apply_prediction_postprocessing(
     )
     if fwd_calibration:
         _apply_fwd_calibration(out, season_id=season_id, cache_dir=cache_dir)
+    if apply_suspension:
+        _apply_suspension(out, season_id=season_id)
     return out
+
+
+def _apply_suspension(
+    pred_by_pgw: dict[tuple[int, int], float],
+    *,
+    season_id: int,
+) -> None:
+    """Zero predictions for player/GW pairs where the player is banned.
+
+    PIT-correct: each suspended (player, gw) entry derives only from cards
+    in earlier gameweeks (see suspension_adjustment.compute_suspended_player_gws).
+    """
+    from fpl_bot.eval.suspension_adjustment import compute_suspended_player_gws
+
+    suspended = compute_suspended_player_gws(season_id)
+    if not suspended:
+        return
+    for key in list(pred_by_pgw.keys()):
+        if key in suspended:
+            pred_by_pgw[key] = 0.0
 
 
 def _apply_early_gw_prior(

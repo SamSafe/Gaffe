@@ -702,6 +702,7 @@ def backtest_season(
     defcon_shrinkage: float | None = None,
     defcon_per_position_shrinkage: dict[str, float] | None = DEFCON_PER_POSITION_SHRINKAGE,
     fwd_calibration: bool = False,
+    apply_suspension: bool = True,
 ) -> BacktestSeasonResult:
     """Run rolling MILP backtest for one test season.
 
@@ -751,6 +752,7 @@ def backtest_season(
         defcon_shrinkage=defcon_shrinkage,
         defcon_per_position_shrinkage=defcon_per_position_shrinkage,
         fwd_calibration=fwd_calibration,
+        apply_suspension=apply_suspension,
         cache_dir=cache_dir,
     )
 
