@@ -20,6 +20,11 @@ from fpl_bot.features.goals import FEATURE_COLUMNS
 
 LABEL_COLUMNS = {"goals": "goals", "assists": "assists"}
 
+# Pinned LightGBM thread count for reproducible (deterministic) training.
+# Must be a fixed literal, not os.cpu_count(), so results don't depend on
+# how many cores the OS happens to expose at train time.
+LGBM_NUM_THREADS = 4
+
 # +1 monotonic non-decreasing (more of this feature → higher rate)
 GOALS_MONOTONIC: dict[str, int] = {
     "xg_per_90_last_3": 1,
@@ -135,6 +140,15 @@ def train_per_90_model(
         "monotone_constraints": monotone_constraints,
         "verbosity": -1,
         "seed": seed,
+        # Reproducible training (see minutes.py): make multi-threaded
+        # histogram construction deterministic so cache regeneration is
+        # stable and real model changes aren't drowned in ~tens-of-pts noise.
+        # `deterministic` only holds for a CONSTANT num_threads (LightGBM
+        # docs) — without pinning it, a throttling/sleeping machine changes
+        # the thread count between runs and reproducibility breaks.
+        "deterministic": True,
+        "force_row_wise": True,
+        "num_threads": LGBM_NUM_THREADS,
     }
 
     callbacks: list = [lgb.log_evaluation(period=0)]

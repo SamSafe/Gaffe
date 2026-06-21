@@ -20,6 +20,11 @@ import polars as pl
 from fpl_bot.features.minutes import FEATURE_COLUMNS
 
 NUM_CLASSES = 3
+
+# Pinned LightGBM thread count for reproducible (deterministic) training —
+# see models/goals.py. Fixed literal so reproducibility doesn't depend on
+# the core count the OS exposes at train time.
+LGBM_NUM_THREADS = 4
 LABEL_COLUMN = "minutes_bucket"
 
 # Monotonic constraints: +1 monotonic non-decreasing in P(starter), -1 non-increasing,
@@ -117,6 +122,15 @@ def train_minutes_model(
         "monotone_constraints": monotone_constraints,
         "verbosity": -1,
         "seed": seed,
+        # Reproducible training: without these, multi-threaded histogram
+        # construction is float-nondeterministic, so regenerating the
+        # prediction cache shifts backtest points by tens of pts and masks
+        # real model changes. `deterministic`+`force_row_wise` keep
+        # multi-threading but fix the result — but only for a CONSTANT
+        # num_threads, so pin it (else a throttling machine varies it).
+        "deterministic": True,
+        "force_row_wise": True,
+        "num_threads": LGBM_NUM_THREADS,
     }
 
     callbacks: list = [lgb.log_evaluation(period=0)]  # suppress per-iter logs
