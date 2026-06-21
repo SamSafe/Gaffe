@@ -20,7 +20,7 @@ longer add scored pens on top of the multinomial allocation.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import polars as pl
@@ -221,10 +221,6 @@ class BPSSimulator:
     seed: int = 42
     pen_per_match_lambda: float = 0.27  # league-typical penalty rate
     pen_conversion: float = 0.78
-    _rng: np.random.Generator = field(init=False)
-
-    def __post_init__(self) -> None:
-        self._rng = np.random.default_rng(self.seed)
 
     def simulate_fixture(
         self,
@@ -242,13 +238,27 @@ class BPSSimulator:
         If `return_raw_xpts_samples=True`, returns a tuple
         (DataFrame, np.int16 array of shape (n_players, n_iterations)).
         """
-        players = inputs.players
+        # Sort players by id so the per-fixture RNG draws (consumed in row
+        # order across minutes / multinomial goal allocation / assists /
+        # cards) map to the same players every run. Upstream polars joins
+        # don't guarantee row order, which would otherwise make per-player
+        # predictions non-reproducible even with a seeded RNG.
+        players = inputs.players.sort("player_id")
         n_players = players.height
         if n_players == 0:
             empty = pl.DataFrame()
             if return_raw_xpts_samples:
                 return empty, np.zeros((0, 0), dtype=np.int16)
             return empty
+
+        # Per-fixture RNG seeded by (base seed, fixture_id). Previously a
+        # single simulator-wide RNG was consumed sequentially across all
+        # fixtures, so each fixture's draws depended on how many draws the
+        # earlier fixtures happened to consume — i.e. on the (polars-
+        # assembly-dependent) processing order. Seeding per fixture makes a
+        # fixture's simulation reproducible in isolation, so regenerating the
+        # prediction cache is bit-stable regardless of fixture ordering.
+        rng = np.random.default_rng([self.seed, int(inputs.fixture_id)])
 
         player_ids = players["player_id"].to_numpy()
         positions = players["position_code"].to_list()
@@ -278,12 +288,12 @@ class BPSSimulator:
         pens_missed_buf = np.zeros(n_players, dtype=np.int8)
 
         for s in range(self.n_iterations):
-            h_score = int(self._rng.poisson(inputs.home_team_lambda))
-            a_score = int(self._rng.poisson(inputs.away_team_lambda))
+            h_score = int(rng.poisson(inputs.home_team_lambda))
+            a_score = int(rng.poisson(inputs.away_team_lambda))
             home_cs = (a_score == 0)
             away_cs = (h_score == 0)
-            home_pens = int(self._rng.poisson(self.pen_per_match_lambda / 2))
-            away_pens = int(self._rng.poisson(self.pen_per_match_lambda / 2))
+            home_pens = int(rng.poisson(self.pen_per_match_lambda / 2))
+            away_pens = int(rng.poisson(self.pen_per_match_lambda / 2))
 
             bps_per_player = np.zeros(n_players, dtype=np.float64)
             minutes_buf.fill(0)
@@ -304,7 +314,7 @@ class BPSSimulator:
                     p_shorts[i],
                     p_fulls[i],
                     inputs.alphas_by_position.get(positions[i], 0.4),
-                    self._rng,
+                    rng,
                 )
                 minutes_buf[i] = minutes
                 player_home = bool(is_home[i])
@@ -329,7 +339,7 @@ class BPSSimulator:
                 total_w = w.sum()
                 if total_w <= 0:
                     continue
-                allocation = self._rng.multinomial(team_score, w / total_w)
+                allocation = rng.multinomial(team_score, w / total_w)
                 goals_buf[team_mask] = allocation.astype(np.int16)
 
             # PASS 3: per-player events that are NOT subject to the team-total
@@ -346,16 +356,16 @@ class BPSSimulator:
                 goals = int(goals_buf[i])  # set in PASS 2
 
                 assists = int(
-                    self._rng.poisson(max(0.0, lambda_a[i]) * minutes_factor)
+                    rng.poisson(max(0.0, lambda_a[i]) * minutes_factor)
                 )
 
                 saves = int(
-                    self._rng.poisson(max(0.0, saves_rate[i]) * minutes_factor)
+                    rng.poisson(max(0.0, saves_rate[i]) * minutes_factor)
                 ) if pos == "GKP" else 0
-                yc_drawn = self._rng.random() < (
+                yc_drawn = rng.random() < (
                     max(0.0, yc_rate[i]) * minutes_factor
                 )
-                rc_drawn = self._rng.random() < (
+                rc_drawn = rng.random() < (
                     max(0.0, rc_rate[i]) * minutes_factor
                 )
 
@@ -367,7 +377,7 @@ class BPSSimulator:
                 pens_missed = 0
                 if bool(is_pen_taker[i]) and pens_for_team > 0:
                     for _ in range(pens_for_team):
-                        if self._rng.random() >= self.pen_conversion:
+                        if rng.random() >= self.pen_conversion:
                             pens_missed += 1
 
                 assists_buf[i] = assists
@@ -389,7 +399,7 @@ class BPSSimulator:
                     penalties_missed_or_saved=pens_missed,
                 )
                 bps_residual = self.event_source.simulate_unmodeled_bps(
-                    pos, minutes, self._rng
+                    pos, minutes, rng
                 )
                 bps_per_player[i] = bps_known + bps_residual
 
