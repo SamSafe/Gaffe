@@ -67,6 +67,11 @@ uv run gaffe live recommend \
     --train-seasons 19,20,21,22,23,24,25,26
 ```
 
+The default uses the cross-fold-validated conservative fitter. For shadow
+comparison only, `--fit-mode all` also consumes alternate totals and Asian
+handicap lines; it is not the production default because historical downstream
+results were mixed.
+
 For exact current bank, free transfers, purchase prices, and sell prices,
 set `FPL_BOT_FPL_COOKIE` to the full logged-in `fantasy.premierleague.com`
 Cookie header before `live ingest`. Without it, the bot uses the public

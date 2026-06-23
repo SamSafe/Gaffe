@@ -1,7 +1,9 @@
 """Tests for the Odds API outcome → selection mapper."""
 from __future__ import annotations
 
-from fpl_bot.ingest.oddsapi import _outcome_to_selection
+import datetime as dt
+
+from fpl_bot.ingest.oddsapi import _outcome_to_selection, _parse_api_timestamp
 
 
 def test_h2h_home_draw_away():
@@ -30,7 +32,7 @@ def test_spreads_includes_point():
         "spreads", {"name": "Burnley", "price": 1.96, "point": 2.5}, home, away
     )
     assert sel == "away"
-    assert market == "ah_2.5"
+    assert market == "ah_-2.5"
 
 
 def test_spreads_missing_point():
@@ -66,3 +68,12 @@ def test_h2h_case_sensitive_team_name():
         "h2h", {"name": "arsenal", "price": 1.5}, "Arsenal", "Burnley"
     )
     assert sel is None
+
+
+def test_market_last_update_timestamp_parses_as_utc():
+    parsed = _parse_api_timestamp("2026-05-18T10:56:33Z")
+    assert parsed == dt.datetime(2026, 5, 18, 10, 56, 33, tzinfo=dt.UTC)
+
+
+def test_malformed_market_timestamp_returns_none():
+    assert _parse_api_timestamp("not-a-time") is None

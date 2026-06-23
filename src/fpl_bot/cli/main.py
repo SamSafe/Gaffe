@@ -218,10 +218,25 @@ app.add_typer(derive_app, name="derive")
 @derive_app.command("market-xg")
 def derive_market_xg(
     season_id: Annotated[int, typer.Option("--season-id")],
+    as_of: Annotated[
+        dt.datetime | None,
+        typer.Option("--as-of", help="Use only quotes at or before this ISO timestamp."),
+    ] = None,
+    fit_mode: Annotated[
+        str,
+        typer.Option("--fit-mode", help="Goal-rate fitter: legacy or all."),
+    ] = "legacy",
 ) -> None:
-    """Run Dixon-Coles inversion on fact_odds → fact_market_xg for one season."""
-    console.print(f"[blue]derive_market_xg_for_season(season_id={season_id})[/blue]")
-    counts = dixon_coles.derive_market_xg_for_season(season_id)
+    """Invert bookmaker markets into team goal rates for one season."""
+    console.print(
+        f"[blue]derive_market_xg_for_season(season_id={season_id}, "
+        f"as_of={as_of}, fit_mode={fit_mode})[/blue]"
+    )
+    counts = dixon_coles.derive_market_xg_for_season(
+        season_id,
+        as_of=as_of,
+        fit_mode=fit_mode,
+    )
     for k, v in counts.items():
         console.print(f"  {k}: {v}")
 

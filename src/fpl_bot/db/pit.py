@@ -275,24 +275,27 @@ def understat_player_match_history(
 
 def market_xg_for_fixtures(
     fixture_ids: list[int] | None = None,
+    *,
+    as_of: dt.datetime | None = None,
 ) -> pl.DataFrame:
     """Latest fact_market_xg row per (fixture_id, team_id). Returns
     columns: fixture_id, team_id, lambda, cs_prob.
     """
+    if as_of is not None and as_of.utcoffset() is None:
+        raise ValueError("as_of must be timezone-aware")
     from sqlalchemy import func as _func
 
     from fpl_bot.db.models import FactMarketXg as _FMX
 
     with session_scope() as s:
-        latest = (
-            select(
-                _FMX.fixture_id,
-                _FMX.team_id,
-                _func.max(_FMX.source_recorded_at).label("max_src"),
-            )
-            .group_by(_FMX.fixture_id, _FMX.team_id)
-            .subquery()
+        latest_stmt = select(
+            _FMX.fixture_id,
+            _FMX.team_id,
+            _func.max(_FMX.source_recorded_at).label("max_src"),
         )
+        if as_of is not None:
+            latest_stmt = latest_stmt.where(_FMX.source_recorded_at <= as_of)
+        latest = latest_stmt.group_by(_FMX.fixture_id, _FMX.team_id).subquery()
         stmt = select(_FMX.fixture_id, _FMX.team_id, _FMX.lambda_, _FMX.cs_prob).join(
             latest,
             (latest.c.fixture_id == _FMX.fixture_id)

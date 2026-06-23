@@ -158,8 +158,8 @@ def parse_raw_oddsapi(raw_path: Path, season_id: int) -> dict[str, int]:
 
     Joins to dim_fixture via (commence_date → kickoff date, mapped
     home/away team names → dim_team.team_id). Idempotent: ON CONFLICT
-    on the PK updates `decimal_odds` so a later snapshot supersedes
-    earlier ones cleanly.
+    on the snapshot PK updates only an exact duplicate quote. Later pulls are
+    preserved as distinct rows via `quote_time`.
     """
     payload = json.loads(raw_path.read_text())
     counts = {
@@ -170,6 +170,7 @@ def parse_raw_oddsapi(raw_path: Path, season_id: int) -> dict[str, int]:
         "skipped_no_outcome": 0,
     }
     short_to_team_id, fixture_lookup = _build_lookups(season_id)
+    fetched_at = _raw_fetched_at(raw_path)
 
     with session_scope() as s:
         for event in payload:
@@ -200,6 +201,9 @@ def parse_raw_oddsapi(raw_path: Path, season_id: int) -> dict[str, int]:
                 bk_code = f"OA_{bk['key']}"
                 for market in bk.get("markets", []) or []:
                     m_key = market.get("key")
+                    quote_time = _parse_api_timestamp(
+                        market.get("last_update") or bk.get("last_update")
+                    ) or fetched_at
                     for outcome in market.get("outcomes", []) or []:
                         sel, market_code = _outcome_to_selection(
                             m_key, outcome,
@@ -226,6 +230,7 @@ def parse_raw_oddsapi(raw_path: Path, season_id: int) -> dict[str, int]:
                                 market=market_code,
                                 selection=sel,
                                 event_time=event_time,
+                                quote_time=quote_time,
                                 decimal_odds=decimal_odds,
                             )
                             .on_conflict_do_update(
@@ -234,7 +239,7 @@ def parse_raw_oddsapi(raw_path: Path, season_id: int) -> dict[str, int]:
                                     "bookmaker",
                                     "market",
                                     "selection",
-                                    "event_time",
+                                    "quote_time",
                                 ],
                                 set_={"decimal_odds": decimal_odds},
                             )
@@ -242,6 +247,33 @@ def parse_raw_oddsapi(raw_path: Path, season_id: int) -> dict[str, int]:
                         s.execute(stmt)
                         counts["fact_odds"] += 1
     return counts
+
+
+def _parse_api_timestamp(value: object) -> dt.datetime | None:
+    """Parse an Odds API ISO timestamp as UTC; return None when malformed."""
+    if not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.UTC)
+    return parsed.astimezone(dt.UTC)
+
+
+def _raw_fetched_at(raw_path: Path) -> dt.datetime:
+    """Read the audited fetch time, falling back to the raw file mtime."""
+    meta_path = raw_path.with_suffix(".meta.json")
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            meta = {}
+        parsed = _parse_api_timestamp(meta.get("fetched_at"))
+        if parsed is not None:
+            return parsed
+    return dt.datetime.fromtimestamp(raw_path.stat().st_mtime, tz=dt.UTC)
 
 
 def _outcome_to_selection(
@@ -273,7 +305,11 @@ def _outcome_to_selection(
         )
         if sel is None:
             return (None, "ah")
-        return (sel, f"ah_{point}")
+        # Canonicalize the market to the HOME handicap so both complementary
+        # outcomes share one market key. The API reports opposite signed
+        # points on the home and away outcome rows.
+        home_point = float(point) if sel == "home" else -float(point)
+        return (sel, f"ah_{home_point:g}")
     if market_key == "totals":
         point = outcome.get("point")
         if point is None:
@@ -306,5 +342,3 @@ def _build_lookups(
         for f in fixture_rows
     }
     return short_to_team_id, fixture_lookup
-
-

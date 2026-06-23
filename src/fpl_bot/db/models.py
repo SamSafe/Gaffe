@@ -240,10 +240,19 @@ class FactOdds(Base):
     bookmaker: Mapped[str] = mapped_column(Text, primary_key=True)
     market: Mapped[str] = mapped_column(Text, primary_key=True)
     selection: Mapped[str] = mapped_column(Text, primary_key=True)
-    event_time: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    # Fixture commencement and quote timestamp are deliberately separate.
+    # Multiple live pulls for the same fixture/market must remain distinct.
+    event_time: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    quote_time: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), primary_key=True
+    )
     decimal_odds: Mapped[float] = mapped_column(Numeric(8, 4), nullable=False)
     recorded_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_fact_odds_fixture_quote_time", "fixture_id", "quote_time"),
     )
 
 

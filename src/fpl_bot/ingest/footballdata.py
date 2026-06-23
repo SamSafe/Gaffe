@@ -151,21 +151,28 @@ def parse_raw_footballdata(raw_path: Path, season_id: int) -> dict[str, int]:
                 counts["skipped_bad_date"] += 1
                 continue
 
-            fixture_id = fixture_lookup.get((match_date, home_id, away_id))
-            if fixture_id is None:
+            fixture_match = fixture_lookup.get((match_date, home_id, away_id))
+            if fixture_match is None:
                 counts["skipped_no_fixture"] += 1
                 continue
+            fixture_id, event_time = fixture_match
 
-            event_time = dt.datetime.combine(match_date, dt.time(12, 0), tzinfo=dt.UTC)
+            # football-data publishes closing prices, not timestamped quote
+            # histories. Use kickoff as the documented closing approximation.
+            quote_time = event_time
 
             for bk, market, hc, dc, ac in ONEX2_COLS:
                 for sel, col in (("home", hc), ("draw", dc), ("away", ac)):
-                    n = _insert_odds(s, fixture_id, bk, market, sel, event_time, row.get(col))
+                    n = _insert_odds(
+                        s, fixture_id, bk, market, sel, event_time, quote_time, row.get(col)
+                    )
                     counts["fact_odds"] += n
 
             for bk, market, oc, uc in TOTALS_COLS:
                 for sel, col in (("over", oc), ("under", uc)):
-                    n = _insert_odds(s, fixture_id, bk, market, sel, event_time, row.get(col))
+                    n = _insert_odds(
+                        s, fixture_id, bk, market, sel, event_time, quote_time, row.get(col)
+                    )
                     counts["fact_odds"] += n
 
     return counts
@@ -173,8 +180,11 @@ def parse_raw_footballdata(raw_path: Path, season_id: int) -> dict[str, int]:
 
 def _build_lookups(
     season_id: int,
-) -> tuple[dict[str, int], dict[tuple[dt.date, int, int], int]]:
-    """Returns (short_name → team_id, (date, home, away) → fixture_id)."""
+) -> tuple[
+    dict[str, int],
+    dict[tuple[dt.date, int, int], tuple[int, dt.datetime]],
+]:
+    """Returns team ids and fixture id/commencement lookup."""
     with session_scope() as s:
         team_rows = s.execute(
             select(DimTeam.team_id, DimTeam.short_name).where(DimTeam.season_id == season_id)
@@ -187,7 +197,10 @@ def _build_lookups(
 
     short_to_team_id = {t.short_name: t.team_id for t in team_rows}
     fixture_lookup = {
-        (f.kickoff_utc.date(), f.home_team_id, f.away_team_id): f.fixture_id
+        (f.kickoff_utc.date(), f.home_team_id, f.away_team_id): (
+            f.fixture_id,
+            f.kickoff_utc,
+        )
         for f in fixture_rows
     }
     return short_to_team_id, fixture_lookup
@@ -214,6 +227,7 @@ def _insert_odds(
     market: str,
     selection: str,
     event_time: dt.datetime,
+    quote_time: dt.datetime,
     raw_value: object,
 ) -> int:
     if raw_value is None or raw_value == "":
@@ -230,10 +244,11 @@ def _insert_odds(
         market=market,
         selection=selection,
         event_time=event_time,
+        quote_time=quote_time,
         decimal_odds=decimal_odds,
     )
     stmt = stmt.on_conflict_do_nothing(
-        index_elements=["fixture_id", "bookmaker", "market", "selection", "event_time"]
+        index_elements=["fixture_id", "bookmaker", "market", "selection", "quote_time"]
     )
     s.execute(stmt)
     return 1
