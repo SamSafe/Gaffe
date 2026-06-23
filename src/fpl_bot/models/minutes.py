@@ -10,6 +10,7 @@ gate enforces this.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +27,131 @@ NUM_CLASSES = 3
 # the core count the OS exposes at train time.
 LGBM_NUM_THREADS = 4
 LABEL_COLUMN = "minutes_bucket"
+
+
+def availability_adjusted_minutes_probs(
+    p_zero: float,
+    p_short: float,
+    p_full: float,
+    p_available: float,
+) -> tuple[float, float, float]:
+    """Condition a base minutes distribution on an availability signal.
+
+    ``p_available`` represents the probability that the player is available
+    for selection, independently of the base model's ordinary rotation risk.
+    If unavailable, the player is in the zero-minutes bucket. If available,
+    the normalized base distribution applies.
+
+    This function is intentionally pure so it can be tested and reused by
+    future news/status calibrators without importing live or database code.
+    """
+    values = (p_zero, p_short, p_full, p_available)
+    if not all(math.isfinite(v) for v in values):
+        raise ValueError("minutes and availability probabilities must be finite")
+    if not 0.0 <= p_available <= 1.0:
+        raise ValueError("p_available must be in [0, 1]")
+    if any(v < 0.0 for v in (p_zero, p_short, p_full)):
+        raise ValueError("base minutes probabilities must be non-negative")
+
+    total = p_zero + p_short + p_full
+    if total <= 0.0:
+        raise ValueError("base minutes probabilities must have positive mass")
+
+    base_zero = p_zero / total
+    base_short = p_short / total
+    base_full = p_full / total
+    adjusted = (
+        (1.0 - p_available) + p_available * base_zero,
+        p_available * base_short,
+        p_available * base_full,
+    )
+    # Normalize once more to absorb harmless floating-point drift.
+    adjusted_total = sum(adjusted)
+    return (
+        adjusted[0] / adjusted_total,
+        adjusted[1] / adjusted_total,
+        adjusted[2] / adjusted_total,
+    )
+
+
+def apply_availability_to_minutes_predictions(
+    predictions: pl.DataFrame,
+    availability_by_pgw: dict[tuple[int, int], float] | None,
+) -> pl.DataFrame:
+    """Apply availability only to explicitly signalled player-gameweeks.
+
+    ``predictions`` must contain ``player_id``, ``gameweek`` and the three
+    minutes-probability columns. With no signals, the original DataFrame is
+    returned unchanged so historical/backtest predictions stay neutral.
+    """
+    if not availability_by_pgw or predictions.is_empty():
+        return predictions
+
+    required = {
+        "player_id",
+        "gameweek",
+        "p_minutes_zero",
+        "p_minutes_short",
+        "p_minutes_full",
+    }
+    missing = required.difference(predictions.columns)
+    if missing:
+        raise ValueError(f"minutes predictions missing required columns: {sorted(missing)}")
+
+    signal_rows: list[dict[str, int | float]] = []
+    for (player_id, gameweek), p_available in sorted(availability_by_pgw.items()):
+        if not math.isfinite(p_available) or not 0.0 <= p_available <= 1.0:
+            raise ValueError(
+                f"invalid availability for player={player_id}, gw={gameweek}: "
+                f"{p_available!r}"
+            )
+        signal_rows.append(
+            {
+                "player_id": int(player_id),
+                "gameweek": int(gameweek),
+                "_news_p_available": float(p_available),
+            }
+        )
+
+    signals = pl.DataFrame(signal_rows)
+    out = predictions.join(signals, on=["player_id", "gameweek"], how="left")
+    has_signal = pl.col("_news_p_available").is_not_null()
+    base_total = (
+        pl.col("p_minutes_zero")
+        + pl.col("p_minutes_short")
+        + pl.col("p_minutes_full")
+    )
+    invalid_component = (
+        (pl.col("p_minutes_zero") < 0.0)
+        | (pl.col("p_minutes_short") < 0.0)
+        | (pl.col("p_minutes_full") < 0.0)
+        | ~pl.col("p_minutes_zero").is_finite()
+        | ~pl.col("p_minutes_short").is_finite()
+        | ~pl.col("p_minutes_full").is_finite()
+    )
+    invalid_base = out.filter(has_signal & ((base_total <= 0.0) | invalid_component))
+    if not invalid_base.is_empty():
+        raise ValueError(
+            "signalled base minutes probabilities must be finite, non-negative, "
+            "and have positive mass"
+        )
+
+    available = pl.col("_news_p_available")
+    out = out.with_columns(
+        pl.when(has_signal)
+        .then((1.0 - available) + available * pl.col("p_minutes_zero") / base_total)
+        .otherwise(pl.col("p_minutes_zero"))
+        .alias("p_minutes_zero"),
+        pl.when(has_signal)
+        .then(available * pl.col("p_minutes_short") / base_total)
+        .otherwise(pl.col("p_minutes_short"))
+        .alias("p_minutes_short"),
+        pl.when(has_signal)
+        .then(available * pl.col("p_minutes_full") / base_total)
+        .otherwise(pl.col("p_minutes_full"))
+        .alias("p_minutes_full"),
+    )
+    return out.drop("_news_p_available")
 
 # Monotonic constraints: +1 monotonic non-decreasing in P(starter), -1 non-increasing,
 # 0 unconstrained. The constraint applies to the model's RAW output, which for

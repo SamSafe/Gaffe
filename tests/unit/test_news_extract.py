@@ -2,8 +2,16 @@
 from __future__ import annotations
 
 import datetime as dt
+from contextlib import contextmanager
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from fpl_bot.live.news_extract import extract_news_from_status_rows
+import pytest
+
+from fpl_bot.live.news_extract import (
+    extract_news_from_status_rows,
+    latest_news_per_player,
+)
 
 
 def test_expected_back_dd_mon():
@@ -58,3 +66,34 @@ def test_garbled_date_returns_none():
     rows = [(600, "Knee - Expected back 99 Foo")]
     out = extract_news_from_status_rows(rows, today=today)
     assert out[0].return_date is None
+
+
+def test_latest_news_historical_replay_applies_pit_cutoff_and_season() -> None:
+    statements = []
+
+    class FakeResult:
+        def all(self):
+            return [SimpleNamespace(player_id=700, news="Expected back 15 Jun")]
+
+    class FakeSession:
+        def execute(self, statement):
+            statements.append(statement)
+            return FakeResult()
+
+    @contextmanager
+    def fake_session_scope():
+        yield FakeSession()
+
+    as_of = dt.datetime(2026, 8, 1, 12, tzinfo=dt.UTC)
+    with patch("fpl_bot.live.news_extract.session_scope", fake_session_scope):
+        out = latest_news_per_player(season_id=25, as_of=as_of)
+
+    assert out[0].return_date == dt.date(2027, 6, 15)
+    sql = str(statements[0])
+    assert "fact_player_status.season_id" in sql
+    assert "fact_player_status.recorded_at <=" in sql
+
+
+def test_latest_news_rejects_naive_as_of() -> None:
+    with pytest.raises(ValueError, match="timezone-aware"):
+        latest_news_per_player(as_of=dt.datetime(2026, 8, 1, 12))

@@ -135,6 +135,18 @@ def generate_recommendation(
 
     cached_gws = sorted({gw for (_, gw) in pred_by_pgw if gw > 0})
     target_horizon_gws = list(range(gameweek, gameweek + horizon))
+    from fpl_bot.live.news_extract import (
+        build_pred_attenuator,
+        latest_news_per_player,
+        return_gw_for_date,
+    )
+
+    # The current extractor emits explicit availability masks (principally
+    # pre-return 0.0). Feed them into upcoming-fixture minutes probabilities;
+    # the later xPts attenuator remains as a fallback for cached predictions.
+    news_attenuator = build_pred_attenuator(
+        season_id=season_id, horizon_gws=target_horizon_gws
+    )
     missing_gws = [w for w in target_horizon_gws if w not in cached_gws]
 
     if missing_gws:
@@ -158,6 +170,7 @@ def generate_recommendation(
                 test_season=season_id,
                 train_seasons=train_seasons,
                 upcoming_fixture_ids=upcoming_ids,
+                availability_by_pgw=news_attenuator,
                 n_iterations=n_iterations,
                 seed=42,
             )
@@ -205,15 +218,7 @@ def generate_recommendation(
     # excluded but returning inside the horizon are un-excluded (kept as
     # candidates) with their pre-return GW pred zeroed.
     overrides = load_status_overrides(candidate_player_ids=all_players)
-    from fpl_bot.live.news_extract import (
-        build_pred_attenuator,
-        latest_news_per_player,
-        return_gw_for_date,
-    )
-    horizon_gws_for_news = list(range(gameweek, gameweek + horizon))
-    news_attenuator = build_pred_attenuator(
-        season_id=season_id, horizon_gws=horizon_gws_for_news
-    )
+    horizon_gws_for_news = target_horizon_gws
     # Un-exclude players who have a return-date strictly inside the horizon
     unexclude_returning: set[int] = set()
     for ex in latest_news_per_player(season_id=season_id):

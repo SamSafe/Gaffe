@@ -105,18 +105,34 @@ def extract_news_from_status_rows(
     return out
 
 
-def latest_news_per_player(season_id: int | None = None) -> list[NewsExtraction]:
-    """Pull the latest fact_player_status.news snapshot for every player."""
+def latest_news_per_player(
+    season_id: int | None = None,
+    *,
+    as_of: dt.datetime | None = None,
+    today: dt.date | None = None,
+) -> list[NewsExtraction]:
+    """Pull the latest eligible news snapshot for every player.
+
+    ``as_of`` is optional for the live path, but required for any historical
+    replay so a later status update cannot leak backwards across a deadline.
+    """
+    if as_of is not None and as_of.utcoffset() is None:
+        raise ValueError("as_of must be timezone-aware")
     with session_scope() as s:
+        latest_stmt = select(
+            FactPlayerStatus.player_id,
+            func.max(FactPlayerStatus.recorded_at).label("max_rec"),
+        )
+        if season_id is not None:
+            latest_stmt = latest_stmt.where(FactPlayerStatus.season_id == season_id)
+        if as_of is not None:
+            latest_stmt = latest_stmt.where(FactPlayerStatus.recorded_at <= as_of)
         latest = (
-            select(
-                FactPlayerStatus.player_id,
-                func.max(FactPlayerStatus.recorded_at).label("max_rec"),
-            )
+            latest_stmt
             .group_by(FactPlayerStatus.player_id)
             .subquery()
         )
-        rows = s.execute(
+        rows_stmt = (
             select(FactPlayerStatus.player_id, FactPlayerStatus.news)
             .join(
                 latest,
@@ -124,8 +140,17 @@ def latest_news_per_player(season_id: int | None = None) -> list[NewsExtraction]
                 & (latest.c.max_rec == FactPlayerStatus.recorded_at),
             )
             .where(FactPlayerStatus.news.isnot(None))
-        ).all()
-    return extract_news_from_status_rows([(int(r.player_id), r.news) for r in rows])
+        )
+        if season_id is not None:
+            rows_stmt = rows_stmt.where(FactPlayerStatus.season_id == season_id)
+        rows = s.execute(rows_stmt).all()
+    extraction_date = today
+    if extraction_date is None and as_of is not None:
+        extraction_date = as_of.astimezone(dt.UTC).date()
+    return extract_news_from_status_rows(
+        [(int(r.player_id), r.news) for r in rows],
+        today=extraction_date,
+    )
 
 
 def return_gw_for_date(
@@ -153,6 +178,7 @@ def build_pred_attenuator(
     season_id: int,
     horizon_gws: list[int],
     today: dt.date | None = None,
+    as_of: dt.datetime | None = None,
 ) -> dict[tuple[int, int], float]:
     """Per-(player_id, gw) multiplicative pred attenuator from news text.
 
@@ -167,7 +193,11 @@ def build_pred_attenuator(
     HAVE a future return-GW in horizon should be UN-excluded by the caller
     so the MILP can consider transferring them in for post-return GWs.
     """
-    extractions = latest_news_per_player(season_id=season_id)
+    extractions = latest_news_per_player(
+        season_id=season_id,
+        as_of=as_of,
+        today=today,
+    )
     out: dict[tuple[int, int], float] = {}
     for ex in extractions:
         if ex.out_for_season:

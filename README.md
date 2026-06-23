@@ -110,7 +110,7 @@ tests/        unit + leakage (point-in-time) tests
 uv sync --all-extras
 uv run alembic upgrade head           # needs a PostgreSQL DB (see fpl_bot/config.py)
 uv run gaffe ingest fpl             # pull current FPL bootstrap
-uv run pytest tests/ -q               # 194 unit + leakage tests
+uv run pytest tests/ -q               # 217 unit, integration + leakage tests
 ```
 
 Running it for a real gameweek: follow [`docs/RUNBOOK_live.md`](docs/RUNBOOK_live.md).

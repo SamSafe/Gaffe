@@ -89,7 +89,9 @@ Appends `actuals.json` with realized points (auto-sub + auto-vice scored).
   largest edge. Without odds the bot LOSES to buy-and-hold (measured: −70).
 - Rolling player xG/xA (Understat), team form, market λ.
 - FPL `news` return-dates ("Expected back DD MMM") — pre-empts transfers
-  for returning players.
+  for returning players. Explicit pre-return availability now updates the
+  minutes distribution before goals/CS/bonus simulation; final-xPts
+  attenuation remains only as a fallback for cached predictions.
 - status_code (i/n/s/u → drop, d → attenuate by chance_of_playing).
 - Top-10k EO (LiveFPL) for the template-differential ρ term.
 

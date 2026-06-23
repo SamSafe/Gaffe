@@ -35,6 +35,7 @@ from fpl_bot.models.bps import (
     fit_residual_dataset,
     split_p_full_by_position,
 )
+from fpl_bot.models.minutes import apply_availability_to_minutes_predictions
 from fpl_bot.models.xpts import FPL_GOAL_BY_POSITION
 
 WALK_FORWARD_FOLDS: list[dict] = [
@@ -623,6 +624,7 @@ def run_predict_only(
     test_season: int,
     train_seasons: list[int],
     upcoming_fixture_ids: list[int],
+    availability_by_pgw: dict[tuple[int, int], float] | None = None,
     n_iterations: int = 200,
     seed: int = 42,
 ) -> pl.DataFrame:
@@ -764,6 +766,10 @@ def run_predict_only(
         pl.col("lambda_goals_per_90").fill_null(0.05),
         pl.col("lambda_assists_per_90").fill_null(0.05),
     )
+    # Live-only news belongs in the minutes distribution, before goals, clean
+    # sheets, and bonus are jointly simulated. No mapping means exact legacy
+    # behavior, which keeps historical folds neutral.
+    pm = apply_availability_to_minutes_predictions(pm, availability_by_pgw)
     # Other fields required by the simulator
     pm = pm.with_columns(
         pl.lit(0.0).alias("saves_rate_per_90"),
