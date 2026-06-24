@@ -21,6 +21,7 @@ longer add scored pens on top of the multinomial allocation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import polars as pl
@@ -34,35 +35,62 @@ from fpl_bot.models.xpts import (
     score_fpl_points,
 )
 
-# ── BPS rule table (FPL 2024/25) ──────────────────────────────────────────────
+# ── Directly modelled BPS rules ───────────────────────────────────────────────
 # Per-event integer BPS contribution. Positions: GKP, DEF, MID, FWD.
 # References: FPL official BPS rules + community-verified breakdowns.
-# Note: "saves" rule is +2 BPS per 3 saves (rounded down); see _bps_from_saves.
+# Aggregate save data cannot distinguish 2025/26 inside/outside-box values;
+# `_bps_from_saves` uses the conservative +2 floor and leaves the rest residual.
 
-BPS_60_MIN = 6  # +6 BPS for an appearance ≥ 60 min
+BPS_SHORT_APPEARANCE = 3  # playing 1-60 minutes
+BPS_LONG_APPEARANCE = 6  # playing over 60 minutes
 
 BPS_GOAL_BY_POSITION: dict[str, int] = {
+    "GKP": 12,
+    "DEF": 12,
+    "MID": 18,
+    "FWD": 24,
+}
+
+BPS_PENALTY_GOAL_2025 = 12
+BPS_ASSIST = 9
+BPS_CLEAN_SHEET_GK_DEF = 12  # +12 BPS for GK/DEF playing 60+ with a CS
+BPS_PEN_SAVE_PRE_2025 = 9
+BPS_PEN_SAVE_2025 = 8
+BPS_PEN_MISS = -6
+BPS_YELLOW = -3
+BPS_RED = -9
+BPS_OWN_GOAL = -6
+# 2024/25 onward: -4 BPS per goal conceded for GK/DEF. The simulator only
+# applies this to its 90-minute bucket because it does not model goal timing.
+BPS_GOAL_CONCEDED = -4
+
+BPSRulesMode = Literal["official", "legacy"]
+LEGACY_BPS_GOAL_BY_POSITION: dict[str, int] = {
     "GKP": 24,
     "DEF": 24,
     "MID": 18,
     "FWD": 12,
 }
 
-BPS_ASSIST = 9
-BPS_CLEAN_SHEET_GK_DEF = 12  # +12 BPS for GK/DEF on a 90+ min appearance with a CS
-BPS_PEN_SAVE = 9
-BPS_PEN_MISS = -6
-BPS_YELLOW = -3
-BPS_RED = -9
-BPS_OWN_GOAL = -6
-# Goals conceded: -1 BPS per goal conceded for GK/DEF (90+ min only).
 
+def _bps_from_saves(
+    saves: int,
+    *,
+    season_id: int = 24,
+    rules_mode: BPSRulesMode = "official",
+) -> int:
+    """BPS from saves when shot location is unavailable.
 
-def _bps_from_saves(saves: int) -> int:
-    """+2 BPS per 3 saves (integer division)."""
+    Through 2024/25 every save earned 2 BPS. From 2025/26 inside-box saves
+    earn 3 and outside-box saves 2; our aggregate data lacks shot location, so
+    2 per save is the conservative known component and the residual captures
+    the missing location increment.
+    """
     if saves <= 0:
         return 0
-    return 2 * (saves // 3)
+    if rules_mode == "legacy":
+        return 2 * (saves // 3)
+    return 2 * saves
 
 
 def score_bps_known_events(
@@ -79,21 +107,46 @@ def score_bps_known_events(
     own_goals: int = 0,
     penalties_scored: int = 0,
     penalties_missed_or_saved: int = 0,
+    season_id: int = 24,
+    rules_mode: BPSRulesMode = "official",
 ) -> int:
     """BPS contribution from the events we either model directly or measure."""
+    if rules_mode not in ("official", "legacy"):
+        raise ValueError(f"unknown BPS rules mode: {rules_mode}")
+
     bps = 0
-    if minutes >= 60:
-        bps += BPS_60_MIN
+    if rules_mode == "legacy":
+        if minutes >= 60:
+            bps += BPS_LONG_APPEARANCE
+    elif minutes > 60:
+        bps += BPS_LONG_APPEARANCE
+    elif minutes > 0:
+        bps += BPS_SHORT_APPEARANCE
     if goals > 0:
-        bps += goals * BPS_GOAL_BY_POSITION.get(position, 12)
+        if rules_mode == "legacy":
+            bps += goals * LEGACY_BPS_GOAL_BY_POSITION.get(position, 12)
+            penalty_goals = 0
+        else:
+            penalty_goals = (
+                min(goals, max(0, penalties_scored)) if season_id >= 25 else 0
+            )
+        non_penalty_goals = goals - penalty_goals
+        if rules_mode == "official":
+            bps += non_penalty_goals * BPS_GOAL_BY_POSITION.get(position, 12)
+            bps += penalty_goals * BPS_PENALTY_GOAL_2025
     if assists > 0:
         bps += assists * BPS_ASSIST
     if position in ("GKP", "DEF") and minutes >= 60 and team_clean_sheet:
         bps += BPS_CLEAN_SHEET_GK_DEF
     if position in ("GKP", "DEF") and minutes >= 90 and team_goals_conceded > 0:
-        bps -= team_goals_conceded
+        if rules_mode == "legacy":
+            bps -= team_goals_conceded
+        elif season_id >= 24:
+            bps += BPS_GOAL_CONCEDED * team_goals_conceded
     if saves > 0 and position == "GKP":
-        bps += _bps_from_saves(saves)
+        bps += _bps_from_saves(
+            saves, season_id=season_id, rules_mode=rules_mode
+        )
     bps += penalties_missed_or_saved * BPS_PEN_MISS
     bps -= yellow_cards * 3
     bps -= red_cards * 9
@@ -105,34 +158,38 @@ def score_bps_known_events(
 
 
 def assign_bonus_within_fixture(
-    bps_array: np.ndarray, player_ids: np.ndarray
+    bps_array: np.ndarray,
+    player_ids: np.ndarray,
+    *,
+    rules_mode: BPSRulesMode = "official",
 ) -> np.ndarray:
     """Given per-player simulated BPS for one fixture, return per-player bonus
-    points (3/2/1/0). FPL's tie-break rules:
-      - Bonus 3 to the highest BPS (multiple players if tied for top → all 3)
-      - Bonus 2 to next highest (multiple if tied → all 2; remaining bonus pts
-        absorbed by the tie)
-      - Bonus 1 to the third (multiple if tied → all 1)
-
-    For v1 we implement the "split tied bonuses" version:
-      - All players tied at rank 1 get 3.
-      - If rank 1 has k players, ranks 2 & 3 are skipped — they get nothing
-        (FPL absorbs the conflict at the top).
+    points (3/2/1/0). Ties use competition ranking: tied players receive the
+    points for their shared rank and consume that many ranking places. Thus a
+    two-player tie for first awards 3/3, skips second, and awards 1 to the next
+    player; a tie for second awards 2/2 and consumes third place.
     """
     bonus = np.zeros(len(bps_array), dtype=np.int8)
     if len(bps_array) == 0:
         return bonus
 
     sorted_unique_bps = np.sort(np.unique(bps_array))[::-1]
-    if len(sorted_unique_bps) >= 1:
-        top = sorted_unique_bps[0]
-        bonus[bps_array == top] = 3
-    if len(sorted_unique_bps) >= 2:
-        second = sorted_unique_bps[1]
-        bonus[bps_array == second] = 2
-    if len(sorted_unique_bps) >= 3:
-        third = sorted_unique_bps[2]
-        bonus[bps_array == third] = 1
+    if rules_mode == "legacy":
+        for points, score in zip((3, 2, 1), sorted_unique_bps, strict=False):
+            bonus[bps_array == score] = points
+        return bonus
+    if rules_mode != "official":
+        raise ValueError(f"unknown BPS rules mode: {rules_mode}")
+
+    competition_rank = 1
+    points_by_rank = {1: 3, 2: 2, 3: 1}
+    for score in sorted_unique_bps:
+        points = points_by_rank.get(competition_rank, 0)
+        if points == 0:
+            break
+        tied = bps_array == score
+        bonus[tied] = points
+        competition_rank += int(tied.sum())
     return bonus
 
 
@@ -221,6 +278,7 @@ class BPSSimulator:
     seed: int = 42
     pen_per_match_lambda: float = 0.27  # league-typical penalty rate
     pen_conversion: float = 0.78
+    bps_rules_mode: BPSRulesMode = "official"
 
     def simulate_fixture(
         self,
@@ -375,10 +433,12 @@ class BPSSimulator:
                 # has already allocated h_score (Dixon-Coles total goals incl.
                 # pens). We track pens_missed only for BPS deduction.
                 pens_missed = 0
+                pens_scored_for_bps = 0
                 if bool(is_pen_taker[i]) and pens_for_team > 0:
                     for _ in range(pens_for_team):
                         if rng.random() >= self.pen_conversion:
                             pens_missed += 1
+                    pens_scored_for_bps = min(goals, pens_for_team - pens_missed)
 
                 assists_buf[i] = assists
                 saves_buf[i] = saves
@@ -396,7 +456,10 @@ class BPSSimulator:
                     saves=saves,
                     yellow_cards=int(yc_drawn),
                     red_cards=int(rc_drawn),
+                    penalties_scored=pens_scored_for_bps,
                     penalties_missed_or_saved=pens_missed,
+                    season_id=inputs.season_id,
+                    rules_mode=self.bps_rules_mode,
                 )
                 bps_residual = self.event_source.simulate_unmodeled_bps(
                     pos, minutes, rng
@@ -404,7 +467,21 @@ class BPSSimulator:
                 bps_per_player[i] = bps_known + bps_residual
 
             # Bonus depends on rank — must come after all per-player BPS
-            bonus_array = assign_bonus_within_fixture(bps_per_player, player_ids)
+            if self.bps_rules_mode == "legacy":
+                bonus_array = assign_bonus_within_fixture(
+                    bps_per_player,
+                    player_ids,
+                    rules_mode="legacy",
+                )
+            else:
+                bonus_array = np.zeros(n_players, dtype=np.int8)
+                appeared = minutes_buf > 0
+                if appeared.any():
+                    bonus_array[appeared] = assign_bonus_within_fixture(
+                        bps_per_player[appeared],
+                        player_ids[appeared],
+                        rules_mode="official",
+                    )
 
             # FPL points use the same draws + the just-computed bonus
             for i in range(n_players):
@@ -482,6 +559,8 @@ class BPSSimulator:
 def fit_residual_dataset(
     train_player_match: pl.DataFrame,
     positions: pl.DataFrame,
+    *,
+    rules_mode: BPSRulesMode = "official",
 ) -> pl.DataFrame:
     """Build the residual training DataFrame for EmpiricalResidualEventSource.fit.
 
@@ -534,6 +613,8 @@ def fit_residual_dataset(
                 saves=row.get("saves") or 0,
                 yellow_cards=row.get("yellow_cards") or 0,
                 red_cards=row.get("red_cards") or 0,
+                season_id=row.get("season_id") or 24,
+                rules_mode=rules_mode,
             )
         )
     df = df.with_columns(pl.Series(name="simulated_bps_known", values=sim_bps))

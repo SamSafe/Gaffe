@@ -87,6 +87,7 @@ class EmpiricalResidualEventSource:
         default_factory=dict
     )
     _fitted: bool = False
+    integer_bps: bool = True
 
     # Clamp range for sampled residuals (prevents pathological tails)
     _clip_low: float = -30.0
@@ -147,7 +148,12 @@ class EmpiricalResidualEventSource:
             key, (self._fallback_mu, self._fallback_sigma)
         )
         sample = float(rng.normal(mu, sigma))
-        return float(np.clip(sample, self._clip_low, self._clip_high))
+        clipped = float(np.clip(sample, self._clip_low, self._clip_high))
+        if not self.integer_bps:
+            return clipped
+        # BPS is integer-valued. Keeping a continuous Gaussian draw makes
+        # genuine ties virtually impossible and bypasses FPL's tie rules.
+        return float(round(clipped))
 
     @property
     def n_buckets_fitted(self) -> int:

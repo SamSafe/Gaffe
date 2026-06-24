@@ -35,6 +35,7 @@ from fpl_bot.features.minutes import (
     build_prediction_feature_table as build_minutes_prediction_table,
 )
 from fpl_bot.models.bps import (
+    BPSRulesMode,
     BPSSimulator,
     fit_residual_dataset,
     split_p_full_by_position,
@@ -225,6 +226,7 @@ def run_walk_forward_cv(
     *,
     n_iterations: int = 200,
     seed: int = 42,
+    bps_rules_mode: BPSRulesMode = "official",
 ) -> list[BPSFoldResult]:
     folds_to_use = folds or WALK_FORWARD_FOLDS
     results: list[BPSFoldResult] = []
@@ -248,8 +250,12 @@ def run_walk_forward_cv(
 
         # 2. Fit residual on train fold using actual events
         train_pm = pit.all_player_match_with_kickoff(season_ids=train_seasons)
-        residual_df = fit_residual_dataset(train_pm, positions_df)
-        event_source = EmpiricalResidualEventSource()
+        residual_df = fit_residual_dataset(
+            train_pm, positions_df, rules_mode=bps_rules_mode
+        )
+        event_source = EmpiricalResidualEventSource(
+            integer_bps=bps_rules_mode == "official"
+        )
         event_source.fit(residual_df)
 
         # 3. Compute alpha = P(60-89 | 60+) per position from train data
@@ -274,6 +280,7 @@ def run_walk_forward_cv(
             event_source=event_source,
             n_iterations=n_iterations,
             seed=seed,
+            bps_rules_mode=bps_rules_mode,
         )
         sim_rows: list[pl.DataFrame] = []
         for fix_inputs in fixture_inputs_iter(prepared):

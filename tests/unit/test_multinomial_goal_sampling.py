@@ -187,6 +187,22 @@ def test_bench_player_never_gets_goals():
     assert total_goals_for_bench == 0
 
 
+def test_zero_minute_player_never_receives_bonus() -> None:
+    inputs = _make_inputs(home_minutes_full=[0.0] + [1.0] * 10)
+    sim = BPSSimulator(
+        event_source=_TrivialEventSource(),
+        n_iterations=500,
+        seed=42,
+    )
+
+    out = sim.simulate_fixture(inputs)
+    benched = out.filter(pl.col("player_id") == 1000).row(0, named=True)
+
+    assert benched["p_bonus_0"] == 1.0
+    assert benched["expected_bonus"] == 0.0
+    assert benched["e_xpts"] == 0.0
+
+
 def test_higher_weight_gets_more_goals_on_average():
     """Player with 4× weight should score ~4× more goals on average."""
     rng = np.random.default_rng(0)

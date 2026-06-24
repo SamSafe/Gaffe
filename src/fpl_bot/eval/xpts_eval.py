@@ -31,6 +31,7 @@ from fpl_bot.features.bps import (
     fixture_inputs_iter,
 )
 from fpl_bot.models.bps import (
+    BPSRulesMode,
     BPSSimulator,
     fit_residual_dataset,
     split_p_full_by_position,
@@ -265,6 +266,7 @@ def _run_one_fold(
     seed: int,
     return_raw_samples: bool = False,
     train_through_gw: int | None = None,
+    bps_rules_mode: BPSRulesMode = "official",
 ) -> tuple[XPtsFoldResult, pl.DataFrame, np.ndarray | None] | None:
     """Returns (fold_result, eval_df, raw_samples_or_None). raw_samples is a
     long-form polars DataFrame (player_id, fixture_id, iteration, xpts) when
@@ -301,8 +303,12 @@ def _run_one_fold(
             (pl.col("season_id") != test_season)
             | (pl.col("gameweek") <= train_through_gw)
         )
-    residual_df = fit_residual_dataset(train_pm, positions_df)
-    event_source = EmpiricalResidualEventSource()
+    residual_df = fit_residual_dataset(
+        train_pm, positions_df, rules_mode=bps_rules_mode
+    )
+    event_source = EmpiricalResidualEventSource(
+        integer_bps=bps_rules_mode == "official"
+    )
     event_source.fit(residual_df)
 
     train_pm_for_alphas = train_pm.join(
@@ -321,7 +327,10 @@ def _run_one_fold(
         return None
 
     simulator = BPSSimulator(
-        event_source=event_source, n_iterations=n_iterations, seed=seed
+        event_source=event_source,
+        n_iterations=n_iterations,
+        seed=seed,
+        bps_rules_mode=bps_rules_mode,
     )
 
     sim_rows: list[pl.DataFrame] = []
