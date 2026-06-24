@@ -18,7 +18,10 @@ import lightgbm as lgb
 import numpy as np
 import polars as pl
 
-from fpl_bot.features.minutes import FEATURE_COLUMNS
+from fpl_bot.features.minutes import (
+    MinutesFeatureMode,
+    feature_columns_for_mode,
+)
 
 NUM_CLASSES = 3
 
@@ -209,9 +212,10 @@ def train_minutes_model(
     num_boost_round: int = 1000,
     early_stopping_rounds: int = 50,
     seed: int = 42,
+    feature_mode: MinutesFeatureMode = "baseline",
 ) -> TrainedMinutesModel:
     """Train a 3-class LightGBM minutes model on a feature DataFrame."""
-    feature_names = FEATURE_COLUMNS
+    feature_names = feature_columns_for_mode(feature_mode)
     monotone_constraints = [MONOTONIC_FEATURE_SIGNS.get(f, 0) for f in feature_names]
 
     train_df = train.select([*feature_names, LABEL_COLUMN]).drop_nulls(LABEL_COLUMN)

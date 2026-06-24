@@ -30,6 +30,7 @@ from fpl_bot.features.bps import (
     assemble_fold_predictions,
     fixture_inputs_iter,
 )
+from fpl_bot.features.minutes import MinutesFeatureMode
 from fpl_bot.models.bps import (
     AssistSamplingMode,
     BPSRulesMode,
@@ -269,6 +270,7 @@ def _run_one_fold(
     train_through_gw: int | None = None,
     bps_rules_mode: BPSRulesMode = "official",
     assist_sampling_mode: AssistSamplingMode = "independent",
+    minutes_feature_mode: MinutesFeatureMode = "baseline",
 ) -> tuple[XPtsFoldResult, pl.DataFrame, np.ndarray | None] | None:
     """Returns (fold_result, eval_df, raw_samples_or_None). raw_samples is a
     long-form polars DataFrame (player_id, fixture_id, iteration, xpts) when
@@ -280,7 +282,10 @@ def _run_one_fold(
     fits derived from train_pm.
     """
     minutes_pred = _train_minutes_predictor(
-        train_seasons, test_season, train_through_gw=train_through_gw
+        train_seasons,
+        test_season,
+        train_through_gw=train_through_gw,
+        feature_mode=minutes_feature_mode,
     )
     goals_pred = _train_goals_or_assists_predictor(
         train_seasons, test_season, target="goals",

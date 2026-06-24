@@ -12,7 +12,11 @@ import pytest
 from sqlalchemy import text
 
 from fpl_bot.db.session import engine
-from fpl_bot.features.minutes import FEATURE_COLUMNS, build_feature_table
+from fpl_bot.features.minutes import (
+    FEATURE_COLUMNS,
+    ROTATION_FEATURE_COLUMNS,
+    build_feature_table,
+)
 
 
 def _db_available() -> bool:
@@ -51,7 +55,7 @@ def test_features_are_pit_stable_across_corpus_truncation() -> None:
         f"Row count mismatch for season 22: full={len(full_22)} vs truncated={len(trunc_22)}"
     )
 
-    for col in [*FEATURE_COLUMNS, "minutes_bucket"]:
+    for col in [*FEATURE_COLUMNS, *ROTATION_FEATURE_COLUMNS, "minutes_bucket"]:
         a = full_22[col].to_list()
         b = trunc_22[col].to_list()
         assert a == b, (

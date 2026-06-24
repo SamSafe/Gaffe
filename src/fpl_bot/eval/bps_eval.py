@@ -29,6 +29,9 @@ from fpl_bot.features.goals import (
     build_prediction_feature_table as build_goals_prediction_table,
 )
 from fpl_bot.features.minutes import (
+    MinutesFeatureMode,
+)
+from fpl_bot.features.minutes import (
     build_feature_table as build_minutes_feature_table,
 )
 from fpl_bot.features.minutes import (
@@ -103,6 +106,7 @@ def _train_minutes_predictor(
     test_season: int,
     *,
     train_through_gw: int | None = None,
+    feature_mode: MinutesFeatureMode = "baseline",
 ) -> pl.DataFrame:
     """Train minutes predictor and predict on test_season fixtures.
 
@@ -124,7 +128,7 @@ def _train_minutes_predictor(
     test = df.filter(pl.col("season_id") == test_season)
     if train.is_empty() or test.is_empty():
         return pl.DataFrame()
-    model = train_minutes_model(train, valid=test)
+    model = train_minutes_model(train, valid=test, feature_mode=feature_mode)
     probs = model.predict_proba(test)
     return test.select("player_id", "fixture_id").with_columns(
         pl.Series("p_minutes_zero", probs[:, 0]),

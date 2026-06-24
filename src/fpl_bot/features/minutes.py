@@ -10,11 +10,94 @@ fields can be appended at predict time without retraining.
 """
 from __future__ import annotations
 
+from collections import defaultdict
+from typing import Literal
+
+import numpy as np
 import polars as pl
 
 from fpl_bot.db import pit
 
 POSITION_CODES = ("GKP", "DEF", "MID", "FWD")
+MinutesFeatureMode = Literal["baseline", "rotation"]
+ROTATION_FEATURE_COLUMNS = ["team_core_churn_3", "team_core_churn_5"]
+
+
+def _rotation_feature_frames(
+    raw: pl.DataFrame,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Return PIT fixture features and latest post-fixture rates per team."""
+    required = {
+        "season_id",
+        "fixture_id",
+        "kickoff_utc",
+        "player_id",
+        "minutes",
+        "was_home",
+        "home_team_id",
+        "away_team_id",
+    }
+    if raw.is_empty() or not required.issubset(raw.columns):
+        return pl.DataFrame(), pl.DataFrame()
+
+    resolved = raw.with_columns(
+        pl.when(pl.col("was_home"))
+        .then(pl.col("home_team_id"))
+        .otherwise(pl.col("away_team_id"))
+        .alias("team_id")
+    )
+    fixture_cores = (
+        resolved.group_by(
+            ["season_id", "team_id", "fixture_id", "kickoff_utc"]
+        )
+        .agg(
+            pl.col("player_id")
+            .filter(pl.col("minutes") >= 60)
+            .alias("core_player_ids")
+        )
+        .sort(["season_id", "team_id", "kickoff_utc", "fixture_id"])
+    )
+
+    previous_core: dict[tuple[int, int], set[int]] = {}
+    churn_history: dict[tuple[int, int], list[float]] = defaultdict(list)
+    feature_rows: list[dict[str, int | float | None]] = []
+    for row in fixture_cores.iter_rows(named=True):
+        season_id = int(row["season_id"])
+        team_id = int(row["team_id"])
+        key = (season_id, team_id)
+        history = churn_history[key]
+        feature_rows.append(
+            {
+                "season_id": season_id,
+                "team_id": team_id,
+                "fixture_id": int(row["fixture_id"]),
+                "team_core_churn_3": (
+                    float(np.mean(history[-3:])) if history else None
+                ),
+                "team_core_churn_5": (
+                    float(np.mean(history[-5:])) if history else None
+                ),
+            }
+        )
+
+        current_core = {int(pid) for pid in (row["core_player_ids"] or [])}
+        prior_core = previous_core.get(key)
+        if prior_core:
+            retained = len(prior_core.intersection(current_core))
+            history.append(1.0 - retained / len(prior_core))
+        previous_core[key] = current_core
+
+    latest_rows = [
+        {
+            "season_id": season_id,
+            "team_id": team_id,
+            "team_core_churn_3": float(np.mean(history[-3:])),
+            "team_core_churn_5": float(np.mean(history[-5:])),
+        }
+        for (season_id, team_id), history in churn_history.items()
+        if history
+    ]
+    return pl.DataFrame(feature_rows), pl.DataFrame(latest_rows)
 
 
 def _label_bucket(minutes: pl.Expr) -> pl.Expr:
@@ -49,6 +132,25 @@ def build_feature_table(season_ids: list[int] | None = None) -> pl.DataFrame:
 
     # Drop rows missing minutes (cancelled / unfinished fixtures)
     raw = raw.filter(pl.col("minutes").is_not_null())
+
+    rotation_features, _ = _rotation_feature_frames(raw)
+    raw = raw.with_columns(
+        pl.when(pl.col("was_home"))
+        .then(pl.col("home_team_id"))
+        .otherwise(pl.col("away_team_id"))
+        .alias("_team_id_resolved")
+    )
+    if not rotation_features.is_empty():
+        raw = raw.join(
+            rotation_features.rename({"team_id": "_team_id_resolved"}),
+            on=["season_id", "_team_id_resolved", "fixture_id"],
+            how="left",
+        )
+    else:
+        raw = raw.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("team_core_churn_3"),
+            pl.lit(None, dtype=pl.Float64).alias("team_core_churn_5"),
+        )
 
     # Sort by player + time so shift/rolling operate in chronological order
     df = raw.sort(by=["player_id", "kickoff_utc"])
@@ -138,7 +240,14 @@ def build_feature_table(season_ids: list[int] | None = None) -> pl.DataFrame:
         )
 
     # Drop helper cols not needed downstream
-    df = df.drop(["started_60_prev", "season_start_utc", "position_code"])
+    df = df.drop(
+        [
+            "started_60_prev",
+            "season_start_utc",
+            "position_code",
+            "_team_id_resolved",
+        ]
+    )
 
     return df
 
@@ -161,6 +270,14 @@ FEATURE_COLUMNS: list[str] = [
     "pos_MID",
     "pos_FWD",
 ]
+
+
+def feature_columns_for_mode(mode: MinutesFeatureMode) -> list[str]:
+    if mode == "baseline":
+        return list(FEATURE_COLUMNS)
+    if mode == "rotation":
+        return [*FEATURE_COLUMNS, *ROTATION_FEATURE_COLUMNS]
+    raise ValueError(f"unknown minutes feature mode: {mode}")
 
 
 def build_prediction_feature_table(
@@ -221,6 +338,23 @@ def build_prediction_feature_table(
             cross = cross.with_columns(pl.col(c).fill_null(0))
         else:
             cross = cross.with_columns(pl.lit(0).alias(c))
+
+    raw_history = pit.all_player_match_with_kickoff(season_ids=[test_season])
+    _, latest_rotation = _rotation_feature_frames(raw_history)
+    if not latest_rotation.is_empty():
+        latest_rotation = latest_rotation.rename({"team_id": "current_team_id"})
+        cross = cross.join(
+            latest_rotation.select(
+                "season_id", "current_team_id", *ROTATION_FEATURE_COLUMNS
+            ),
+            on=["season_id", "current_team_id"],
+            how="left",
+        )
+    else:
+        cross = cross.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("team_core_churn_3"),
+            pl.lit(None, dtype=pl.Float64).alias("team_core_churn_5"),
+        )
 
     if season_start is not None:
         cross = cross.with_columns(

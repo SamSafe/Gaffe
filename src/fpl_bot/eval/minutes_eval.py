@@ -7,7 +7,7 @@ import numpy as np
 import polars as pl
 from sklearn.metrics import log_loss
 
-from fpl_bot.features.minutes import build_feature_table
+from fpl_bot.features.minutes import MinutesFeatureMode, build_feature_table
 from fpl_bot.models.minutes import LABEL_COLUMN, train_minutes_model
 
 WALK_FORWARD_FOLDS: list[dict] = [
@@ -115,6 +115,7 @@ def run_walk_forward_cv(
     folds: list[dict] | None = None,
     *,
     feature_df: pl.DataFrame | None = None,
+    feature_mode: MinutesFeatureMode = "baseline",
 ) -> list[FoldResult]:
     """Train and evaluate one model per walk-forward fold; return per-fold metrics."""
     folds_to_use = folds or WALK_FORWARD_FOLDS
@@ -132,7 +133,7 @@ def run_walk_forward_cv(
         if train.is_empty() or test.is_empty():
             continue
 
-        model = train_minutes_model(train, valid=test)
+        model = train_minutes_model(train, valid=test, feature_mode=feature_mode)
         probs_model = model.predict_proba(test)
         y_test = test.select(LABEL_COLUMN).to_pandas().to_numpy().ravel()
 
