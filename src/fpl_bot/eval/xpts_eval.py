@@ -31,6 +31,7 @@ from fpl_bot.features.bps import (
     fixture_inputs_iter,
 )
 from fpl_bot.models.bps import (
+    AssistSamplingMode,
     BPSRulesMode,
     BPSSimulator,
     fit_residual_dataset,
@@ -267,6 +268,7 @@ def _run_one_fold(
     return_raw_samples: bool = False,
     train_through_gw: int | None = None,
     bps_rules_mode: BPSRulesMode = "official",
+    assist_sampling_mode: AssistSamplingMode = "independent",
 ) -> tuple[XPtsFoldResult, pl.DataFrame, np.ndarray | None] | None:
     """Returns (fold_result, eval_df, raw_samples_or_None). raw_samples is a
     long-form polars DataFrame (player_id, fixture_id, iteration, xpts) when
@@ -331,6 +333,7 @@ def _run_one_fold(
         n_iterations=n_iterations,
         seed=seed,
         bps_rules_mode=bps_rules_mode,
+        assist_sampling_mode=assist_sampling_mode,
     )
 
     sim_rows: list[pl.DataFrame] = []

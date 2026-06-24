@@ -35,6 +35,7 @@ from fpl_bot.features.minutes import (
     build_prediction_feature_table as build_minutes_prediction_table,
 )
 from fpl_bot.models.bps import (
+    AssistSamplingMode,
     BPSRulesMode,
     BPSSimulator,
     fit_residual_dataset,
@@ -227,6 +228,7 @@ def run_walk_forward_cv(
     n_iterations: int = 200,
     seed: int = 42,
     bps_rules_mode: BPSRulesMode = "official",
+    assist_sampling_mode: AssistSamplingMode = "independent",
 ) -> list[BPSFoldResult]:
     folds_to_use = folds or WALK_FORWARD_FOLDS
     results: list[BPSFoldResult] = []
@@ -281,6 +283,7 @@ def run_walk_forward_cv(
             n_iterations=n_iterations,
             seed=seed,
             bps_rules_mode=bps_rules_mode,
+            assist_sampling_mode=assist_sampling_mode,
         )
         sim_rows: list[pl.DataFrame] = []
         for fix_inputs in fixture_inputs_iter(prepared):

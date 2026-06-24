@@ -17,7 +17,11 @@ import polars as pl
 import pytest
 
 from fpl_bot.db.event_source import EventSource
-from fpl_bot.models.bps import BPSSimulator, FixtureInputs
+from fpl_bot.models.bps import (
+    BPSSimulator,
+    FixtureInputs,
+    _allocate_team_goal_events,
+)
 
 
 class _TrivialEventSource(EventSource):
@@ -201,6 +205,73 @@ def test_zero_minute_player_never_receives_bonus() -> None:
     assert benched["p_bonus_0"] == 1.0
     assert benched["expected_bonus"] == 0.0
     assert benched["e_xpts"] == 0.0
+
+
+def test_goal_conditioned_assists_obey_team_event_invariants() -> None:
+    rng = np.random.default_rng(7)
+    team_mask = np.array([True, True, True, False])
+    minutes = np.array([90, 90, 0, 90])
+    lambda_goals = np.array([1.0, 0.0, 0.0, 5.0])
+    lambda_assists = np.array([0.0, 5.0, 100.0, 5.0])
+
+    for team_score in range(6):
+        goals, assists = _allocate_team_goal_events(
+            team_score=team_score,
+            team_goal_lambda=2.0,
+            team_mask=team_mask & (minutes > 0),
+            minutes=minutes,
+            lambda_goals=lambda_goals,
+            lambda_assists=lambda_assists,
+            rng=rng,
+        )
+        assert int(goals.sum()) == team_score
+        assert int(assists.sum()) <= team_score
+        assert assists[0] == 0  # sole scorer cannot assist their own goals
+        assert goals[2] == assists[2] == 0  # zero-minute player
+        assert goals[3] == assists[3] == 0  # other team
+        if team_score == 0:
+            assert int(assists.sum()) == 0
+
+
+def test_goal_conditioned_assists_preserve_feasible_expected_total() -> None:
+    rng = np.random.default_rng(11)
+    team_mask = np.ones(3, dtype=bool)
+    minutes = np.full(3, 90)
+    lambda_goals = np.ones(3)
+    lambda_assists = np.array([0.2, 0.4, 0.6])
+    team_goal_lambda = 2.0
+    total_assists = 0
+    total_iterations = 20_000
+
+    for _ in range(total_iterations):
+        score = int(rng.poisson(team_goal_lambda))
+        _, assists = _allocate_team_goal_events(
+            team_score=score,
+            team_goal_lambda=team_goal_lambda,
+            team_mask=team_mask,
+            minutes=minutes,
+            lambda_goals=lambda_goals,
+            lambda_assists=lambda_assists,
+            rng=rng,
+        )
+        total_assists += int(assists.sum())
+
+    observed = total_assists / total_iterations
+    expected = float(lambda_assists.sum())
+    assert observed == pytest.approx(expected, rel=0.03)
+
+
+def test_independent_assist_mode_reproduces_frozen_simulator_path() -> None:
+    sim = BPSSimulator(
+        event_source=_TrivialEventSource(),
+        n_iterations=200,
+        seed=7,
+        assist_sampling_mode="independent",
+    )
+    out = sim.simulate_fixture(_make_inputs())
+
+    assert out["e_xpts"].sum() == pytest.approx(85.33)
+    assert out["expected_bonus"].sum() == pytest.approx(12.55)
 
 
 def test_higher_weight_gets_more_goals_on_average():

@@ -65,6 +65,7 @@ BPS_OWN_GOAL = -6
 BPS_GOAL_CONCEDED = -4
 
 BPSRulesMode = Literal["official", "legacy"]
+AssistSamplingMode = Literal["goal_conditioned", "independent"]
 LEGACY_BPS_GOAL_BY_POSITION: dict[str, int] = {
     "GKP": 24,
     "DEF": 24,
@@ -245,6 +246,67 @@ def sample_minutes_bucket(
 MINUTES_BUCKET_MIDPOINTS_LIST: list[int] = [0, 30, 70, 90]
 
 
+def _allocate_team_goal_events(
+    *,
+    team_score: int,
+    team_goal_lambda: float,
+    team_mask: np.ndarray,
+    minutes: np.ndarray,
+    lambda_goals: np.ndarray,
+    lambda_assists: np.ndarray,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Allocate one team's goals and feasible assists across global rows.
+
+    Goal weights retain the existing ``lambda_goals * minutes / 90``
+    mechanism. The assist model supplies both the probability that a goal is
+    assisted and the relative player weights. A scorer is excluded only from
+    their own goal's assist draw.
+    """
+    n_players = len(team_mask)
+    goals = np.zeros(n_players, dtype=np.int16)
+    assists = np.zeros(n_players, dtype=np.int16)
+    if team_score <= 0 or not team_mask.any():
+        return goals, assists
+
+    team_indices = np.flatnonzero(team_mask)
+    minutes_factor = minutes[team_indices].astype(np.float64) / 90.0
+    goal_weights = np.maximum(0.0, lambda_goals[team_indices]) * minutes_factor
+    total_goal_weight = float(goal_weights.sum())
+    if total_goal_weight <= 0:
+        return goals, assists
+
+    goal_allocation = rng.multinomial(team_score, goal_weights / total_goal_weight)
+    goals[team_indices] = goal_allocation.astype(np.int16)
+
+    assist_weights = (
+        np.maximum(0.0, lambda_assists[team_indices]) * minutes_factor
+    )
+    expected_assists = float(assist_weights.sum())
+    if expected_assists <= 0 or team_goal_lambda <= 0:
+        return goals, assists
+    assisted_goal_probability = float(
+        np.clip(expected_assists / team_goal_lambda, 0.0, 1.0)
+    )
+
+    scorer_indices = np.repeat(team_indices, goal_allocation)
+    for scorer_index in scorer_indices:
+        if rng.random() >= assisted_goal_probability:
+            continue
+        candidate_mask = team_indices != scorer_index
+        candidate_indices = team_indices[candidate_mask]
+        candidate_weights = assist_weights[candidate_mask]
+        total_assist_weight = float(candidate_weights.sum())
+        if total_assist_weight <= 0:
+            continue
+        assister_index = int(
+            rng.choice(candidate_indices, p=candidate_weights / total_assist_weight)
+        )
+        assists[assister_index] += 1
+
+    return goals, assists
+
+
 # ── Core simulator ────────────────────────────────────────────────────────────
 
 
@@ -279,6 +341,7 @@ class BPSSimulator:
     pen_per_match_lambda: float = 0.27  # league-typical penalty rate
     pen_conversion: float = 0.78
     bps_rules_mode: BPSRulesMode = "official"
+    assist_sampling_mode: AssistSamplingMode = "independent"
 
     def simulate_fixture(
         self,
@@ -308,6 +371,11 @@ class BPSSimulator:
             if return_raw_xpts_samples:
                 return empty, np.zeros((0, 0), dtype=np.int16)
             return empty
+
+        if self.assist_sampling_mode not in ("goal_conditioned", "independent"):
+            raise ValueError(
+                f"unknown assist sampling mode: {self.assist_sampling_mode}"
+            )
 
         # Per-fixture RNG seeded by (base seed, fixture_id). Previously a
         # single simulator-wide RNG was consumed sequentially across all
@@ -385,11 +453,32 @@ class BPSSimulator:
             # (e.g., entirely benched team — won't happen in practice), all
             # team goals stay at 0; this guards against div-by-zero.
             on_field = minutes_buf > 0
-            for team_score, team_mask in (
-                (h_score, on_field & is_home.astype(bool)),
-                (a_score, on_field & ~is_home.astype(bool)),
+            for team_score, team_goal_lambda, team_mask in (
+                (
+                    h_score,
+                    inputs.home_team_lambda,
+                    on_field & is_home.astype(bool),
+                ),
+                (
+                    a_score,
+                    inputs.away_team_lambda,
+                    on_field & ~is_home.astype(bool),
+                ),
             ):
                 if team_score <= 0 or not team_mask.any():
+                    continue
+                if self.assist_sampling_mode == "goal_conditioned":
+                    team_goals, team_assists = _allocate_team_goal_events(
+                        team_score=team_score,
+                        team_goal_lambda=team_goal_lambda,
+                        team_mask=team_mask,
+                        minutes=minutes_buf,
+                        lambda_goals=lambda_g,
+                        lambda_assists=lambda_a,
+                        rng=rng,
+                    )
+                    goals_buf += team_goals
+                    assists_buf += team_assists
                     continue
                 w = np.maximum(0.0, lambda_g[team_mask]) * (
                     minutes_buf[team_mask].astype(np.float64) / 90.0
@@ -400,8 +489,8 @@ class BPSSimulator:
                 allocation = rng.multinomial(team_score, w / total_w)
                 goals_buf[team_mask] = allocation.astype(np.int16)
 
-            # PASS 3: per-player events that are NOT subject to the team-total
-            # constraint (assists, saves, cards, missed pens) and BPS scoring.
+            # PASS 3: remaining per-player events and BPS scoring. Assists are
+            # already populated by PASS 2 in goal-conditioned mode.
             for i in range(n_players):
                 pos = positions[i]
                 player_home = bool(is_home[i])
@@ -413,9 +502,13 @@ class BPSSimulator:
                 minutes_factor = minutes / 90.0
                 goals = int(goals_buf[i])  # set in PASS 2
 
-                assists = int(
-                    rng.poisson(max(0.0, lambda_a[i]) * minutes_factor)
-                )
+                if self.assist_sampling_mode == "independent":
+                    assists = int(
+                        rng.poisson(max(0.0, lambda_a[i]) * minutes_factor)
+                    )
+                    assists_buf[i] = assists
+                else:
+                    assists = int(assists_buf[i])
 
                 saves = int(
                     rng.poisson(max(0.0, saves_rate[i]) * minutes_factor)
@@ -440,7 +533,6 @@ class BPSSimulator:
                             pens_missed += 1
                     pens_scored_for_bps = min(goals, pens_for_team - pens_missed)
 
-                assists_buf[i] = assists
                 saves_buf[i] = saves
                 yc_buf[i] = int(yc_drawn)
                 rc_buf[i] = int(rc_drawn)
