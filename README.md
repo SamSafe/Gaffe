@@ -34,10 +34,26 @@ reach top-20k. Two reasons, measured rather than asserted:
   had ~5 chips, and by closing-odds look-ahead. The clean 25/26 test (with
   the correct ruleset) is the honest one.
 
-**On backtest noise.** The MILP solver (CBC at a 1% MIP gap) is
-non-deterministic across runs: the same configuration varies by roughly
-±28 points over a season. Any backtest comparison under ~30 pts is within
-noise and shouldn't be over-read.
+**On backtest reproducibility (and a methodology trap).** The backtest is
+now bit-reproducible: the CBC solver runs with a pinned seed, and LightGBM
+training and the Monte-Carlo simulator are deterministic (`deterministic`/
+`force_row_wise`/pinned threads; per-fixture seeded RNG; players sorted
+before sampling). Same config → same result, every run. This replaced an
+earlier regime where regeneration varied by tens of points and silently
+masked real model changes.
+
+Reproducibility is *not* the same as a meaningful difference, though. The
+MILP picks one of many near-equal-expected-value squads within its 1% MIP
+gap, so a small feature change can deterministically reshuffle the squad
+into one that happens to fit a given season's actual results — a real,
+reproducible points swing that does **not** generalize. The honest test of
+a prediction-model change is therefore whether it improves prediction
+**accuracy** (per-position bias / MAE / decile calibration), not whether
+the backtest points went up. Measured the hard way: a fixture-difficulty
+feature scored +57 on 25/26 with *zero* accuracy gain (flat MAE on two
+folds) → reverted as spurious; an isotonic FWD calibration likewise.
+Suspension carry-over, by contrast, both improved points (+68/+86) and had
+a clear mechanism (banned players score 0), so it shipped.
 
 **It has not been run live for a full season yet.** Everything here is
 validated on historical backtests. The real test is 2026/27.
@@ -65,8 +81,9 @@ ingest ──► prediction models ──► joint xPts simulator ──► MILP
    simulator combines per-player outcome distributions into an expected-
    points distribution per (player, gameweek).
 4. **Post-processing** (`optim/prediction_postprocess.py`) — early-season
-   cold-start prior, DefCon (FPL 25/26 defensive-contribution points), and
-   optional calibration. Shared by backtest and live so they don't drift.
+   cold-start prior, DefCon (FPL 25/26 defensive-contribution points),
+   domestic-suspension carry-over (zero a banned player's GW), and optional
+   calibration. Shared by backtest and live so they don't drift.
 5. **Optimize** (`optim/milp.py`) — a rolling-horizon Pyomo/CBC MILP picks
    the value-maximizing legal squad, with a heuristic chip scheduler
    (`optim/chip_scheduler.py`) and an EO-aware template-differential term.

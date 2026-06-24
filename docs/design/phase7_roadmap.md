@@ -239,13 +239,29 @@ Commits: 19 in the session (8 v3 polish + 11 Phase 7).
 
 ## Tier 3 close-out (later session)
 
-Backtests in this session are **reproducible**: CBC now runs with a pinned
-random seed (`DEFAULT_CBC_SEED`), so same-config off/on comparisons are
-deterministic and a non-zero delta is signal, not the ±28 pt solver noise.
-Caveat learned the hard way: seeding fixes *branching* but not whether a
-hard solve finishes inside the 120 s limit — under CPU contention a heavy
-GW can stop early with no incumbent and fail a validity gate (observed once
-on a 24/25 run; a clean solo re-run passed). Run folds un-contended.
+Backtests are now **bit-reproducible**, which took THREE fixes — the CBC
+seed alone was not enough:
+1. CBC pinned seed (`DEFAULT_CBC_SEED`) — solver branching.
+2. LightGBM `deterministic`/`force_row_wise`/pinned `num_threads` — training
+   was float-nondeterministic across regenerations (the dominant source; a
+   throttling machine also varied the thread count, which breaks the
+   determinism guarantee).
+3. BPSSimulator per-fixture seeded RNG `(seed, fixture_id)` + sort players by
+   id before sampling — the simulator's shared sequential RNG and unstable
+   polars row order made per-player draws depend on processing order.
+Validated: regenerating a fold's cache twice now yields identical e_xpts
+(was max|Δ|≈1.5). Guard tests: `tests/unit/test_simulation_determinism.py`.
+
+Caveats learned the hard way: (a) seeding fixes *branching* but a hard solve
+can still stop early inside the 120 s limit under CPU contention and fail a
+gate — run folds un-contended; (b) **reproducible ≠ meaningful**. A small
+feature change can deterministically reshuffle the near-equal-EV squad into
+one that fits a season's results without improving prediction accuracy. The
+honest gate for a model change is per-position bias / MAE / decile, not
+backtest points. **FDR (fixture difficulty): scored +57 on 25/26 but flat
+MAE on both 24/25 and 25/26 → spurious, reverted.** (Same story as the FWD
+isotonic calibration.) Suspension shipped because it had BOTH points and a
+mechanism.
 
 **3.1 Suspension carry-over — ✅ SHIPPED, default on.**
 PIT card-accounting (`compute_suspended_player_gws`) zeroes a banned
