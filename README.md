@@ -9,15 +9,17 @@ chip timing under FPL's budget/formation/transfer rules.
 
 ## ⚠️ Honesty notes (read these first)
 
-**On AI authorship.** This project was built almost entirely by AI coding
-agents under human direction. 69 of 72 commits carry a `Co-Authored-By:
-Claude` trailer; the bulk was written by Claude Code (Claude Opus), with
-some later changes by OpenAI Codex. A human set the
-goals, made the calls, reviewed output, and ran the experiments — but the
-design docs, code, tests, and most of this README are AI-generated. If
-you're evaluating this as a portfolio piece or auditing it for
-correctness, weight it accordingly: treat it as AI-pair-programmed work,
-not hand-authored.
+**On AI authorship.** This project was written almost entirely by AI
+coding agents. 83 of 92 commits carry a `Co-Authored-By: Claude` trailer;
+the bulk was written by Claude Code (Claude Opus), with a few later
+changes by OpenAI Codex. The human role here was direction, not
+authorship: setting goals, picking between options the agents surfaced,
+running the experiments, and spot-checking results — not line-by-line
+review of everything that shipped. The design docs, code, tests, and most
+of this README are AI-generated. If you're evaluating this as a portfolio
+piece or auditing it for correctness, weight it accordingly: treat it as
+AI-generated work under human direction — not hand-authored, and not
+exhaustively human-reviewed.
 
 **On performance — it is not elite.** Honest expectation from the 25/26
 backtest: the bot lands around **top 150-300k** of ~11M managers —
@@ -127,7 +129,9 @@ tests/        unit + leakage (point-in-time) tests
 uv sync --all-extras
 uv run alembic upgrade head           # needs a PostgreSQL DB (see fpl_bot/config.py)
 uv run gaffe ingest fpl             # pull current FPL bootstrap
-uv run pytest tests/ -q               # 194 unit + leakage tests
+uv run pytest tests/ -q               # 257 unit + leakage tests (DB-backed
+                                      # ones are marked `integration` and
+                                      # auto-skip when no Postgres is up)
 ```
 
 Running it for a real gameweek: follow [`docs/RUNBOOK_live.md`](docs/RUNBOOK_live.md).
