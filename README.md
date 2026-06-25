@@ -9,17 +9,16 @@ chip timing under FPL's budget/formation/transfer rules.
 
 ## ⚠️ Honesty notes (read these first)
 
-**On AI authorship.** The code here was largely typed by AI coding agents
-— 83 of 92 commits carry a `Co-Authored-By: Claude` trailer, mostly Claude
-Code (Claude Opus) with a few later changes by OpenAI Codex — but the
-agents worked under close human direction and didn't get here on their
-own. A human set the goals, made the design calls, reviewed the output,
-ran every experiment, and decided what was a real improvement versus a
-spurious one (much of this project's value is in that filtering — see the
-methodology note below). The agents needed that steering and correction
-throughout; left alone they happily produced plausible-looking results
-that didn't hold up. So: the design docs, code, and tests are AI-generated,
-but treat the automation as having done the typing, not the judgement.
+**On AI authorship.** Most of the code here was written by AI coding
+agents — 83 of 92 commits carry a `Co-Authored-By: Claude` trailer, mostly
+Claude Code (Claude Opus) with a few later changes by OpenAI Codex. They
+were a fast way to turn decisions into working code, but the decisions
+were the work: the architecture, the modelling approach, what to build and
+what to cut, and — most of all — reading the results honestly and telling
+a real improvement from a flattering-but-spurious one (see the methodology
+note below; that judgement is where the project lives or dies). So the
+design docs, code, and tests are AI-generated, but the direction, the
+domain calls, and the validation are human.
 
 **On performance — it is not elite.** Honest expectation from the 25/26
 backtest: the bot lands around **top 150-300k** of ~11M managers —
