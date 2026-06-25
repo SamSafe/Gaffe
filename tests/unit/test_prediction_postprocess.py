@@ -3,7 +3,12 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from fpl_bot.optim.prediction_postprocess import apply_prediction_postprocessing
+
+# apply_prediction_postprocessing reads DefCon tuning from the dev Postgres.
+pytestmark = pytest.mark.integration
 
 
 def test_defcon_backtest_mode_preserves_legacy_target_gws_none() -> None:

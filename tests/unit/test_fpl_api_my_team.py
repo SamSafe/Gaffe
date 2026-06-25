@@ -15,6 +15,9 @@ from fpl_bot.db.models import (
 from fpl_bot.db.session import session_scope
 from fpl_bot.ingest.fpl_api import parse_my_team
 
+# Reads/writes the dev Postgres (autouse cleanup + xref inserts).
+pytestmark = pytest.mark.integration
+
 
 def _purge_test_rows() -> None:
     with session_scope() as s:

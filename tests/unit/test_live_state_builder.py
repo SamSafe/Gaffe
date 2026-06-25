@@ -18,6 +18,9 @@ from fpl_bot.live.state_builder import (
     load_user_state,
 )
 
+# Every test here reads/writes the dev Postgres (autouse cleanup + inserts).
+pytestmark = pytest.mark.integration
+
 
 def _purge_test_rows():
     """Clean up between tests; uses test-only season_id=99 and player_ids ≥ 90000."""

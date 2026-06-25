@@ -8,8 +8,12 @@ can rebuild on the same scaffolding.
 from __future__ import annotations
 
 import polars as pl
+import pytest
 
 from fpl_bot.features import price_change as pc
+
+# build_feature_table reads the dev Postgres via the PIT layer.
+pytestmark = pytest.mark.integration
 
 
 def test_label_distribution_matches_data():

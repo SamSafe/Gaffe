@@ -36,6 +36,7 @@ ml = [
 optim = [
     "pyomo>=6.7",
     "highspy>=1.7",
+    "pulp>=2.8",
 ]
 dev = [
     "pytest>=8.2",
