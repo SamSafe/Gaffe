@@ -12,14 +12,20 @@ optional raw-sample dump for the held-out 2025/26 fold.
 """
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import polars as pl
 
+from fpl_bot.config import settings
 from fpl_bot.db import pit
 from fpl_bot.db.event_source import EmpiricalResidualEventSource
+from fpl_bot.derive.player_props import (
+    attach_market_goal_rates,
+    consensus_anytime_probs,
+)
 from fpl_bot.eval.bps_eval import (
     _train_goals_or_assists_predict_only,
     _train_goals_or_assists_predictor,
@@ -636,6 +642,45 @@ def run_fold_with_raw_samples(
     return out_path
 
 
+def _write_prop_shadow_log(pm: pl.DataFrame, out_path: Path) -> None:
+    """Persist model-vs-market goal rates for the players the books priced.
+
+    This is the Phase 8 validation instrument: with `market_weight` at 0 the
+    market rate changes nothing, so the only way to earn a non-zero weight is
+    to accumulate these rows and compare both rates against actual goals (see
+    docs/design/phase8_player_prop_odds.md). Written per gameweek, never
+    overwritten across gameweeks.
+    """
+    if "market_goal_rate_per_90" not in pm.columns:
+        return
+    priced = pm.filter(pl.col("market_goal_rate_per_90").is_not_null())
+    if priced.is_empty():
+        return
+    # e_minutes has to be derived BEFORE the projection, or the minutes columns
+    # it depends on are already gone.
+    if {"p_minutes_short", "p_minutes_full"} <= set(priced.columns):
+        priced = priced.with_columns(
+            (
+                pl.col("p_minutes_short") * 30.0 + pl.col("p_minutes_full") * 75.0
+            ).alias("e_minutes")
+        )
+    else:
+        priced = priced.with_columns(pl.lit(None, dtype=pl.Float64).alias("e_minutes"))
+
+    cols = [
+        "player_id",
+        "fixture_id",
+        "lambda_goals_per_90_model",
+        "market_goal_rate_per_90",
+        "market_p_anytime",
+        "market_n_books",
+        "e_minutes",
+    ]
+    log = priced.select([c for c in cols if c in priced.columns])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    log.write_parquet(out_path)
+
+
 def run_predict_only(
     *,
     test_season: int,
@@ -644,6 +689,9 @@ def run_predict_only(
     availability_by_pgw: dict[tuple[int, int], float] | None = None,
     n_iterations: int = 200,
     seed: int = 42,
+    market_weight: float | None = None,
+    prop_odds_as_of: dt.datetime | None = None,
+    prop_shadow_out: Path | None = None,
 ) -> pl.DataFrame:
     """Phase 6 v2: produce per-(player, fixture) xPts predictions for the
     specified UPCOMING fixtures.
@@ -787,6 +835,24 @@ def run_predict_only(
     # sheets, and bonus are jointly simulated. No mapping means exact legacy
     # behavior, which keeps historical folds neutral.
     pm = apply_availability_to_minutes_predictions(pm, availability_by_pgw)
+    # Phase 8: anytime-goalscorer props. Applied AFTER the availability
+    # adjustment because the market rate is de-scaled by OUR expected minutes —
+    # the same minutes the simulator will re-apply — so the two must agree.
+    # Inert at market_weight 0 (the default) but still attaches the market
+    # columns, which is how the live shadow comparison accumulates.
+    pm = attach_market_goal_rates(
+        pm,
+        consensus_anytime_probs(
+            pit.player_prop_odds_rows(upcoming_fixture_ids), as_of=prop_odds_as_of
+        ),
+        market_weight=(
+            settings.player_prop_market_weight
+            if market_weight is None
+            else market_weight
+        ),
+    )
+    if prop_shadow_out is not None:
+        _write_prop_shadow_log(pm, prop_shadow_out)
     # Other fields required by the simulator
     pm = pm.with_columns(
         pl.lit(0.0).alias("saves_rate_per_90"),

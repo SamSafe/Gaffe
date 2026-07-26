@@ -128,7 +128,7 @@ tests/        unit + leakage (point-in-time) tests
 uv sync --all-extras
 uv run alembic upgrade head           # needs a PostgreSQL DB (see fpl_bot/config.py)
 uv run gaffe ingest fpl             # pull current FPL bootstrap
-uv run pytest tests/ -q               # 265 unit + leakage tests (DB-backed
+uv run pytest tests/ -q               # 299 unit + leakage tests (DB-backed
                                       # ones are marked `integration` and
                                       # auto-skip when no Postgres is up)
 ```

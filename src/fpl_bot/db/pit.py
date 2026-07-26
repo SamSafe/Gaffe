@@ -342,6 +342,39 @@ def team_id_by_full_name(season_ids: list[int] | None = None) -> dict[tuple[int,
     return {(r.season_id, r.full_name): r.team_id for r in rows}
 
 
+def player_prop_odds_rows(
+    fixture_ids: list[int] | None = None,
+    *,
+    market: str = "anytime_goalscorer",
+    as_of: dt.datetime | None = None,
+) -> list[Any]:
+    """Raw `fact_player_odds` rows for consensus pooling (Phase 8).
+
+    Returns rows rather than a frame because
+    `derive.player_props.consensus_anytime_probs` needs every per-bookmaker
+    quote to pick each book's latest and de-vig within it. Filtering to the
+    latest quote here would destroy that. `as_of` is applied in the consensus
+    step, so pass it there for point-in-time correctness.
+    """
+    from fpl_bot.db.models import FactPlayerOdds as _FPO
+
+    with session_scope() as s:
+        stmt = select(
+            _FPO.fixture_id,
+            _FPO.player_id,
+            _FPO.bookmaker,
+            _FPO.quote_time,
+            _FPO.decimal_odds,
+        ).where(_FPO.market == market)
+        if fixture_ids is not None:
+            stmt = stmt.where(_FPO.fixture_id.in_(fixture_ids))
+        if as_of is not None:
+            if as_of.utcoffset() is None:
+                raise ValueError("as_of must be timezone-aware")
+            stmt = stmt.where(_FPO.quote_time <= as_of)
+        return list(s.execute(stmt).all())
+
+
 def team_short_names(season_id: int) -> list[str]:
     """FPL short_names of the teams in one season (e.g. 'ARS').
 

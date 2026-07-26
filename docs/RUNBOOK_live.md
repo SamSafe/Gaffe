@@ -122,6 +122,10 @@ uv run gaffe live ingest --season-id 26 --team-id <YOUR_TEAM_ID> --gameweek <GW>
 #    Needs FPL_BOT_ODDS_API_KEY in .env (500 req/mo free tier).
 uv run gaffe ingest oddsapi --season-folder 2026-27
 
+# 2b. Anytime-goalscorer player props (Phase 8). Free while no book has
+#     priced the market, ~1 credit per priced fixture once they have.
+uv run gaffe ingest oddsapi-props --season-folder 2026-27
+
 # 3. Pull top-10k effective ownership (LiveFPL scrape).
 uv run gaffe ingest livefpl --season-folder 2026-27
 
@@ -190,10 +194,43 @@ automated. It does NOT reach top-20k; its edge is the bookmaker's edge, and
 the market is efficient. Treat the recommendation as a strong default to
 adjust with your own team-news read, not gospel.
 
+## Phase 8 player props — inert on purpose
+
+`gaffe ingest oddsapi-props` is in the weekly cycle, but
+`player_prop_market_weight` is **0.0**, so anytime-goalscorer odds currently
+change nothing about the recommendation. They are recorded, inverted to a
+per-90 goal rate, and logged beside the model's own rate in
+`data/live/recommendations/season_26/gw_<GW>/player_prop_shadow.parquet`.
+
+That is deliberate. The feature cannot be backtested — there is no free
+historical player-prop data — so the only honest validation is live, and the
+project's own hard-won rule is that a model change earns its place by
+improving *accuracy*, not by sounding right (see the FDR and FWD-calibration
+reversals in the README). Accumulate several gameweeks of shadow logs, compare
+both rates against actual goals (per-position bias/MAE, and especially FWD and
+top-decile calibration), and only then raise the weight via
+`FPL_BOT_PLAYER_PROP_MARKET_WEIGHT`. Start around 0.3 if it wins.
+
+One caveat when you read those logs: in GW1-3 the minutes model is cold
+(measured: `e_minutes ≈ 12` for a nailed starter at GW1), which both distorts
+the market rate and makes per-90 rates incomparable. Compare at fixture level
+(`rate × e_minutes / 90`) and discount the first three gameweeks — see the
+cold-start section in the design doc.
+
+Two things to check on the first genuinely priced pull (~2 days before the GW1
+deadline — no bookmaker has priced 26/27 yet, so nothing has parsed a real
+payload):
+- `skipped_unresolved_player` in the parse output, plus the
+  `.unresolved.json` sidecar. A block of misses means a book changed its
+  naming, not that those players are unpriced.
+- How many players per fixture are actually priced. Unknown so far.
+
 ## Quota / cost notes
 
 - The Odds API: 500 requests/month free. Weekly pull = 3 requests
-  (h2h + spreads + totals × 1 region). ~12/month — comfortable.
+  (h2h + spreads + totals × 1 region), plus ~1 per fixture for player props
+  once books price them (~10/GW). Call it ~55/month — still comfortable.
+  Listing events and unpriced events both cost 0.
 - FPL API: free. Exact current-squad ingest needs your own logged-in cookie,
   not a paid API key.
 - LiveFPL + FFS + football-data: free, no key.

@@ -22,12 +22,28 @@ from fpl_bot.config import settings
 from fpl_bot.db import pit
 from fpl_bot.derive import dixon_coles
 from fpl_bot.ingest import audit as audit_module
-from fpl_bot.ingest import footballdata, fpl_api, livefpl, oddsapi, understat, vaastav
+from fpl_bot.ingest import (
+    footballdata,
+    fpl_api,
+    livefpl,
+    oddsapi,
+    oddsapi_props,
+    understat,
+    vaastav,
+)
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 console = Console()
 
-_SUPPORTED_SOURCES = {"fpl", "vaastav", "footballdata", "understat", "oddsapi", "livefpl"}
+_SUPPORTED_SOURCES = {
+    "fpl",
+    "vaastav",
+    "footballdata",
+    "understat",
+    "oddsapi",
+    "oddsapi-props",
+    "livefpl",
+}
 
 
 @app.command()
@@ -193,6 +209,64 @@ def ingest(
             counts = oddsapi.parse_raw_oddsapi(raw_path, season_id=season_id_for_parse)
             for k, v in counts.items():
                 console.print(f"  {k}: {v}")
+
+    elif source == "oddsapi-props":
+        # Phase 8: anytime-goalscorer props, per-event endpoint. Listing events
+        # is free and an unpriced event costs nothing, so an early-week run is
+        # a safe no-op; a priced GW costs ~1 credit per fixture.
+        if not parse_only:
+            console.print(
+                "[blue]fetch_raw_player_props() — anytime-goalscorer props[/blue]"
+            )
+            path = oddsapi_props.fetch_raw_player_props()
+            console.print(f"  → {path}")
+            meta = path.with_suffix(".meta.json")
+            if meta.exists():
+                import json as _json
+                m = _json.loads(meta.read_text())
+                console.print(
+                    f"  events: requested={m.get('events_requested')} "
+                    f"priced={m.get('events_with_prices')} "
+                    f"upcoming={m.get('events_upcoming')}"
+                )
+                console.print(
+                    f"  quota: remaining={m.get('remaining_requests')}  "
+                    f"used={m.get('used_requests')}"
+                )
+                if not m.get("events_with_prices"):
+                    console.print(
+                        "[yellow]No bookmaker has priced this market yet — normal "
+                        "until ~2-3 days before kickoff. Re-run closer to the "
+                        "deadline (costs no credits while empty).[/yellow]"
+                    )
+        if not raw_only:
+            if season_folder is None:
+                console.print(
+                    "[red]oddsapi-props parse requires --season-folder, e.g. 2026-27[/red]"
+                )
+                raise typer.Exit(1)
+            season_id_for_parse = int(season_folder.split("-")[0]) - 2000
+            today = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d")
+            raw_path = settings.raw_dir / "oddsapi" / today / "soccer_epl_player_props.json"
+            if not raw_path.exists():
+                console.print(
+                    f"[yellow]No raw payload at {raw_path}; run without --parse-only first.[/yellow]"
+                )
+                raise typer.Exit(1)
+            console.print(
+                f"[blue]parse_raw_player_props(season_id={season_id_for_parse})[/blue]"
+            )
+            counts = oddsapi_props.parse_raw_player_props(
+                raw_path, season_id=season_id_for_parse
+            )
+            for k, v in counts.items():
+                console.print(f"  {k}: {v}")
+            if counts.get("skipped_unresolved_player"):
+                console.print(
+                    "[yellow]Unresolved bookmaker names written to "
+                    f"{raw_path.with_suffix('.unresolved.json')} — check for a "
+                    "systematic naming change before trusting coverage.[/yellow]"
+                )
 
     elif source == "understat":
         if season_folder is None:

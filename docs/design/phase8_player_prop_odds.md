@@ -1,9 +1,13 @@
 # Phase 8 — Player-prop (anytime-goalscorer) odds
 
-**Status:** ⚙️ core logic built + unit-tested (`derive/player_props.py`,
-`tests/unit/test_player_props.py`); ingest + live wiring **deferred to the
-26/27 season** (cannot be developed or validated off-season — see
-Constraints). This is a **ceiling-raiser**, not an incremental tweak.
+**Status:** 🟡 fully built and wired, shipped **inert** (`market_weight = 0.0`)
+as of 2026-07-26. The table, ingest, consensus, and predict-only blending all
+exist and are tested; what does not exist yet is *evidence*, because no
+bookmaker has priced this market for 26/27 yet. Every gameweek now writes a
+model-vs-market shadow log, and the weight stays at 0 until that log says the
+market rate is better calibrated. This is a **ceiling-raiser**, not an
+incremental tweak — which is exactly why it does not get to change
+recommendations on the strength of its story alone.
 
 ## Motivation
 
@@ -85,7 +89,10 @@ Because there's no backtest, validate the **mechanism** live, the same way
 the project judges any model change — accuracy, not points:
 
 1. Each GW, log both the model's `lambda_goals_per_90` and the
-   market-implied rate per player with a prop.
+   market-implied rate per player with a prop. **Done automatically**: every
+   `live recommend` writes
+   `data/live/recommendations/season_26/gw_<GW>/player_prop_shadow.parquet`
+   with both rates, `market_p_anytime`, `market_n_books` and `e_minutes`.
 2. Over a rolling window, compare calibration of each against actual goals
    (per-position bias / MAE, and especially top-decile/FWD calibration —
    the target weakness).
@@ -96,13 +103,80 @@ the project judges any model change — accuracy, not points:
    change is only "better" if it improves player-goal accuracy, not just
    because the squad moved.
 
-## What shipped this session
+## What shipped (June 2026)
 
 - `derive/player_props.py` — the four pure inversion/blend functions, with
   the minutes-double-count guard.
 - `tests/unit/test_player_props.py` — 9 tests pinning the math and the guard.
 - This design doc.
 
-Deferred (26/27, needs live data): the `fact_player_odds` table + migration,
-the `event-odds` ingest with player-name resolution, and the predict-only
-wiring + `market_weight` tuning.
+## What shipped (2026-07-26, season rollover)
+
+- `fact_player_odds` + migration `0009`. Keyed by `quote_time` like
+  `fact_odds`, so repeated pre-deadline pulls accumulate as snapshots.
+- `ingest/oddsapi_props.py` — the per-event ingest. Lists events (free),
+  pulls one market per event inside a horizon, and hard-caps requests per run
+  so a double gameweek cannot drain the credit budget.
+- Name resolution, five rules deep, scoped to the two clubs in the fixture and
+  refusing to guess on ambiguity. Unresolved bookmaker spellings are written to
+  a `.unresolved.json` sidecar so a systematic naming change at one book shows
+  up as a visible block of misses rather than silent under-coverage.
+- `derive.player_props.consensus_anytime_probs` — per-book latest quote,
+  de-vig within book, then **median** across books (the free tier's US books
+  are thin enough that one stale line moves a mean materially).
+  `attach_market_goal_rates` blends into `lambda_goals_per_90`.
+- `pit.player_prop_odds_rows` with `as_of` support, so the consensus is
+  point-in-time correct.
+- Wired into `run_predict_only`, applied *after* the news/availability minutes
+  adjustment (the market rate is de-scaled by our expected minutes, which the
+  simulator re-applies, so the two must be the same minutes).
+- `settings.player_prop_market_weight`, default **0.0**.
+- 32 tests in `tests/unit/test_player_prop_ingest.py`.
+
+### Measured facts about the API (2026-07-26)
+
+- `/sports/soccer_epl/events` costs **0** credits and already lists GW1.
+- `player_goal_scorer_anytime` is a valid market key (a bogus key 422s).
+- An event with no prices returns `bookmakers: []` and costs **0** credits —
+  so the weekly probe is free until books actually put the market up, which
+  for soccer is typically ~2-3 days before kickoff.
+- Both DB-side joins were verified against real 26/27 data: the ARS-COV GW1
+  fixture resolves, and 16 of 17 realistic bookmaker spellings resolved to the
+  right player (the 17th, Trossard, correctly returned None — he is not in the
+  26/27 game).
+
+## Still open
+
+- **No priced payload has ever been parsed.** The priced path is covered only
+  by a synthetic payload built to the shape the live API returned. First real
+  test is ~2026-08-19. Expect to fix something on the first real pull.
+- **`market_weight` is 0**, so this currently changes nothing about any
+  recommendation. Raising it requires the shadow-log comparison below.
+- Coverage rate is unknown: how many of a fixture's players US books actually
+  price is not something the empty responses can tell us.
+
+### The cold-start minutes interaction (found 2026-07-26, measured)
+
+Running the full pipeline on GW1 with injected prices exposed a real problem
+for *early-season* use specifically. At GW1 the minutes model has no 26/27 data
+and predicted `e_minutes ≈ 11.7` for Saka — a nailed starter. Two consequences:
+
+1. The per-90 divisor hits its `min_minutes_fraction = 0.25` floor, so the
+   minutes identity that justifies this whole approach
+   (`rate × minutes_fraction == μ_fixture`) **stops holding**: we divide by
+   0.25 but the simulator multiplies by 0.13, delivering roughly half the
+   market's implied fixture goals. The floor is a deliberate guard against
+   exploding a thin line, but at GW1 nearly every player may hit it, which
+   turns a per-player safety clamp into a systematic ~50% attenuation.
+2. The logged per-90 rates are not comparable to each other while minutes are
+   cold (model 0.065 vs market 2.46 for the same player). **Any shadow-log
+   analysis must therefore compare at fixture level** —
+   `rate × e_minutes / 90` against actual goals — which is exactly why
+   `e_minutes` is in the log.
+
+Neither is urgent while `market_weight` is 0, and both mostly self-resolve once
+the minutes model has ~5 played GWs. But it means the first three gameweeks of
+shadow data are the least trustworthy part of the sample, and that raising the
+weight on early-season evidence would be a mistake. If props ever do get a
+non-zero weight, revisit whether the floor should scale with how much
+current-season minutes data exists.

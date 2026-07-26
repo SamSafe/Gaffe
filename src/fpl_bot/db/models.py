@@ -256,6 +256,39 @@ class FactOdds(Base):
     )
 
 
+class FactPlayerOdds(Base):
+    """Player-prop odds — anytime-goalscorer prices per player per fixture.
+
+    Phase 8. Separate from `fact_odds` because the natural key needs a player
+    and the source is a different endpoint (per-event, US books) with its own
+    coverage and liquidity characteristics. Keyed by `quote_time` like
+    `fact_odds` so repeated pre-deadline pulls accumulate rather than
+    overwrite — the point-in-time guarantee the backtest relies on.
+    """
+
+    __tablename__ = "fact_player_odds"
+    fixture_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    player_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bookmaker: Mapped[str] = mapped_column(Text, primary_key=True)
+    market: Mapped[str] = mapped_column(Text, primary_key=True)
+    quote_time: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), primary_key=True
+    )
+    event_time: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    decimal_odds: Mapped[float] = mapped_column(Numeric(8, 4), nullable=False)
+    # The name as the bookmaker wrote it, kept for auditing the fuzzy
+    # name→player_id resolution that produced `player_id`.
+    source_player_name: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_fact_player_odds_fixture_quote", "fixture_id", "quote_time"),
+        Index("ix_fact_player_odds_player", "player_id"),
+    )
+
+
 class FactMarketXg(Base):
     """Bookmaker-implied team xG via Dixon-Coles inversion (§2.2)."""
 

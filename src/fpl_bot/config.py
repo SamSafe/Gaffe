@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     # default; v2 snapshot features can be validated before re-enabling.
     enable_shelved_price_predictor: bool = False
 
+    # Phase 8: weight given to anytime-goalscorer market rates when blending
+    # with the model's per-90 goal rate. Deliberately 0.0 — the feature has no
+    # backtest (no free historical player props), so it ships inert and logs a
+    # model-vs-market shadow comparison every gameweek. Raise it only once that
+    # log shows the market rate is better calibrated against actual goals; see
+    # docs/design/phase8_player_prop_odds.md.
+    player_prop_market_weight: float = 0.0
+
     @property
     def raw_dir(self) -> Path:
         self.raw_data_dir.mkdir(parents=True, exist_ok=True)

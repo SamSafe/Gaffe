@@ -166,6 +166,10 @@ def generate_recommendation(
                 ).all()
             ]
         if upcoming_ids:
+            # Phase 8 shadow log lands beside the recommendation for this GW.
+            shadow_dir = output_dir or (
+                OUTPUT_ROOT / f"season_{season_id}" / f"gw_{gameweek}"
+            )
             predict_df = run_predict_only(
                 test_season=season_id,
                 train_seasons=train_seasons,
@@ -173,6 +177,7 @@ def generate_recommendation(
                 availability_by_pgw=news_attenuator,
                 n_iterations=n_iterations,
                 seed=42,
+                prop_shadow_out=shadow_dir / "player_prop_shadow.parquet",
             )
             if not predict_df.is_empty():
                 if eval_df is None or eval_df.is_empty():
