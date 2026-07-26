@@ -17,6 +17,7 @@ from fpl_bot.live.state_builder import (
     load_user_sell_prices,
     load_user_state,
 )
+from fpl_bot.optim.state import INITIAL_BUDGET_TENTHS
 
 # Every test here reads/writes the dev Postgres (autouse cleanup + inserts).
 pytestmark = pytest.mark.integration
@@ -152,6 +153,49 @@ def test_load_user_sell_prices_uses_latest_snapshot_values():
 def test_load_user_state_missing_raises():
     with pytest.raises(ValueError, match="No user-team snapshot"):
         load_user_state(season_id=99, gameweek=5, team_id=99999)
+
+
+def test_gw1_with_no_snapshot_cold_starts():
+    """At a season's first deadline there is no prior squad and the public picks
+    endpoint 404s, so GW1 must solve from a cold start rather than erroring —
+    otherwise the bot cannot produce its first recommendation of the season."""
+    state = load_user_state(season_id=99, gameweek=1, team_id=99999)
+    assert state.squad == frozenset()
+    assert state.bank == INITIAL_BUDGET_TENTHS  # £100.0m
+    assert state.gameweek == 1
+    assert state.season_id == 99
+    assert state.chips_used == frozenset()
+    assert state.cost_basis == {}
+
+
+def test_cold_start_is_restricted_to_gw1():
+    """Any later gameweek with no snapshot must stay an error: silently
+    substituting an empty £100m squad would discard a real team."""
+    for gw in (2, 5, 20, 38):
+        with pytest.raises(ValueError, match="Only GW1"):
+            load_user_state(season_id=99, gameweek=gw, team_id=99999)
+
+
+def test_gw1_prefers_a_real_snapshot_over_cold_start():
+    """With a cookie the GW1 squad IS observable pre-deadline; if one was
+    ingested, it must win over the cold-start fallback."""
+    _insert_user_team(season_id=99, gameweek=1, team_id=12345, bank=7)
+    state = load_user_state(season_id=99, gameweek=1, team_id=12345)
+    assert state.squad != frozenset()
+    assert state.bank == 7
+
+
+def test_gw1_cold_start_still_honours_local_overrides(tmp_path, monkeypatch):
+    """A manager who has picked a squad without a cookie can still describe it
+    in configs/live_state_overrides.yaml."""
+    path = tmp_path / "overrides.yaml"
+    path.write_text(
+        json.dumps({99: {1: {99999: {"bank_tenths": 3, "squad": [90000, 90001]}}}})
+    )
+    monkeypatch.setattr(settings, "live_state_overrides_path", path)
+    state = load_user_state(season_id=99, gameweek=1, team_id=99999)
+    assert state.squad == frozenset({90000, 90001})
+    assert state.bank == 3
 
 
 def test_chips_used_parsed_to_slot_codes_first_half():

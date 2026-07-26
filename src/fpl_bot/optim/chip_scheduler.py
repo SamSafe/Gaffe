@@ -30,6 +30,15 @@ from fpl_bot.optim.fixture_analytics import (
     second_half_gws,
 )
 
+# Gameweeks whose predictions are too weak to base a chip on. Before ~GW4 there
+# are no current-season rolling features, so the joint-xPts prior returns
+# near-identical small values for everyone. Measured on the 26/27 opener:
+# expected minutes ≈ 12 for a nailed starter, and the resulting TC pick was a
+# £4.0m defender. Burning a once-per-half chip on that noise is strictly worse
+# than holding it. BB already avoided early GWs for a related reason; this makes
+# the rule explicit and extends it to TC.
+COLD_START_GWS = 3
+
 
 @dataclass(frozen=True)
 class ChipSchedule:
@@ -177,6 +186,11 @@ def make_chip_schedule(
     used: set[int] = set()
 
     def _pick_tc_in_half(half_gws: list[int]) -> int | None:
+        # Never triple-captain out of the cold-start window: the prior cannot
+        # tell a premium striker from a £4.0m defender there.
+        half_gws = [g for g in half_gws if g > COLD_START_GWS]
+        if not half_gws:
+            return None
         # Prefer DGW captains; fall back to highest captain xPts overall.
         tc = _best_tc_gw(
             analytics, predictions_df, half_gws, used, team_id_per_player
@@ -193,6 +207,9 @@ def make_chip_schedule(
         return tc
 
     def _pick_bb_in_half(half_gws: list[int]) -> int | None:
+        half_gws = [g for g in half_gws if g > COLD_START_GWS]
+        if not half_gws:
+            return None
         bb = _best_bb_gw(analytics, half_gws, used)
         if bb is None:
             # No DGW in this half. The joint xPts prior biases early-season GWs

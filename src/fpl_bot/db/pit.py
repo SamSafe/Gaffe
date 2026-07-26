@@ -576,6 +576,34 @@ def season_player_status_snapshot(season_id: int) -> pl.DataFrame:
     )
 
 
+def latest_team_and_price_per_player(season_id: int) -> dict[int, tuple[int, int]]:
+    """{player_id: (team_id, price_tenths)} from the newest status snapshot.
+
+    Club and price are normally derived from `fact_player_match`, i.e. from
+    matches actually played. Before a season's first kickoff there are none, so
+    the FPL bootstrap snapshot is the only source — and it is the correct one
+    for a season opener, since it reflects current clubs and starting prices.
+    Also covers mid-season signings who have not featured yet.
+    """
+    with session_scope() as s:
+        rows = s.execute(
+            select(
+                FactPlayerStatus.player_id,
+                FactPlayerStatus.team_id,
+                FactPlayerStatus.price_tenths,
+                FactPlayerStatus.recorded_at,
+            ).where(FactPlayerStatus.season_id == season_id)
+        ).all()
+
+    latest: dict[int, tuple[dt.datetime, int, int]] = {}
+    for r in rows:
+        pid = int(r.player_id)
+        prev = latest.get(pid)
+        if prev is None or r.recorded_at > prev[0]:
+            latest[pid] = (r.recorded_at, int(r.team_id), int(r.price_tenths))
+    return {pid: (team, price) for pid, (_rec, team, price) in latest.items()}
+
+
 def all_player_status_snapshots(season_id: int) -> pl.DataFrame:
     """All stored FPL status snapshots for a season.
 

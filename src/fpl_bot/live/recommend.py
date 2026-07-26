@@ -241,9 +241,23 @@ def generate_recommendation(
         unexclude_returning=unexclude_returning,
     )
 
-    # 4. Team / position / price resolution (same as backtest)
+    # 4. Team / position / price resolution (same as backtest), then a
+    #    bootstrap-snapshot fallback for anything the backtest sources cannot
+    #    know yet. Both read `fact_player_match`, so before a season's first
+    #    kickoff they return NOTHING and every player would be filtered out as
+    #    invalid. The fallback is additive — played-match data still wins
+    #    wherever it exists — so mid-season behaviour is unchanged.
     teams = _team_id_per_player_for_season(season_id, all_players)
     prices_by_pgw = _per_player_per_gw_prices(season_id, all_players)
+    status_team_price = pit.latest_team_and_price_per_player(season_id)
+    for pid in all_players:
+        fallback = status_team_price.get(pid)
+        if fallback is None:
+            continue
+        team_id_fb, price_fb = fallback
+        teams.setdefault(pid, team_id_fb)
+        for gw in all_gws:
+            prices_by_pgw.setdefault((pid, gw), price_fb)
     positions = (
         pit.all_player_positions()
         .to_pandas()

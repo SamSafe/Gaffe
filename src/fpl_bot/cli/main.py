@@ -14,6 +14,7 @@ import subprocess
 import sys
 from typing import Annotated
 
+import httpx
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -381,7 +382,31 @@ def live_ingest(
         mt_raw = fpl_api.fetch_current_my_team(team_id=team_id)
     else:
         console.print("[yellow]FPL_BOT_FPL_COOKIE not set; using public historical picks endpoint[/yellow]")
-        mt_raw = fpl_api.fetch_my_team(team_id=team_id, gameweek=gameweek)
+        try:
+            mt_raw = fpl_api.fetch_my_team(team_id=team_id, gameweek=gameweek)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+            # The public picks endpoint only exists once a GW has finished.
+            # Before the season's first deadline that is every GW, and it is
+            # not an error: `live recommend --gameweek 1` solves from a
+            # cold-start state. Bootstrap + fixtures above already landed.
+            console.print(
+                f"[yellow]No public picks for gw={gameweek} (404) — normal for a "
+                "gameweek that hasn't finished.[/yellow]"
+            )
+            if gameweek == 1:
+                console.print(
+                    "[yellow]GW1: recommend will solve from a cold start "
+                    "(no squad, £100.0m). Set FPL_BOT_FPL_COOKIE first if you "
+                    "have already picked a squad you want it to work from.[/yellow]"
+                )
+            else:
+                console.print(
+                    "[yellow]Re-run with --gameweek pointing at the last "
+                    "FINISHED gameweek, or set FPL_BOT_FPL_COOKIE.[/yellow]"
+                )
+            return
     n = fpl_api.parse_my_team(
         mt_raw, season_id=season_id, gameweek=gameweek, team_id=team_id
     )

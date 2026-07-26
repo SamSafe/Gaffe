@@ -93,8 +93,27 @@ print('pk takers resolved:', _resolved_pk_takers([26]).height, '/ 20')
 
 ## First three gameweeks — expect the bot at its weakest
 
-GW1-3 is the one stretch where the model is structurally blind, so weight
-your own judgement much more heavily:
+**Measured on a real GW1 dry run (2026-07-26, before any odds existed):** the
+bot produced a £76.0m squad of £4-6m players, left **£24m unspent**, and ranked
+cheap defenders ~5× above elite forwards (mean xPts: DEF 1.62 vs FWD 0.32;
+Thiaw 2.96 vs Haaland 0.30). Two separate causes, worth telling apart:
+
+- **No odds existed yet**, so every fixture fell back to the hardcoded
+  defaults (home λ 1.4, away 1.2, CS 0.30/0.25). That is the bot's documented
+  no-odds floor — the regime the README measures as *losing* to buy-and-hold.
+  Defenders keep a default clean-sheet value while attackers' goal rates
+  collapse, hence the inversion. This should largely resolve once
+  `ingest oddsapi` + `derive market-xg` have run for the gameweek.
+- **The minutes model is cold**: ~12 expected minutes for a nailed starter,
+  which suppresses all attacking returns. That one does *not* resolve until
+  26/27 has played gameweeks.
+
+So: **re-run the GW1 recommendation after the first odds pull and judge it
+then**. Do not take a pre-odds recommendation seriously, and sanity-check the
+GW1 squad by hand regardless — leaving £24m unspent is the tell that the
+prediction spread, not the optimizer, is the weak link.
+
+The structural reasons behind this:
 
 - No 26/27 played GWs means no rolling xG/xA or team form; predictions lean
   on the cold-start prior (25/26 last-5-GW actuals) plus market λ.
@@ -105,6 +124,13 @@ your own judgement much more heavily:
   odds pull in (step 2 of the weekly cycle) matters more than usual.
 
 Treat the GW1 output as a budget-allocation sketch, not a squad.
+
+GW1 mechanics that are now handled, for reference: with no prior squad and no
+cookie, `live recommend --gameweek 1` solves from a cold-start state (no squad,
+£100.0m) instead of erroring, clubs and prices come from the FPL bootstrap
+snapshot rather than from played matches, and the chip scheduler will not
+assign any chip inside GW1-3 (`chip_scheduler.COLD_START_GWS`) — it previously
+triple-captained a £4.0m defender in GW1.
 
 ## Every gameweek (the weekly cycle)
 

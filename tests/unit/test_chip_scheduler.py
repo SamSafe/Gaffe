@@ -4,6 +4,7 @@ from __future__ import annotations
 import polars as pl
 
 from fpl_bot.optim.chip_scheduler import (
+    COLD_START_GWS,
     ChipSchedule,
     free_hit_gws,
     horizon_before_free_hit,
@@ -157,3 +158,39 @@ def test_horizon_keeps_only_current_free_hit_gw():
     sched = {"FH1": 18}
     assert horizon_before_free_hit([18, 19, 20], sched) == [18]
     assert free_hit_gws(sched) == {18}
+
+
+def test_no_chip_is_scheduled_inside_the_cold_start_window():
+    """GW1-3 predictions are near-flat (no current-season rolling features), so
+    a chip scheduled there is spent on noise. Measured on the 26/27 opener: TC
+    landed on GW1 with a £4.0m defender as captain.
+
+    Predictions here peak at GW1 precisely to bait the scheduler into it.
+    """
+    fixture_count = {(t, gw): 1 for gw in range(1, 39) for t in (1, 2, 3, 4)}
+    a = SeasonFixtureAnalytics(
+        season_id=99,
+        gws_per_team={t: list(range(1, 39)) for t in (1, 2, 3, 4)},
+        fixture_count=fixture_count,
+        all_gws=list(range(1, 39)),
+    )
+    team_id_per_player = {101: 1, 102: 2, 103: 3, 104: 4}
+    rows = [
+        {
+            "player_id": pid,
+            "gameweek": gw,
+            # GW1 looks best on paper; it is exactly the trap.
+            "e_xpts": 99.0 if gw == 1 else 3.0,
+        }
+        for pid in team_id_per_player
+        for gw in range(1, 39)
+    ]
+    sched = make_chip_schedule(
+        analytics=a,
+        predictions_df=pl.DataFrame(rows),
+        team_id_per_player=team_id_per_player,
+    )
+    for slot, gw in sched.as_dict().items():
+        assert gw is None or gw > COLD_START_GWS, (
+            f"{slot} scheduled at GW{gw}, inside the cold-start window"
+        )
