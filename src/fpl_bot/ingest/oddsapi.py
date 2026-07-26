@@ -45,7 +45,7 @@ DEFAULT_REGIONS = "uk"
 DEFAULT_BOOKMAKERS = "pinnacle,betfair_ex_uk,williamhill,bet365"
 DEFAULT_ODDS_FORMAT = "decimal"
 
-# The Odds API team name → FPL short_name (season 25 names; extend on
+# The Odds API team name → FPL short_name (seasons 25-26 names; extend on
 # promotion). Includes alternate naming for some clubs since the API has
 # been inconsistent over time.
 OA_TO_FPL_SHORT: dict[str, str] = {
@@ -58,9 +58,13 @@ OA_TO_FPL_SHORT: dict[str, str] = {
     "Brighton & Hove Albion": "BHA",
     "Burnley": "BUR",
     "Chelsea": "CHE",
+    "Coventry City": "COV",
+    "Coventry": "COV",
     "Crystal Palace": "CRY",
     "Everton": "EVE",
     "Fulham": "FUL",
+    "Hull City": "HUL",
+    "Hull": "HUL",
     "Leeds United": "LEE",
     "Leeds": "LEE",
     "Liverpool": "LIV",
@@ -78,6 +82,7 @@ OA_TO_FPL_SHORT: dict[str, str] = {
     "Wolverhampton Wanderers": "WOL",
     "Wolves": "WOL",
     "Ipswich Town": "IPS",
+    "Ipswich": "IPS",
     "Luton Town": "LUT",
 }
 

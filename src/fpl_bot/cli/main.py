@@ -35,7 +35,9 @@ def ingest(
     source: Annotated[str, typer.Argument(help="Source: fpl | vaastav (more in 1B)")],
     raw_only: Annotated[bool, typer.Option("--raw-only")] = False,
     parse_only: Annotated[bool, typer.Option("--parse-only")] = False,
-    season_id: Annotated[int, typer.Option("--season-id", help="For 'fpl' parse")] = 25,
+    season_id: Annotated[
+        int, typer.Option("--season-id", help="For 'fpl' parse")
+    ] = settings.current_season_id,
     season_folder: Annotated[
         str | None,
         typer.Option("--season-folder", help="For 'vaastav' parse, e.g. 2024-25"),
@@ -281,7 +283,7 @@ def _resolve_team_id(team_id: int | None) -> int:
 def live_ingest(
     gameweek: Annotated[int, typer.Option("--gameweek")],
     team_id: Annotated[int | None, typer.Option("--team-id", envvar="FPL_TEAM_ID")] = None,
-    season_id: Annotated[int, typer.Option("--season-id")] = 25,
+    season_id: Annotated[int, typer.Option("--season-id")] = settings.current_season_id,
 ) -> None:
     """Pull bootstrap-static + fixtures + my-team for the user's live state."""
     team_id = _resolve_team_id(team_id)
@@ -316,10 +318,10 @@ def live_ingest(
 def live_recommend(
     gameweek: Annotated[int, typer.Option("--gameweek")],
     team_id: Annotated[int | None, typer.Option("--team-id", envvar="FPL_TEAM_ID")] = None,
-    season_id: Annotated[int, typer.Option("--season-id")] = 25,
+    season_id: Annotated[int, typer.Option("--season-id")] = settings.current_season_id,
     train_seasons: Annotated[
         str, typer.Option("--train-seasons", help="comma-separated")
-    ] = "19,20,21,22,23,24",
+    ] = settings.train_seasons,
 ) -> None:
     """Run Phase 5 stack + status overrides; emit markdown + JSON recommendation."""
     team_id = _resolve_team_id(team_id)
@@ -337,7 +339,7 @@ def live_recommend(
 def live_retrospective(
     gameweek: Annotated[int, typer.Option("--gameweek")],
     team_id: Annotated[int | None, typer.Option("--team-id", envvar="FPL_TEAM_ID")] = None,
-    season_id: Annotated[int, typer.Option("--season-id")] = 25,
+    season_id: Annotated[int, typer.Option("--season-id")] = settings.current_season_id,
 ) -> None:
     """Post-GW: pull actuals (assumes bootstrap-static re-ingest after GW close),
     apply auto-sub scorer to the prior recommendation, write actuals.json."""

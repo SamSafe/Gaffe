@@ -45,10 +45,14 @@ US_TO_FPL_FULL_NAME = {
     "Brighton": "Brighton",
     "Burnley": "Burnley",
     "Chelsea": "Chelsea",
+    "Coventry": "Coventry City",
+    "Coventry City": "Coventry City",
     "Crystal Palace": "Crystal Palace",
     "Everton": "Everton",
     "Fulham": "Fulham",
-    "Ipswich": "Ipswich",
+    "Hull": "Hull City",
+    "Hull City": "Hull City",
+    "Ipswich": "Ipswich Town",
     "Leeds": "Leeds",
     "Leicester": "Leicester",
     "Liverpool": "Liverpool",
@@ -67,6 +71,26 @@ US_TO_FPL_FULL_NAME = {
     "West Ham": "West Ham",
     "Wolverhampton Wanderers": "Wolves",
 }
+
+# FPL renames some clubs between seasons, so a single mapping above cannot
+# match `dim_team.full_name` for every season a club appears in (e.g. IPS was
+# "Ipswich" in 2024-25 and "Ipswich Town" in 2026-27). The fixture lookup
+# spans all seasons, so try these alternates before giving up on a match.
+FPL_FULL_NAME_ALTERNATES: dict[str, tuple[str, ...]] = {
+    "Ipswich Town": ("Ipswich",),
+    "Coventry City": ("Coventry",),
+    "Hull City": ("Hull",),
+}
+
+
+def _fpl_full_name_candidates(understat_name: str | None) -> tuple[str, ...]:
+    """FPL full names an Understat team name may correspond to, best first."""
+    if not understat_name:
+        return ()
+    primary = US_TO_FPL_FULL_NAME.get(understat_name)
+    if primary is None:
+        return ()
+    return (primary, *FPL_FULL_NAME_ALTERNATES.get(primary, ()))
 
 # Filename: "First_Last_understatid.csv"; allow accents/hyphens in name.
 FILENAME_RE = re.compile(r"^(.+?)_(\d+)\.csv$")
@@ -171,10 +195,13 @@ def parse_raw_understat_season(season_folder: str) -> dict[str, int]:
                 h_us = row.get("h_team")
                 a_us = row.get("a_team")
                 fixture_id: int | None = None
-                home_full = US_TO_FPL_FULL_NAME.get(h_us) if h_us else None
-                away_full = US_TO_FPL_FULL_NAME.get(a_us) if a_us else None
-                if home_full and away_full:
-                    fixture_id = fixture_lookup.get((match_date, home_full, away_full))
+                for home_full in _fpl_full_name_candidates(h_us):
+                    for away_full in _fpl_full_name_candidates(a_us):
+                        fixture_id = fixture_lookup.get((match_date, home_full, away_full))
+                        if fixture_id is not None:
+                            break
+                    if fixture_id is not None:
+                        break
                 if fixture_id is not None:
                     counts["linked_to_fixture"] += 1
                 else:

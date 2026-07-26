@@ -215,12 +215,97 @@
     direct_fk: [Cunha, Sarabia]
     corner: [Sarabia, Cunha, Aït-Nouri]
 
-# Phase 7 2.3 placeholder for 2025-26. Each team needs penalty / direct_fk /
-# corner taker(s) populated for the model's `is_corner_taker` and
-# `is_fk_taker` features to fire on 25/26 data. Until populated, feature
-# values default to 0 for all 25/26 players and the model gets no signal.
-#
-# Suggested workflow: copy entries from season 24 for teams that kept their
-# takers, update for known transfers, fill new entries for promoted clubs
-# (Burnley, Leeds, Sunderland).
+# Deliberately empty for 2025-26: `is_corner_taker` / `is_fk_taker` were 0 for
+# every 25/26 player, so the published 25/26 backtest numbers were measured
+# with these features inert. Left empty rather than backfilled so that
+# baseline stays reproducible — backfill it only alongside a re-measurement.
 25: {}
+
+# 2026-27, generated from the FPL API's own set-piece order fields
+# (`penalties_order` / `direct_freekicks_order` /
+# `corners_and_indirect_freekicks_order`) rather than hand-curated, via
+# `uv run python scripts/gen_set_piece_takers.py --season-id 26`.
+# Re-run and re-paste when FPL updates roles (their pre-season list is a
+# guess for unsettled teams, and promoted clubs' orders shift once they play).
+# 20 of 20 teams have FPL-listed takers.
+26:
+  Arsenal:
+    penalty: Saka
+    direct_fk: [Rice, Saka, Eze]
+    corner: [Rice, Saka, Madueke, Ødegaard]
+  Aston Villa:
+    penalty: Buendía
+    direct_fk: [Buendía]
+    corner: [Digne, Cash, McGinn]
+  Bournemouth:
+    penalty: Kroupi.Jr
+    direct_fk: [Tavernier, Kluivert, Brooks, Scott, Enes Ünal]
+    corner: [Tavernier, Scott, Cook, Brooks, Christie]
+  Brentford:
+    penalty: Thiago
+    direct_fk: [Lewis-Potter, Jensen, Damsgaard]
+    corner: [Jensen, Damsgaard, Janelt, O.Dango]
+  Brighton:
+    penalty: Welbeck
+    direct_fk: [Welbeck, Ayari, Dunk, De Cuyper, Gomez]
+    corner: [Groß, Minteh, F.Kadıoğlu, Ayari]
+  Chelsea:
+    penalty: Palmer
+    direct_fk: [James, Enzo, Palmer, Neto]
+    corner: [James, Neto, Enzo, Estêvão]
+  Coventry City:
+    penalty: Wright
+    direct_fk: [Rudoni, Torp]
+    corner: [Grimes, Rudoni, Torp]
+  Crystal Palace:
+    penalty: Mateta
+    direct_fk: [Yeremy, Johnson, Devenny]
+    corner: [Wharton, Yeremy, Hughes, Kamada]
+  Everton:
+    penalty: Ndiaye
+    direct_fk: [Garner, McNeil]
+    corner: [Garner, Dewsbury-Hall, McNeil]
+  Fulham:
+    penalty: Robinson
+    direct_fk: [Iwobi, Lukić]
+    corner: [Iwobi, Lukić, Kevin]
+  Hull City:
+    penalty: Crooks
+    direct_fk: [Giles, Belloumi]
+    corner: [Giles, Belloumi, Slater]
+  Ipswich Town:
+    penalty: Hirst
+    direct_fk: [Núñez, Davis, Clarke]
+    corner: [Philogene, Davis, Núñez, Clarke]
+  Leeds:
+    penalty: Calvert-Lewin
+    direct_fk: [Stach, Longstaff, Aaronson]
+    corner: [Stach, Longstaff, Tanaka]
+  Liverpool:
+    penalty: Isak
+    direct_fk: [Szoboszlai, Wirtz]
+    corner: [Szoboszlai, Gakpo, Wirtz]
+  Man City:
+    penalty: Haaland
+    direct_fk: [Cherki, Marmoush, Foden, Reijnders]
+    corner: [Foden, Cherki, Reijnders]
+  Man Utd:
+    penalty: B.Fernandes
+    direct_fk: [B.Fernandes, Mbeumo, Mount]
+    corner: [B.Fernandes, Mbeumo, Amad]
+  Newcastle:
+    penalty: Woltemade
+    direct_fk: [Hall, Bruno G., Schär]
+    corner: [Hall, Bruno G., L.Miley, Elanga]
+  'Nott''m Forest':
+    penalty: Wood
+    direct_fk: [Gibbs-White, Murillo, N.Williams, Hudson-Odoi]
+    corner: [Hutchinson, N.Williams, Bakwa]
+  Spurs:
+    penalty: Solanke
+    direct_fk: [Pedro Porro, Xavi, Kudus, Tonali]
+    corner: [Pedro Porro, Kudus, Xavi, Tel, Tonali]
+  Sunderland:
+    penalty: Diarra
+    direct_fk: [Xhaka, E.Le Fée]
+    corner: [Xhaka, Hume, E.Le Fée]

@@ -11,6 +11,19 @@ class Settings(BaseSettings):
     )
 
     database_url: str = "postgresql+psycopg://fpl:fpl@localhost:5432/fpl_bot"
+
+    # The season being played, as an FPL season_id (26 = 2026-27). Single
+    # source of truth for CLI `--season-id` defaults so a new season needs one
+    # edit here (or FPL_BOT_CURRENT_SEASON_ID in .env) rather than a hunt
+    # through command signatures — a stale default silently writes this
+    # season's data into last season's rows.
+    current_season_id: int = 26
+
+    # Seasons the prediction models train on, comma-separated season_ids.
+    # Append the current season once it has ~5+ played GWs (see
+    # docs/RUNBOOK_live.md); before that its rolling features are too thin.
+    train_seasons: str = "19,20,21,22,23,24,25"
+
     raw_data_dir: Path = Path("data/raw")
     user_agent: str = "fpl-bot/0.1 (research; non-commercial)"
     request_timeout_seconds: float = 30.0
@@ -40,6 +53,10 @@ class Settings(BaseSettings):
     def raw_dir(self) -> Path:
         self.raw_data_dir.mkdir(parents=True, exist_ok=True)
         return self.raw_data_dir
+
+    @property
+    def train_season_ids(self) -> list[int]:
+        return [int(s) for s in self.train_seasons.split(",") if s.strip()]
 
 
 settings = Settings()

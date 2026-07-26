@@ -342,6 +342,22 @@ def team_id_by_full_name(season_ids: list[int] | None = None) -> dict[tuple[int,
     return {(r.season_id, r.full_name): r.team_id for r in rows}
 
 
+def team_short_names(season_id: int) -> list[str]:
+    """FPL short_names of the teams in one season (e.g. 'ARS').
+
+    Used by the season-start check in docs/RUNBOOK_live.md to spot promoted
+    clubs missing from the ingest name maps, which would otherwise drop their
+    odds silently.
+    """
+    from fpl_bot.db.models import DimTeam as _DimTeam
+
+    with session_scope() as s:
+        rows = s.execute(
+            select(_DimTeam.short_name).where(_DimTeam.season_id == season_id)
+        ).all()
+    return sorted(r.short_name for r in rows)
+
+
 def all_player_positions() -> pl.DataFrame:
     """Latest position_code per player from fact_player_status (current snapshot).
 
