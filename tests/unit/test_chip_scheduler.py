@@ -194,3 +194,30 @@ def test_no_chip_is_scheduled_inside_the_cold_start_window():
         assert gw is None or gw > COLD_START_GWS, (
             f"{slot} scheduled at GW{gw}, inside the cold-start window"
         )
+
+
+def test_free_hits_are_not_scheduled_in_both_gw19_and_gw20():
+    """The two half-season FH slots cannot be used in consecutive GWs."""
+    teams = (1, 2, 3, 4)
+    fixture_count: dict[tuple[int, int], int] = {}
+    gws_per_team: dict[int, list[int]] = {team: [] for team in teams}
+    for gw in range(1, 39):
+        playing = (1,) if gw in {19, 20} else ((1, 2) if gw == 21 else teams)
+        for team in playing:
+            fixture_count[(team, gw)] = 1
+            gws_per_team[team].append(gw)
+    analytics = SeasonFixtureAnalytics(
+        season_id=26,
+        gws_per_team=gws_per_team,
+        fixture_count=fixture_count,
+        all_gws=list(range(1, 39)),
+    )
+    team_id_per_player = {101: 1, 102: 2, 103: 3, 104: 4}
+    schedule = make_chip_schedule(
+        analytics=analytics,
+        predictions_df=_make_predictions(team_id_per_player),
+        team_id_per_player=team_id_per_player,
+    )
+
+    assert schedule.fh1 == 19
+    assert schedule.fh2 == 21

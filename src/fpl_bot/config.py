@@ -36,9 +36,14 @@ class Settings(BaseSettings):
     # https://the-odds-api.com (500 req/mo).
     odds_api_key: str | None = None
 
-    # Optional. Full Cookie header copied from an authenticated
-    # fantasy.premierleague.com browser session. Enables exact current-squad
-    # `my-team/{team_id}` ingest: purchase prices, sell prices, bank and FT.
+    # Optional. Bearer token copied from the `X-API-Authorization` request
+    # header on fantasy.premierleague.com. This is the current authentication
+    # mechanism for the private `my-team/{team_id}` endpoint.
+    fpl_access_token: str | None = None
+
+    # Optional legacy/full browser Cookie header. Kept for compatibility and
+    # as a fallback source for an `access_token` cookie, but FPL currently
+    # requires the bearer token above for authenticated API requests.
     fpl_cookie: str | None = None
 
     # Optional local overrides for exact live state when authenticated FPL

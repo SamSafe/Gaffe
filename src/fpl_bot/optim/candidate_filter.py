@@ -56,13 +56,19 @@ def select_candidates(
 
     # Penalty takers across all teams in this season (manual config)
     pk_raw = manual_overrides.set_piece_takers_raw().get(season_id, {})
-    web_to_pid = pit.web_name_to_player_id()
-    for team_info in pk_raw.values():
+    teams = pit.team_id_by_full_name([season_id])
+    scoped_players = pit.player_id_by_season_team_web_name([season_id])
+    for team_full_name, team_info in pk_raw.items():
         if not isinstance(team_info, dict):
             continue
         taker_web = team_info.get("penalty")
         if taker_web:
-            pid = web_to_pid.get(taker_web)
+            team_id = teams.get((season_id, team_full_name))
+            pid = (
+                scoped_players.get((season_id, team_id, taker_web))
+                if team_id is not None
+                else None
+            )
             if pid is not None:
                 candidates.add(pid)
 

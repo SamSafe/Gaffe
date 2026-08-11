@@ -405,6 +405,13 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
 
     m.con_chip_one_per_gw = Constraint(m.W, rule=_chip_one_per_gw)
 
+    # The one-Free-Hit-per-half slots meet at GW19/20, but FPL explicitly
+    # prohibits playing the chip in consecutive gameweeks.
+    if 19 in H and 20 in H:
+        m.con_no_boundary_consecutive_free_hits = Constraint(
+            expr=m.z_fh[19] + m.z_fh[20] <= 1
+        )
+
     # Per-slot at-most-once across the horizon (with first-half / second-half restrictions)
     def _build_per_slot_constraint(m, slot: str):
         if slot in state.chips_used:

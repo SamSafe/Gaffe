@@ -96,11 +96,20 @@ def _team_dgw_count(analytics: SeasonFixtureAnalytics, gw: int) -> int:
     )
 
 
-def _best_fh_gw(analytics: SeasonFixtureAnalytics, gws: list[int]) -> int | None:
+def _best_fh_gw(
+    analytics: SeasonFixtureAnalytics,
+    gws: list[int],
+    excluded: set[int] | None = None,
+) -> int | None:
     """GW with the most teams blank. Returns None if no BGW (no team blank
     anywhere in the window) — that signals "no FH-worthy GW".
     """
-    scored = [(gw, _team_blank_count(analytics, gw)) for gw in gws]
+    excluded = excluded or set()
+    scored = [
+        (gw, _team_blank_count(analytics, gw))
+        for gw in gws
+        if gw not in excluded
+    ]
     scored = [(gw, n) for gw, n in scored if n > 0]
     if not scored:
         return None
@@ -225,7 +234,10 @@ def make_chip_schedule(
     fh1 = _best_fh_gw(analytics, fh_gws)
     if fh1 is not None:
         used.add(fh1)
-    fh2 = _best_fh_gw(analytics, sh_gws)
+    # FPL does not permit Free Hits in consecutive GWs. With one FH per half,
+    # the only possible cross-slot violation is FH1 in GW19 + FH2 in GW20.
+    fh2_excluded = {20} if fh1 == 19 else set()
+    fh2 = _best_fh_gw(analytics, sh_gws, excluded=fh2_excluded)
     if fh2 is not None:
         used.add(fh2)
 

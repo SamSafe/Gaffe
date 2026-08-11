@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from base64 import urlsafe_b64decode
 from hashlib import sha256
+from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 
 import httpx
@@ -257,26 +259,29 @@ def fetch_current_my_team(team_id: int) -> Path:
 
     This endpoint is the only FPL source that exposes exact purchase price,
     selling price, bank and free-transfer state before the deadline. It
-    requires `FPL_BOT_FPL_COOKIE` to be set to the full browser Cookie header
-    from an authenticated fantasy.premierleague.com session.
+    requires a current bearer token from the browser's `X-API-Authorization`
+    request header. A legacy full Cookie header is also accepted and used as
+    a fallback source when it contains an `access_token` cookie.
     """
-    if not settings.fpl_cookie:
-        raise RuntimeError(
-            "Authenticated my-team ingest requires FPL_BOT_FPL_COOKIE "
-            "with a logged-in fantasy.premierleague.com Cookie header."
-        )
+    headers = _authenticated_fpl_headers(
+        access_token=settings.fpl_access_token,
+        cookie_header=settings.fpl_cookie,
+    )
     url = f"{FPL_BASE}/my-team/{team_id}/"
     raw_path = _today_dir("fpl_api") / f"my_team_auth_{team_id}.json"
     with audit_fetch(source="fpl_api", url=url, user_agent=settings.user_agent) as audit:
         with httpx.Client(
-            headers={
-                "User-Agent": settings.user_agent,
-                "Cookie": settings.fpl_cookie,
-            },
+            headers={"User-Agent": settings.user_agent, **headers},
             timeout=settings.request_timeout_seconds,
         ) as client:
             r = client.get(url)
             audit.response_code = r.status_code
+            if r.status_code in (401, 403):
+                raise RuntimeError(
+                    "FPL rejected the my-team authentication. Refresh the logged-in "
+                    "FPL page, copy the complete X-API-Authorization request header, "
+                    "and set it as FPL_BOT_FPL_ACCESS_TOKEN in .env."
+                )
             r.raise_for_status()
             payload = r.content
         audit.byte_size = len(payload)
@@ -284,6 +289,68 @@ def fetch_current_my_team(team_id: int) -> Path:
         audit.raw_path = str(raw_path)
         raw_path.write_bytes(payload)
     return raw_path
+
+
+def _access_token_from_cookie(cookie_header: str | None) -> str | None:
+    """Extract an access_token cookie without logging or persisting its value."""
+    if not cookie_header:
+        return None
+    jar = SimpleCookie()
+    try:
+        jar.load(cookie_header)
+    except CookieError:
+        return None
+    morsel = jar.get("access_token")
+    return morsel.value if morsel and morsel.value else None
+
+
+def _jwt_expiry(token: str) -> dt.datetime | None:
+    """Read an unverified JWT expiry solely to produce an early useful error."""
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        payload_segment = parts[1]
+        padding = "=" * (-len(payload_segment) % 4)
+        payload = json.loads(urlsafe_b64decode(payload_segment + padding))
+        expiry = payload.get("exp")
+        if not isinstance(expiry, (int, float)):
+            return None
+        return dt.datetime.fromtimestamp(expiry, tz=dt.UTC)
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _authenticated_fpl_headers(
+    *,
+    access_token: str | None,
+    cookie_header: str | None,
+    now: dt.datetime | None = None,
+) -> dict[str, str]:
+    """Build private-FPL headers and reject an obviously expired bearer token."""
+    token = (access_token or _access_token_from_cookie(cookie_header) or "").strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    if not token:
+        raise RuntimeError(
+            "Authenticated my-team ingest requires FPL_BOT_FPL_ACCESS_TOKEN. "
+            "Copy the X-API-Authorization request header from a freshly loaded, "
+            "logged-in fantasy.premierleague.com page."
+        )
+
+    expiry = _jwt_expiry(token)
+    current = now or dt.datetime.now(dt.UTC)
+    if expiry is not None and expiry <= current:
+        raise RuntimeError(
+            f"The FPL access token expired at {expiry.isoformat()}. Refresh the "
+            "logged-in FPL page and replace FPL_BOT_FPL_ACCESS_TOKEN with the "
+            "fresh X-API-Authorization request header."
+        )
+
+    headers = {"X-API-Authorization": f"Bearer {token}"}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    return headers
 
 
 def _coerce_int(value: object, default: int = 0) -> int:

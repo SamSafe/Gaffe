@@ -377,11 +377,14 @@ def live_ingest(
         console.print(f"  {k}: {v}")
 
     console.print(f"[blue]my-team team_id={team_id} gw={gameweek}[/blue]")
-    if settings.fpl_cookie:
+    if settings.fpl_access_token or settings.fpl_cookie:
         console.print("[blue]authenticated current my-team[/blue]")
         mt_raw = fpl_api.fetch_current_my_team(team_id=team_id)
     else:
-        console.print("[yellow]FPL_BOT_FPL_COOKIE not set; using public historical picks endpoint[/yellow]")
+        console.print(
+            "[yellow]FPL_BOT_FPL_ACCESS_TOKEN not set; using public historical "
+            "picks endpoint[/yellow]"
+        )
         try:
             mt_raw = fpl_api.fetch_my_team(team_id=team_id, gameweek=gameweek)
         except httpx.HTTPStatusError as exc:
@@ -398,13 +401,13 @@ def live_ingest(
             if gameweek == 1:
                 console.print(
                     "[yellow]GW1: recommend will solve from a cold start "
-                    "(no squad, £100.0m). Set FPL_BOT_FPL_COOKIE first if you "
+                    "(no squad, £100.0m). Set FPL_BOT_FPL_ACCESS_TOKEN first if you "
                     "have already picked a squad you want it to work from.[/yellow]"
                 )
             else:
                 console.print(
                     "[yellow]Re-run with --gameweek pointing at the last "
-                    "FINISHED gameweek, or set FPL_BOT_FPL_COOKIE.[/yellow]"
+                    "FINISHED gameweek, or set FPL_BOT_FPL_ACCESS_TOKEN.[/yellow]"
                 )
             return
     n = fpl_api.parse_my_team(

@@ -82,7 +82,7 @@ ingest ──► prediction models ──► joint xPts simulator ──► MILP
    simulator combines per-player outcome distributions into an expected-
    points distribution per (player, gameweek).
 4. **Post-processing** (`optim/prediction_postprocess.py`) — early-season
-   cold-start prior, DefCon (FPL 25/26 defensive-contribution points),
+   cold-start prior, DefCon (FPL 25/26 onward, including cross-season carry-forward),
    domestic-suspension carry-over (zero a banned player's GW), and optional
    calibration. Shared by backtest and live so they don't drift.
 5. **Optimize** (`optim/milp.py`) — a rolling-horizon Pyomo/CBC MILP picks
@@ -128,7 +128,7 @@ tests/        unit + leakage (point-in-time) tests
 uv sync --all-extras
 uv run alembic upgrade head           # needs a PostgreSQL DB (see fpl_bot/config.py)
 uv run gaffe ingest fpl             # pull current FPL bootstrap
-uv run pytest tests/ -q               # 299 unit + leakage tests (DB-backed
+uv run pytest tests/ -q               # full unit + leakage suite (DB-backed
                                       # ones are marked `integration` and
                                       # auto-skip when no Postgres is up)
 ```
@@ -137,7 +137,9 @@ Running it for a real gameweek: follow [`docs/RUNBOOK_live.md`](docs/RUNBOOK_liv
 
 Secrets/config go in a gitignored `.env` (env-prefix `FPL_BOT_`): e.g.
 `FPL_BOT_ODDS_API_KEY` (The Odds API free tier), optionally
-`FPL_BOT_FPL_COOKIE` for exact bank/transfer/price state.
+`FPL_BOT_FPL_ACCESS_TOKEN` for exact bank/transfer/price state. The access
+token is short-lived and must never be committed; the live runbook explains
+how to copy only the needed value from your own logged-in browser session.
 
 ## Data sources & compliance
 
@@ -155,6 +157,9 @@ timestamp, hash). Respect each source's terms if you reuse this.
 - Known gaps the bot can't see: real-time lineup leaks, press-conference
   nuance beyond the FPL `news` field, manager rotation intent. These are
   the main edge a skilled human retains over it.
+- The 2026/27 BPS event changes are only partly observable in the aggregate
+  historical feeds, so fine-grained bonus estimates retain a documented
+  empirical-residual approximation.
 - A shelved Phase 3.5 price-change predictor is disabled by default (it
   failed its walk-forward gates).
 

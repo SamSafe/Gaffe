@@ -177,7 +177,7 @@ def test_cold_start_is_restricted_to_gw1():
 
 
 def test_gw1_prefers_a_real_snapshot_over_cold_start():
-    """With a cookie the GW1 squad IS observable pre-deadline; if one was
+    """With private auth the GW1 squad IS observable pre-deadline; if one was
     ingested, it must win over the cold-start fallback."""
     _insert_user_team(season_id=99, gameweek=1, team_id=12345, bank=7)
     state = load_user_state(season_id=99, gameweek=1, team_id=12345)
@@ -186,7 +186,7 @@ def test_gw1_prefers_a_real_snapshot_over_cold_start():
 
 
 def test_gw1_cold_start_still_honours_local_overrides(tmp_path, monkeypatch):
-    """A manager who has picked a squad without a cookie can still describe it
+    """A manager without private auth can still describe the picked squad
     in configs/live_state_overrides.yaml."""
     path = tmp_path / "overrides.yaml"
     path.write_text(

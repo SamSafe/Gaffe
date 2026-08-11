@@ -161,15 +161,19 @@ def _resolved_pk_taker_set(season_id: int) -> set[int]:
     """Returns the set of stable player_ids designated as primary PK takers
     for the given season across all teams, per configs/set_piece_takers.yaml."""
     raw = manual_overrides.set_piece_takers_raw().get(season_id, {})
-    web_to_pid = pit.web_name_to_player_id()
+    teams = pit.team_id_by_full_name([season_id])
+    scoped_players = pit.player_id_by_season_team_web_name([season_id])
     pids: set[int] = set()
-    for team_info in raw.values():
+    for team_full_name, team_info in raw.items():
         if not isinstance(team_info, dict):
             continue
         taker = team_info.get("penalty")
         if not taker:
             continue
-        pid = web_to_pid.get(taker)
+        team_id = teams.get((season_id, team_full_name))
+        if team_id is None:
+            continue
+        pid = scoped_players.get((season_id, team_id, taker))
         if pid is not None:
             pids.add(pid)
     return pids

@@ -5,6 +5,7 @@
 #
 # Format:
 #   <web_name>:
+#     player_id: <FPL code, stable across seasons>
 #     fpl_position: GKP | DEF | MID | FWD
 #     actual_role:  GKP | CB | FB | DM | CM | CAM | WG | ST | F9
 #     note: <free text>
@@ -18,42 +19,52 @@
 
 players:
   M.Salah:
+    player_id: 118748
     fpl_position: MID
     actual_role: ST
     note: "Plays highest in Liverpool's front line; primary striker by xG/touches"
   Palmer:
+    player_id: 244851
     fpl_position: MID
     actual_role: F9
     note: "Free-roaming #10 / false-9 at Chelsea; out-of-position vs other FPL MIDs"
   Bruno Fernandes:
+    player_id: 141746
     fpl_position: MID
     actual_role: CAM
     note: "Plays as #10 directly behind the striker"
   Foden:
+    player_id: 209244
     fpl_position: MID
     actual_role: F9
     note: "Played as false-9 for Man City through 2023/24; varies under different managers"
   Cunha:
+    player_id: 430871
     fpl_position: FWD
     actual_role: CAM
     note: "Drops deep at Wolves — closer to a #10 than a pure striker"
   Eze:
+    player_id: 232413
     fpl_position: MID
     actual_role: CAM
     note: "Crystal Palace's primary creator; plays as advanced #10"
   Mac Allister:
+    player_id: 243016
     fpl_position: MID
     actual_role: DM
     note: "Plays deeper than typical MID since moving to Liverpool — much lower xG than peer MIDs"
   Rice:
+    player_id: 204480
     fpl_position: MID
     actual_role: DM
     note: "Box-to-box deep MID at Arsenal; not a goal threat like wide MIDs"
   Maddison:
+    player_id: 172780
     fpl_position: MID
     actual_role: CAM
     note: "Spurs primary creator playing as #10 / advanced CM"
   Bernardo:
+    player_id: 165809
     fpl_position: MID
     actual_role: CAM
     note: "Often deployed as advanced creator or false-9 at Man City"

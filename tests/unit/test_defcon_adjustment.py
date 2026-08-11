@@ -126,8 +126,57 @@ def test_per_position_shrinkage():
     assert adj[(100, 6)] == 1.0
 
 
+def test_new_season_starts_from_prior_season_evidence():
+    """GW1 of season 26 must use season 25, not silently drop DefCon."""
+    prior = [(100, gw, 12, 90) for gw in range(1, 5)]
+
+    def _by_season(season_id: int) -> pl.DataFrame:
+        return _fake_dc_df(prior) if season_id == 25 else pl.DataFrame()
+
+    with patch(
+        "fpl_bot.db.pit.defensive_contribution_per_player_per_gw",
+        side_effect=_by_season,
+    ), patch(
+        "fpl_bot.db.pit.all_player_positions",
+        return_value=_fake_positions({100: "DEF", 200: "DEF"}),
+    ):
+        adj = compute_defcon_adjustments(
+            test_season=26,
+            target_gws=[1],
+            target_player_ids=[100, 200],
+        )
+
+    assert adj[(100, 1)] == 2.0
+    # A promoted/new player has no personal history, so gets the prior-season
+    # position fallback rather than losing the scoring rule entirely.
+    assert adj[(200, 1)] == 2.0
+
+
+def test_position_fallback_does_not_look_ahead_within_target_season():
+    current = [(100, 1, 12, 90), (100, 2, 5, 90)]
+
+    def _by_season(season_id: int) -> pl.DataFrame:
+        return _fake_dc_df(current) if season_id == 26 else pl.DataFrame()
+
+    with patch(
+        "fpl_bot.db.pit.defensive_contribution_per_player_per_gw",
+        side_effect=_by_season,
+    ), patch(
+        "fpl_bot.db.pit.all_player_positions",
+        return_value=_fake_positions({100: "DEF", 200: "DEF"}),
+    ):
+        adj = compute_defcon_adjustments(
+            test_season=26,
+            target_gws=[1, 2],
+            target_player_ids=[200],
+        )
+
+    assert adj[(200, 1)] == 0.0
+    assert adj[(200, 2)] == 2.0
+
+
 def test_thresholds():
-    """Sanity check the threshold dict matches FPL 25/26 official rules."""
+    """Sanity check the thresholds retained for the 2026/27 rules."""
     assert DEFCON_THRESHOLD["DEF"] == 10
     assert DEFCON_THRESHOLD["MID"] == 12
     assert DEFCON_THRESHOLD["FWD"] == 12

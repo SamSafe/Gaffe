@@ -322,12 +322,65 @@ def market_xg_for_fixtures(
 
 
 def web_name_to_player_id() -> dict[str, int]:
-    """Map of FPL web_name → stable player_id (FPL code). Latest snapshot."""
+    """Map of FPL web_name → stable player_id (FPL code).
+
+    ``web_name`` is not unique (for example, two current players can both be
+    ``Palmer``), so feature code should prefer
+    :func:`player_id_by_season_team_web_name`.  This legacy helper remains for
+    callers where the input names are known to be globally unambiguous.
+    """
     from fpl_bot.db.models import DimPlayer as _DimPlayer
 
     with session_scope() as s:
         rows = s.execute(select(_DimPlayer.player_id, _DimPlayer.web_name)).all()
     return {r.web_name: r.player_id for r in rows if r.web_name}
+
+
+def player_id_by_season_team_web_name(
+    season_ids: list[int] | None = None,
+) -> dict[tuple[int, int, str], int]:
+    """Map ``(season_id, team_id, web_name)`` to stable FPL player code.
+
+    The latest status row per player/season supplies the club.  Team-scoping
+    is essential for manual FPL inputs because ``web_name`` is display text,
+    not a unique identifier.
+    """
+    from sqlalchemy import func as _func
+
+    from fpl_bot.db.models import DimPlayer as _DimPlayer
+    from fpl_bot.db.models import FactPlayerStatus as _FPS
+
+    with session_scope() as s:
+        latest_stmt = select(
+            _FPS.player_id,
+            _FPS.season_id,
+            _func.max(_FPS.recorded_at).label("max_rec"),
+        )
+        if season_ids is not None:
+            latest_stmt = latest_stmt.where(_FPS.season_id.in_(season_ids))
+        latest = latest_stmt.group_by(_FPS.player_id, _FPS.season_id).subquery(
+            "ps_latest_name_resolution"
+        )
+        rows = s.execute(
+            select(
+                _FPS.season_id,
+                _FPS.team_id,
+                _DimPlayer.web_name,
+                _FPS.player_id,
+            )
+            .join(
+                latest,
+                (latest.c.player_id == _FPS.player_id)
+                & (latest.c.season_id == _FPS.season_id)
+                & (latest.c.max_rec == _FPS.recorded_at),
+            )
+            .join(_DimPlayer, _DimPlayer.player_id == _FPS.player_id)
+        ).all()
+    return {
+        (int(r.season_id), int(r.team_id), r.web_name): int(r.player_id)
+        for r in rows
+        if r.web_name
+    }
 
 
 def team_id_by_full_name(season_ids: list[int] | None = None) -> dict[tuple[int, str], int]:

@@ -127,10 +127,10 @@ def _apply_defcon(
 ) -> None:
     if defcon_shrinkage is None and defcon_per_position_shrinkage is None:
         return
-    # The shrinkage constants were tuned only for the first DefCon season
-    # currently present in the historical database. Future seasons should be
-    # explicitly retuned before enabling this adjustment in backtests.
-    if season_id != 25:
+    # DefCon started in 25/26 and the thresholds remain unchanged in 26/27.
+    # Later seasons start from completed historical DefCon evidence and add
+    # only earlier target-season GWs, preserving point-in-time correctness.
+    if season_id < 25:
         return
     from fpl_bot.eval.defcon_adjustment import compute_defcon_adjustments
 
@@ -139,10 +139,12 @@ def _apply_defcon(
         if extend_defcon_future
         else None
     )
+    target_player_ids = sorted({pid for pid, _gw in pred_by_pgw})
     if defcon_per_position_shrinkage is not None:
         defcon = compute_defcon_adjustments(
             test_season=season_id,
             target_gws=target_gws,
+            target_player_ids=target_player_ids,
             per_position_shrinkage=defcon_per_position_shrinkage,
         )
         for (pid, gw), value in list(pred_by_pgw.items()):
@@ -151,7 +153,11 @@ def _apply_defcon(
                 pred_by_pgw[(pid, gw)] = value + adj
         return
 
-    defcon = compute_defcon_adjustments(test_season=season_id, target_gws=target_gws)
+    defcon = compute_defcon_adjustments(
+        test_season=season_id,
+        target_gws=target_gws,
+        target_player_ids=target_player_ids,
+    )
     for (pid, gw), value in list(pred_by_pgw.items()):
         adj = defcon.get((pid, gw))
         if adj is not None:

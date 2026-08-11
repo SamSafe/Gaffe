@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from fpl_bot.optim.milp import MilpInputs, solve_rolling_horizon
+from fpl_bot.optim.milp import MilpInputs, build_milp, solve_rolling_horizon
 from fpl_bot.optim.state import BacktestState
 
 
@@ -151,3 +151,23 @@ def test_cold_start_no_hits() -> None:
     )
     decisions, _ = solve_rolling_horizon(inputs, time_limit_s=30)
     assert decisions.hits == 0
+
+
+def test_gw19_gw20_free_hits_cannot_both_activate() -> None:
+    candidates, positions, teams, prices = _make_balanced_pool()
+    inputs = _toy_inputs(
+        candidates=candidates,
+        positions=positions,
+        teams=teams,
+        prices=prices,
+        horizon=[19, 20],
+        state=BacktestState.cold_start(season_id=26),
+    )
+    inputs.enable_chips = True
+
+    model = build_milp(inputs)
+
+    constraint = model.con_no_boundary_consecutive_free_hits
+    assert constraint.upper() == 1
+    assert "z_fh[19]" in str(constraint.body)
+    assert "z_fh[20]" in str(constraint.body)

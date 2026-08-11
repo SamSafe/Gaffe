@@ -7,8 +7,8 @@
 #       direct_fk: [<web_name>, ...] # ranked direct-FK takers
 #       corner: [<web_name>, ...]    # ranked corner takers
 #
-# Identifier is FPL web_name (e.g. "M.Salah"). Ambiguous names should add an
-# explicit `player_id` field with the FPL `code` (stable across seasons).
+# Identifier is FPL web_name (e.g. "M.Salah"). Resolution is scoped by season
+# and club, so duplicate display names cannot select a player from another team.
 #
 # Coverage (v1): 2024-25 only, primary takers for the 20 PL teams. Earlier
 # seasons need manual backfill before the goals/assists model trains on them.
@@ -232,23 +232,23 @@
   Arsenal:
     penalty: Saka
     direct_fk: [Rice, Saka, Eze]
-    corner: [Rice, Saka, Madueke, Ødegaard]
+    corner: [Tzolis, Rice, Saka, Madueke, Ødegaard]
   Aston Villa:
     penalty: Buendía
     direct_fk: [Buendía]
-    corner: [Digne, Cash, McGinn]
+    corner: [Cash, McGinn]
   Bournemouth:
     penalty: Kroupi.Jr
     direct_fk: [Tavernier, Kluivert, Brooks, Scott, Enes Ünal]
-    corner: [Tavernier, Scott, Cook, Brooks, Christie]
+    corner: [Tavernier, Scott, Kluivert, Brooks, Cook, Christie]
   Brentford:
     penalty: Thiago
     direct_fk: [Lewis-Potter, Jensen, Damsgaard]
     corner: [Jensen, Damsgaard, Janelt, O.Dango]
   Brighton:
-    penalty: Welbeck
-    direct_fk: [Welbeck, Ayari, Dunk, De Cuyper, Gomez]
-    corner: [Groß, Minteh, F.Kadıoğlu, Ayari]
+    penalty: Groß
+    direct_fk: [Ayari, Dunk, De Cuyper, Gomez]
+    corner: [De Cuyper, Groß, Minteh, F.Kadıoğlu, Ayari]
   Chelsea:
     penalty: Palmer
     direct_fk: [James, Enzo, Palmer, Neto]
@@ -259,16 +259,16 @@
     corner: [Grimes, Rudoni, Torp]
   Crystal Palace:
     penalty: Mateta
-    direct_fk: [Yeremy, Johnson, Devenny]
+    direct_fk: [Yeremy, Devenny]
     corner: [Wharton, Yeremy, Hughes, Kamada]
   Everton:
     penalty: Ndiaye
-    direct_fk: [Garner, McNeil]
-    corner: [Garner, Dewsbury-Hall, McNeil]
+    direct_fk: [Garner]
+    corner: [Garner, Dewsbury-Hall]
   Fulham:
     penalty: Robinson
-    direct_fk: [Iwobi, Lukić]
-    corner: [Iwobi, Lukić, Kevin]
+    direct_fk: [Iwobi]
+    corner: [Bobb, Iwobi, Kevin]
   Hull City:
     penalty: Crooks
     direct_fk: [Giles, Belloumi]
@@ -280,7 +280,7 @@
   Leeds:
     penalty: Calvert-Lewin
     direct_fk: [Stach, Longstaff, Aaronson]
-    corner: [Stach, Longstaff, Tanaka]
+    corner: [Wilson, Stach, Longstaff, Tanaka]
   Liverpool:
     penalty: Isak
     direct_fk: [Szoboszlai, Wirtz]
@@ -288,19 +288,19 @@
   Man City:
     penalty: Haaland
     direct_fk: [Cherki, Marmoush, Foden, Reijnders]
-    corner: [Foden, Cherki, Reijnders]
+    corner: [Anderson, Foden, Cherki, Reijnders]
   Man Utd:
     penalty: B.Fernandes
     direct_fk: [B.Fernandes, Mbeumo, Mount]
-    corner: [B.Fernandes, Mbeumo, Amad]
+    corner: [Shaw, B.Fernandes, Mbeumo, Amad]
   Newcastle:
     penalty: Woltemade
-    direct_fk: [Hall, Bruno G., Schär]
-    corner: [Hall, Bruno G., L.Miley, Elanga]
+    direct_fk: [Hall, Schär]
+    corner: [J.Murphy, Hall, L.Miley, Elanga]
   'Nott''m Forest':
     penalty: Wood
     direct_fk: [Gibbs-White, Murillo, N.Williams, Hudson-Odoi]
-    corner: [Hutchinson, N.Williams, Bakwa]
+    corner: [Ndoye, Hutchinson, N.Williams, Bakwa]
   Spurs:
     penalty: Solanke
     direct_fk: [Pedro Porro, Xavi, Kudus, Tonali]

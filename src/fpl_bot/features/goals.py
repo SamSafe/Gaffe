@@ -235,11 +235,21 @@ def build_feature_table(season_ids: list[int] | None = None) -> pl.DataFrame:
 
     # Phase 7 2.3 — corner / direct-FK taker flags. These complement
     # `is_penalty_taker` for player-level assist + goal signal.
-    corner_pids, fk_pids = _resolved_set_piece_player_ids(season_ids)
-    pm = pm.with_columns(
-        pl.col("player_id").is_in(list(corner_pids)).cast(pl.Int8).alias("is_corner_taker"),
-        pl.col("player_id").is_in(list(fk_pids)).cast(pl.Int8).alias("is_fk_taker"),
-    )
+    set_piece_df = _resolved_set_piece_players(season_ids)
+    if not set_piece_df.is_empty():
+        pm = pm.join(
+            set_piece_df,
+            on=["season_id", "player_team_id", "player_id"],
+            how="left",
+        ).with_columns(
+            pl.col("is_corner_taker").fill_null(0).cast(pl.Int8),
+            pl.col("is_fk_taker").fill_null(0).cast(pl.Int8),
+        )
+    else:
+        pm = pm.with_columns(
+            pl.lit(0, dtype=pl.Int8).alias("is_corner_taker"),
+            pl.lit(0, dtype=pl.Int8).alias("is_fk_taker"),
+        )
 
     # Position one-hot from current snapshot
     positions = pit.all_player_positions()
@@ -492,11 +502,21 @@ def build_prediction_feature_table(
     )
 
     # Phase 7 2.3 — corner / direct-FK taker flags
-    corner_pids, fk_pids = _resolved_set_piece_player_ids([test_season])
-    cross = cross.with_columns(
-        pl.col("player_id").is_in(list(corner_pids)).cast(pl.Int8).alias("is_corner_taker"),
-        pl.col("player_id").is_in(list(fk_pids)).cast(pl.Int8).alias("is_fk_taker"),
-    )
+    set_piece_df = _resolved_set_piece_players([test_season])
+    if not set_piece_df.is_empty():
+        cross = cross.join(
+            set_piece_df,
+            on=["season_id", "player_team_id", "player_id"],
+            how="left",
+        ).with_columns(
+            pl.col("is_corner_taker").fill_null(0).cast(pl.Int8),
+            pl.col("is_fk_taker").fill_null(0).cast(pl.Int8),
+        )
+    else:
+        cross = cross.with_columns(
+            pl.lit(0, dtype=pl.Int8).alias("is_corner_taker"),
+            pl.lit(0, dtype=pl.Int8).alias("is_fk_taker"),
+        )
 
     # 8. Position one-hot
     for code in POSITION_CODES:
@@ -539,9 +559,9 @@ def _resolved_pk_takers(season_ids: list[int] | None) -> pl.DataFrame:
     """Materializes a (season_id, player_team_id, pk_taker_player_id) table from
     the manual config + dim_team / dim_player joins."""
     raw = manual_overrides.set_piece_takers_raw()
-    web_to_pid = pit.web_name_to_player_id()
     seasons = season_ids or list(raw.keys())
     full_to_team = pit.team_id_by_full_name(seasons)
+    scoped_players = pit.player_id_by_season_team_web_name(seasons)
 
     rows: list[dict] = []
     for season_id in seasons:
@@ -550,9 +570,11 @@ def _resolved_pk_takers(season_ids: list[int] | None) -> pl.DataFrame:
             taker_web = info.get("penalty") if isinstance(info, dict) else None
             if not taker_web:
                 continue
-            taker_pid = web_to_pid.get(taker_web)
             team_id = full_to_team.get((season_id, team_full))
-            if taker_pid is None or team_id is None:
+            if team_id is None:
+                continue
+            taker_pid = scoped_players.get((season_id, team_id, taker_web))
+            if taker_pid is None:
                 continue
             rows.append(
                 {
@@ -566,8 +588,8 @@ def _resolved_pk_takers(season_ids: list[int] | None) -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
-def _resolved_set_piece_player_ids(season_ids: list[int] | None) -> tuple[set[int], set[int]]:
-    """Return (corner_taker_pids, direct_fk_taker_pids) across the requested seasons.
+def _resolved_set_piece_players(season_ids: list[int] | None) -> pl.DataFrame:
+    """Return season/team-scoped corner and direct-free-kick flags.
 
     The yaml lists ordered rosters per team (top-1 corner, top-2 corner, ...).
     For Phase 7 2.3 we use the simplest flag: "any taker" → 1, else 0. A
@@ -575,28 +597,61 @@ def _resolved_set_piece_player_ids(season_ids: list[int] | None) -> tuple[set[in
     secondary, 0.1 for tertiary) — proportional to expected corner share.
     """
     raw = manual_overrides.set_piece_takers_raw()
-    web_to_pid = pit.web_name_to_player_id()
     seasons = season_ids or list(raw.keys())
-    corner: set[int] = set()
-    fk: set[int] = set()
+    full_to_team = pit.team_id_by_full_name(seasons)
+    scoped_players = pit.player_id_by_season_team_web_name(seasons)
+    flags: dict[tuple[int, int, int], dict[str, int]] = {}
     for season_id in seasons:
         teams = raw.get(season_id, {})
-        for _team_full, info in teams.items():
+        for team_full, info in teams.items():
             if not isinstance(info, dict):
                 continue
+            team_id = full_to_team.get((season_id, team_full))
+            if team_id is None:
+                continue
             for name in info.get("corner", []) or []:
-                pid = web_to_pid.get(name)
+                pid = scoped_players.get((season_id, team_id, name))
                 if pid is not None:
-                    corner.add(pid)
+                    flags.setdefault(
+                        (season_id, team_id, pid),
+                        {"is_corner_taker": 0, "is_fk_taker": 0},
+                    )["is_corner_taker"] = 1
             for name in info.get("direct_fk", []) or []:
-                pid = web_to_pid.get(name)
+                pid = scoped_players.get((season_id, team_id, name))
                 if pid is not None:
-                    fk.add(pid)
-    return corner, fk
+                    flags.setdefault(
+                        (season_id, team_id, pid),
+                        {"is_corner_taker": 0, "is_fk_taker": 0},
+                    )["is_fk_taker"] = 1
+    if not flags:
+        return pl.DataFrame()
+    return pl.DataFrame(
+        [
+            {
+                "season_id": season_id,
+                "player_team_id": team_id,
+                "player_id": player_id,
+                **player_flags,
+            }
+            for (season_id, team_id, player_id), player_flags in flags.items()
+        ]
+    )
 
 
 def _resolved_role_mismatch_player_ids() -> set[int]:
     """Set of stable player_ids whose actual role differs from FPL classification."""
     overrides = manual_overrides.position_role_overrides()
+    explicit_ids = {
+        int(info["player_id"])
+        for info in overrides.values()
+        if info.get("player_id") is not None
+    }
+    # Backward-compatible fallback for local/custom entries that predate the
+    # stable-ID field. New repository entries must carry player_id.
+    missing_id_names = [name for name, info in overrides.items() if not info.get("player_id")]
+    if not missing_id_names:
+        return explicit_ids
     web_to_pid = pit.web_name_to_player_id()
-    return {pid for name in overrides if (pid := web_to_pid.get(name)) is not None}
+    return explicit_ids | {
+        pid for name in missing_id_names if (pid := web_to_pid.get(name)) is not None
+    }

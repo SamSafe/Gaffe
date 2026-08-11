@@ -180,7 +180,7 @@ def load_user_state(
     most recent snapshot ≤ target gameweek.
 
     At GW1 of a new season there is no prior snapshot to fall back to and none
-    can be created pre-deadline without an authenticated cookie, so this
+    can be created pre-deadline without private authentication, so this
     returns `BacktestState.cold_start` — no squad, £100.0m, which is exactly
     the state the backtest solves GW1 from. That fallback is deliberately
     restricted to GW1: inventing an empty £100m squad for any later gameweek
@@ -208,7 +208,7 @@ def load_user_state(
                 f"team_id={team_id} at or before gw={gameweek}. "
                 f"Run `fpl-bot live ingest --season-id {season_id} --gameweek N` "
                 f"for a FINISHED gameweek (the picks endpoint 404s for upcoming "
-                f"ones), or set FPL_BOT_FPL_COOKIE to read your current squad "
+                f"ones), or set FPL_BOT_FPL_ACCESS_TOKEN to read your current squad "
                 f"directly. Only GW1 can be solved with no prior squad."
             )
         snapshot_gw = int(max_gw_row)

@@ -4,10 +4,21 @@ How to run the bot for a real gameweek. Follow top-to-bottom each week,
 ideally ~3-6 hours before the deadline (after team news + once odds are
 posted, before lineups leak).
 
-## One-time, at season start — status for 2026-27: DONE (2026-07-26)
+## One-time, at season start — status for 2026-27: STRUCTURALLY READY (2026-08-11)
 
-Kept as the checklist to repeat each August. Everything below is already
-done for 26/27 unless marked otherwise.
+Kept as the checklist to repeat each August. The latest successful bootstrap
+contains all 20 clubs, 577 registered players, and all 380 fixtures. The
+authenticated current squad is also stored locally. No schema migration is
+needed for the new signings or FPL's position changes: the bootstrap ingest
+updates those dimension/status rows. The transfer window remains open through
+1 September, so repeat steps 3 and 5 before GW1 and after deadline-day moves.
+The GW1 deadline in the current fixture feed is 21 August at 17:30 UTC.
+
+Live decision feeds are deliberately still pending: season-26 odds,
+market-xG, player-prop, and EO tables currently contain zero rows. Pull them
+in the weekly cycle once bookmakers/LiveFPL publish coverage; until then, a
+recommendation is only a cold-start fallback and should not drive the final
+squad.
 
 0. **Update the season defaults** in `fpl_bot/config.py`:
    `current_season_id` (26 for 2026-27) and `train_seasons`. Every CLI
@@ -55,7 +66,8 @@ done for 26/27 unless marked otherwise.
    during the season — the pre-season list is FPL's guess for unsettled
    teams, and promoted clubs' orders move once they actually play. Without a
    block, `is_corner_taker` / `is_fk_taker` are 0 (as they were all of
-   25/26 — harmless but inactive).
+   25/26 — harmless but inactive). The checked-in season-26 block was last
+   regenerated from the 2026-08-11 bootstrap and resolves all 20 clubs.
 
 6. **Prediction caches: nothing to do at rollover.** The cache filename
    embeds the test season *and* the train-season list
@@ -90,6 +102,30 @@ for name, m in (('oddsapi', OA_TO_FPL_SHORT), ('footballdata', FD_TO_FPL_SHORT))
 print('pk takers resolved:', _resolved_pk_takers([26]).height, '/ 20')
 "
 ```
+
+### 2026/27 rules audit
+
+- There are again two sets of Wildcard, Free Hit, Bench Boost, and Triple
+  Captain. The first set expires after GW19 and cannot carry over. Free Hit
+  cannot be played in consecutive gameweeks; the scheduler and MILP now both
+  block the GW19/GW20 boundary case.
+- Up to five free transfers can still be banked. There is no AFCON free-
+  transfer top-up this season.
+- Defensive Contribution thresholds are unchanged (DEF 10; MID/FWD 12 for
+  +2 points). Season 26 now starts from season-25 player/position evidence and
+  then updates point-in-time as new matches arrive.
+- The Bonus Points System changed again: being tackled no longer loses BPS,
+  CBI earns one BPS per three actions, and goalkeeper save/penalty-save values
+  changed. The simulator models its known aggregate events but still uses a
+  historical empirical residual for actions we cannot observe separately;
+  treat small bonus differences as approximate until live diagnostics exist.
+- A gameweek is finalized at 09:00 UK time on the day after its final match.
+  Do not run the retrospective before then.
+
+Official references: [chips](https://www.premierleague.com/en/news/4679879/whats-happening-with-fpl-chips-in-202627),
+[general changes](https://www.premierleague.com/en/news/4679873/all-you-need-to-know-about-changes-to-fpl-for-202627),
+[DefCon](https://www.premierleague.com/en/news/4361991/whats-happening-with-defensive-contribution-points-in-202627-fantasy), and
+[BPS](https://www.premierleague.com/en/news/4679946/whats-new-in-202627-fantasy-changes-to-bonus-points-system).
 
 ## First three gameweeks — expect the bot at its weakest
 
@@ -126,7 +162,7 @@ The structural reasons behind this:
 Treat the GW1 output as a budget-allocation sketch, not a squad.
 
 GW1 mechanics that are now handled, for reference: with no prior squad and no
-cookie, `live recommend --gameweek 1` solves from a cold-start state (no squad,
+access token, `live recommend --gameweek 1` solves from a cold-start state (no squad,
 £100.0m) instead of erroring, clubs and prices come from the FPL bootstrap
 snapshot rather than from played matches, and the chip scheduler will not
 assign any chip inside GW1-3 (`chip_scheduler.COLD_START_GWS`) — it previously
@@ -166,7 +202,7 @@ uv run gaffe derive market-xg --season-id 26
 #    --train-seasons until 26/27 has ~5+ played GWs (see season-start step 4).
 uv run gaffe live recommend \
     --season-id 26 --team-id <YOUR_TEAM_ID> --gameweek <GW> \
-    --train-seasons 19,20,21,22,23,24,25,26
+    --train-seasons 19,20,21,22,23,24,25
 ```
 
 The default uses the cross-fold-validated conservative fitter. For shadow
@@ -175,14 +211,31 @@ handicap lines; it is not the production default because historical downstream
 results were mixed.
 
 For exact current bank, free transfers, purchase prices, and sell prices,
-set `FPL_BOT_FPL_COOKIE` to the full logged-in `fantasy.premierleague.com`
-Cookie header before `live ingest`. Without it, the bot uses the public
-historical picks endpoint and `configs/live_state_overrides.yaml` can patch
-bank, free transfers, chips used, and cost basis locally.
+open browser developer tools on a logged-in `fantasy.premierleague.com` page,
+open the Network panel, reload, and select a private `api/my-team/<id>` request.
+Copy its `X-API-Authorization` request-header value into the gitignored `.env`:
+
+```dotenv
+FPL_BOT_FPL_ACCESS_TOKEN=Bearer <short-lived-token>
+```
+
+If the browser shows no authorization header, copy only the `access_token`
+cookie value from DevTools' Application/Storage cookie view into the same env
+variable. A full Cookie header in `FPL_BOT_FPL_COOKIE` remains a compatibility
+fallback, but contains more credentials than the bot needs. Never commit or
+share either value. Tokens expire; refresh the logged-in page and replace the
+value when authentication fails. FPL entry IDs can also change between
+seasons, so confirm `FPL_BOT_TEAM_ID` in `.env` each August. Without private
+authentication, the bot uses the public historical picks endpoint and
+`configs/live_state_overrides.yaml` can patch bank, free transfers, chips used,
+and cost basis locally.
 
 Output lands in `data/live/recommendations/season_26/gw_<GW>/recommendation.md`.
 
 ## After the gameweek closes — do this every week, not optionally
+
+Wait until 09:00 UK time on the day after the final match, when FPL finalizes
+the gameweek, then run:
 
 ```bash
 uv run gaffe ingest fpl --season-id 26   # actuals land in bootstrap-static
@@ -257,8 +310,8 @@ payload):
   (h2h + spreads + totals × 1 region), plus ~1 per fixture for player props
   once books price them (~10/GW). Call it ~55/month — still comfortable.
   Listing events and unpriced events both cost 0.
-- FPL API: free. Exact current-squad ingest needs your own logged-in cookie,
-  not a paid API key.
+- FPL API: free. Exact current-squad ingest needs your own short-lived access
+  token, not a paid API key.
 - LiveFPL + FFS + football-data: free, no key.
 - Check `data/raw/oddsapi/<date>/*.meta.json` for remaining quota.
 
