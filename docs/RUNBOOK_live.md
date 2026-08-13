@@ -85,6 +85,27 @@ squad.
    rm -f data/cache/xpts_predictions/season_26_train_19_20_21_22_23_24_25.parquet
    ```
 
+### Check the PREVIOUS season is complete before trusting GW1-3
+
+The GW1-3 prior is built from the last 5 gameweeks of the previous season, so a
+truncated previous season silently degrades it — and the local vaastav clone is
+a git checkout that only advances when `ingest vaastav` is run. On 2026-08-13
+the checkout was 4 months stale, season 25 held results only to GW29, and the
+prior was drawn from **February** football instead of May. Re-ingesting moved
+Palmer's prior from 9.0 to 3.0 and dropped him out of the recommended XI
+entirely — a materially different GW1 squad.
+
+```bash
+uv run gaffe ingest vaastav --season-folder 2025-26   # git pull + reparse
+uv run python -c "
+from fpl_bot.db import pit
+gws = sorted({int(r) for r in pit.all_player_match_with_kickoff(season_ids=[25])['gameweek']})
+print('previous season gameweeks with results:', min(gws), '-', max(gws), f'({len(gws)} of 38)')
+"
+```
+
+Expect 1-38. Anything less means the prior is sampling the wrong months.
+
 ### Season-start verification
 
 Catches the two silent failures above — an unmapped club and unresolved
