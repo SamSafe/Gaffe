@@ -97,11 +97,25 @@ season of it, at which point step B becomes genuinely testable.
 
 ## Remaining candidates, in value order
 
-**C. Manual team-news override (cheap, no validation needed).** Extend
-`configs/live_state_overrides.yaml` with per-player expected minutes. This is
-precisely what FFH's analysts supply, it is the one channel that beats any
-model — a human watches the press conference and the bot does not — and it is
-opt-in, so it carries no downside risk.
+**C. Manual team-news override — SHIPPED 2026-08-13.**
+`configs/expected_minutes_overrides.yaml` takes per-player expected minutes per
+gameweek, keyed by `web_name` or numeric `player_id`. This is precisely what
+FFH's analysts supply, and it is the one channel that beats any model — a human
+watches the press conference and the bot does not.
+
+Design points worth keeping:
+- Values are **expected minutes, not probabilities**, converted to the three
+  model buckets preserving the expectation exactly (`minutes_to_bucket_probs`).
+  Above 75 it saturates, since the 60+ bucket is then already certain.
+- It sets the **whole distribution**, so it expresses rotation and cameos
+  ("expect 30 minutes"), which the pre-existing news attenuator cannot — that
+  one only shifts mass toward "did not play".
+- Applied **last**, beating both the model and the news attenuator.
+- An unresolvable name **raises**. A silently-dropped override would leave the
+  operator believing the bot had been told something it had not, which is worse
+  than having no override channel at all.
+- The committed file is empty and a test asserts it stays that way, so nobody
+  inherits a previous gameweek's overrides.
 
 **D. Market-implied availability from player props (the novel one).** Divide the
 market's unconditional `P(scores)` by our model's conditional

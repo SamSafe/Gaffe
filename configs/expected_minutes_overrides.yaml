@@ -1,0 +1,36 @@
+# Manual expected-minutes overrides — the human-judgement channel.
+#
+# The minutes model cannot see press conferences, lineup leaks, rotation plans
+# or cup congestion, and it CANNOT be taught to: FPL publishes no historical
+# availability data, so those fields are untrainable (see
+# docs/design/phase9_minutes.md). This file is how you tell it directly.
+#
+# Minutes are the multiplier on every attacking term, so this is the single
+# highest-leverage manual input in the project. A 90-vs-5 error on one striker
+# reorders the entire squad.
+#
+# Shape:
+#   <season_id>:
+#     <gameweek>:
+#       <web_name or numeric player_id>: <expected minutes, 0-90>
+#
+# Example:
+#   26:
+#     1:
+#       Haaland: 90        # confirmed to start
+#       Wirtz: 30          # manager said he'll be eased in
+#       Gabriel: 0         # ruled out in the presser
+#       223094: 90         # numeric FPL player_id also accepted
+#
+# Notes:
+#   - Overrides are applied LAST and beat both the model and the FPL-news
+#     attenuator. That is the point: you know something the pipeline does not.
+#   - Values are expected minutes, not probabilities. They are converted to the
+#     three model buckets (0 / 1-59 / 60+) preserving the expectation exactly.
+#     Anything above 75 saturates at "certain to play 60+".
+#   - A name that cannot be resolved raises an ERROR rather than being ignored,
+#     so a typo can never leave you believing the bot was told something it
+#     wasn't. Use the exact FPL web_name (e.g. "M.Salah", "N.Williams").
+#   - Entries are per gameweek and do not carry forward; remove them once the
+#     gameweek has passed.
+{}

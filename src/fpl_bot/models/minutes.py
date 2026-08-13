@@ -156,6 +156,81 @@ def apply_availability_to_minutes_predictions(
     )
     return out.drop("_news_p_available")
 
+
+# Bucket midpoints used everywhere expected minutes are computed
+# (see eval/xpts_eval: e_minutes = 30 * p_short + 75 * p_full).
+BUCKET_MINUTES = (0.0, 30.0, 75.0)
+
+
+def minutes_to_bucket_probs(expected_minutes: float) -> tuple[float, float, float]:
+    """Expected minutes → (p_zero, p_short, p_full) preserving the expectation.
+
+    Interpolates between adjacent bucket midpoints, so the returned
+    distribution reproduces `expected_minutes` exactly for any value in
+    [0, 75]. Above 75 there is no mass left to shift — the "60+" bucket is
+    already certain — so it saturates at (0, 0, 1).
+    """
+    if not math.isfinite(expected_minutes) or expected_minutes < 0.0:
+        raise ValueError(f"expected minutes must be finite and >= 0: {expected_minutes!r}")
+    zero_m, short_m, full_m = BUCKET_MINUTES
+    if expected_minutes <= zero_m:
+        return (1.0, 0.0, 0.0)
+    if expected_minutes <= short_m:
+        w = (expected_minutes - zero_m) / (short_m - zero_m)
+        return (1.0 - w, w, 0.0)
+    if expected_minutes <= full_m:
+        w = (expected_minutes - short_m) / (full_m - short_m)
+        return (0.0, 1.0 - w, w)
+    return (0.0, 0.0, 1.0)
+
+
+def apply_expected_minutes_overrides(
+    predictions: pl.DataFrame,
+    minutes_by_pgw: dict[tuple[int, int], float] | None,
+) -> pl.DataFrame:
+    """Replace the minutes distribution for explicitly overridden player-gameweeks.
+
+    This is the human-judgement channel: press-conference and lineup intel that
+    the model cannot see. Unlike `apply_availability_to_minutes_predictions`,
+    which only shifts mass toward "did not play", this sets the full
+    distribution, so it can express rotation and cameos ("expect 30 minutes")
+    as well as absence.
+
+    Overrides are applied LAST and win outright over both the model and the
+    news attenuator — the point of a manual override is that the operator knows
+    something the pipeline does not.
+    """
+    if not minutes_by_pgw or predictions.is_empty():
+        return predictions
+
+    required = {"player_id", "gameweek", "p_minutes_zero", "p_minutes_short", "p_minutes_full"}
+    missing = required.difference(predictions.columns)
+    if missing:
+        raise ValueError(f"minutes predictions missing required columns: {sorted(missing)}")
+
+    rows: list[dict[str, float | int]] = []
+    for (player_id, gameweek), minutes in sorted(minutes_by_pgw.items()):
+        p_zero, p_short, p_full = minutes_to_bucket_probs(float(minutes))
+        rows.append(
+            {
+                "player_id": int(player_id),
+                "gameweek": int(gameweek),
+                "_ovr_zero": p_zero,
+                "_ovr_short": p_short,
+                "_ovr_full": p_full,
+            }
+        )
+
+    out = predictions.join(pl.DataFrame(rows), on=["player_id", "gameweek"], how="left")
+    has_override = pl.col("_ovr_zero").is_not_null()
+    out = out.with_columns(
+        pl.when(has_override).then(pl.col("_ovr_zero")).otherwise(pl.col("p_minutes_zero")).alias("p_minutes_zero"),
+        pl.when(has_override).then(pl.col("_ovr_short")).otherwise(pl.col("p_minutes_short")).alias("p_minutes_short"),
+        pl.when(has_override).then(pl.col("_ovr_full")).otherwise(pl.col("p_minutes_full")).alias("p_minutes_full"),
+    )
+    return out.drop(["_ovr_zero", "_ovr_short", "_ovr_full"])
+
+
 # Monotonic constraints: +1 monotonic non-decreasing in P(starter), -1 non-increasing,
 # 0 unconstrained. The constraint applies to the model's RAW output, which for
 # multiclass is per-class, but LightGBM applies the same vector to all classes;

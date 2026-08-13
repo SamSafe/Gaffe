@@ -44,7 +44,10 @@ from fpl_bot.models.bps import (
     fit_residual_dataset,
     split_p_full_by_position,
 )
-from fpl_bot.models.minutes import apply_availability_to_minutes_predictions
+from fpl_bot.models.minutes import (
+    apply_availability_to_minutes_predictions,
+    apply_expected_minutes_overrides,
+)
 from fpl_bot.models.xpts import FPL_GOAL_BY_POSITION
 
 WALK_FORWARD_FOLDS: list[dict] = [
@@ -687,6 +690,7 @@ def run_predict_only(
     train_seasons: list[int],
     upcoming_fixture_ids: list[int],
     availability_by_pgw: dict[tuple[int, int], float] | None = None,
+    expected_minutes_by_pgw: dict[tuple[int, int], float] | None = None,
     n_iterations: int = 200,
     seed: int = 42,
     market_weight: float | None = None,
@@ -835,6 +839,9 @@ def run_predict_only(
     # sheets, and bonus are jointly simulated. No mapping means exact legacy
     # behavior, which keeps historical folds neutral.
     pm = apply_availability_to_minutes_predictions(pm, availability_by_pgw)
+    # Manual team-news overrides land last, so operator judgement beats both the
+    # model and the FPL-news attenuator. Empty in backtests, so folds are neutral.
+    pm = apply_expected_minutes_overrides(pm, expected_minutes_by_pgw)
     # Phase 8: anytime-goalscorer props. Applied AFTER the availability
     # adjustment because the market rate is de-scaled by OUR expected minutes —
     # the same minutes the simulator will re-apply — so the two must agree.

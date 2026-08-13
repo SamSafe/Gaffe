@@ -25,6 +25,7 @@ from fpl_bot.eval.milp_backtest import (
     _team_id_per_player_for_season,
 )
 from fpl_bot.eval.xpts_eval import _run_one_fold, run_predict_only
+from fpl_bot.features import manual_overrides
 from fpl_bot.live.state_builder import (
     LiveStatusOverrides,
     load_status_overrides,
@@ -170,11 +171,25 @@ def generate_recommendation(
             shadow_dir = output_dir or (
                 OUTPUT_ROOT / f"season_{season_id}" / f"gw_{gameweek}"
             )
+            # Manual team-news overrides (configs/expected_minutes_overrides.yaml).
+            # Resolved here so an unresolvable name fails before the expensive
+            # solve rather than after it.
+            expected_minutes = manual_overrides.resolve_expected_minutes(
+                season_id=season_id,
+                gameweeks=missing_gws,
+                web_name_to_player_id=pit.web_name_to_player_id(),
+            )
+            if expected_minutes:
+                console_note = (
+                    f"applying {len(expected_minutes)} manual expected-minutes override(s)"
+                )
+                print(console_note)
             predict_df = run_predict_only(
                 test_season=season_id,
                 train_seasons=train_seasons,
                 upcoming_fixture_ids=upcoming_ids,
                 availability_by_pgw=news_attenuator,
+                expected_minutes_by_pgw=expected_minutes,
                 n_iterations=n_iterations,
                 seed=42,
                 prop_shadow_out=shadow_dir / "player_prop_shadow.parquet",
