@@ -341,13 +341,31 @@ def player_id_by_season_team_web_name(
 ) -> dict[tuple[int, int, str], int]:
     """Map ``(season_id, team_id, web_name)`` to stable FPL player code.
 
-    The latest status row per player/season supplies the club.  Team-scoping
-    is essential for manual FPL inputs because ``web_name`` is display text,
-    not a unique identifier.
+    Team-scoping is essential for manual FPL inputs because ``web_name`` is
+    display text, not a unique identifier.
+
+    Clubs come from two sources, because neither covers every season:
+
+    - `fact_player_status`, which only exists from the season the bot started
+      snapshotting the FPL bootstrap (25 onwards). Using it alone silently
+      resolved NOTHING for seasons 19-24 — all 237 configured set-piece names —
+      which zeroed `is_penalty_taker` / `is_corner_taker` / `is_fk_taker`
+      across the whole training set while season 26 still populated them at
+      prediction time. That train/serve skew is the bug this guards against.
+    - `fact_player_match` joined to `dim_fixture`, which covers every played
+      season and also yields an entry per club a player actually appeared for,
+      so a mid-season transfer resolves under both clubs rather than only his
+      end-of-season one.
+
+    A `web_name` that is ambiguous within one (season, team) is dropped rather
+    than resolved arbitrarily — picking the wrong player would attach a
+    penalty-taker flag to a teammate.
     """
     from sqlalchemy import func as _func
 
+    from fpl_bot.db.models import DimFixture as _DimFixture
     from fpl_bot.db.models import DimPlayer as _DimPlayer
+    from fpl_bot.db.models import FactPlayerMatch as _FPM
     from fpl_bot.db.models import FactPlayerStatus as _FPS
 
     with session_scope() as s:
@@ -376,11 +394,48 @@ def player_id_by_season_team_web_name(
             )
             .join(_DimPlayer, _DimPlayer.player_id == _FPS.player_id)
         ).all()
-    return {
-        (int(r.season_id), int(r.team_id), r.web_name): int(r.player_id)
-        for r in rows
-        if r.web_name
-    }
+
+        match_stmt = select(
+            _DimFixture.season_id,
+            _DimFixture.home_team_id,
+            _DimFixture.away_team_id,
+            _FPM.was_home,
+            _DimPlayer.web_name,
+            _FPM.player_id,
+        ).join(_DimFixture, _DimFixture.fixture_id == _FPM.fixture_id).join(
+            _DimPlayer, _DimPlayer.player_id == _FPM.player_id
+        )
+        if season_ids is not None:
+            match_stmt = match_stmt.where(_DimFixture.season_id.in_(season_ids))
+        match_rows = s.execute(match_stmt.distinct()).all()
+
+    # player_id per key, or None once a key is known to be ambiguous.
+    resolved: dict[tuple[int, int, str], int | None] = {}
+
+    def _record(season_id: int, team_id: int, web_name: str, player_id: int) -> None:
+        key = (season_id, team_id, web_name)
+        existing = resolved.get(key, "missing")
+        if existing == "missing":
+            resolved[key] = player_id
+        elif existing is not None and existing != player_id:
+            resolved[key] = None  # two different players share this display name
+
+    for r in match_rows:
+        if not r.web_name:
+            continue
+        team_id = r.home_team_id if r.was_home else r.away_team_id
+        if team_id is None:
+            continue
+        _record(int(r.season_id), int(team_id), r.web_name, int(r.player_id))
+
+    # Status rows last: for seasons they cover they are the more current view
+    # of a player's club, and _record keeps the first non-conflicting entry.
+    for r in rows:
+        if not r.web_name:
+            continue
+        _record(int(r.season_id), int(r.team_id), r.web_name, int(r.player_id))
+
+    return {k: v for k, v in resolved.items() if v is not None}
 
 
 def team_id_by_full_name(season_ids: list[int] | None = None) -> dict[tuple[int, str], int]:

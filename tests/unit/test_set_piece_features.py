@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from fpl_bot.features import manual_overrides
 from fpl_bot.features.bps import _resolved_pk_taker_set
 from fpl_bot.features.goals import _resolved_pk_takers, _resolved_set_piece_players
@@ -114,3 +116,32 @@ def test_role_overrides_have_stable_player_ids():
     overrides = manual_overrides.position_role_overrides()
     assert overrides
     assert all(isinstance(info.get("player_id"), int) for info in overrides.values())
+
+
+@pytest.mark.integration
+def test_configured_takers_resolve_for_every_configured_season():
+    """Guards a train/serve skew that unit tests structurally cannot see.
+
+    The other tests here patch the `pit` layer, so they pass regardless of
+    whether real name resolution works. Resolution originally read club only
+    from `fact_player_status`, which exists from season 25 onward — so every
+    one of the 237 names configured for seasons 19-24 silently resolved to
+    nothing. `is_penalty_taker` / `is_corner_taker` / `is_fk_taker` were then
+    constant 0 across the entire training set while season 26 populated them at
+    prediction time.
+
+    Any season with a populated config block must resolve at least one taker.
+    """
+    raw = manual_overrides.set_piece_takers_raw()
+    configured = [s for s, teams in raw.items() if teams]
+    assert configured, "no season blocks configured"
+
+    unresolved = []
+    for season_id in configured:
+        pk = _resolved_pk_takers([season_id])
+        if pk.is_empty() or pk.height == 0:
+            unresolved.append(season_id)
+    assert not unresolved, (
+        f"seasons {unresolved} have configured set-piece takers that resolve to "
+        "zero players — name resolution is not covering those seasons"
+    )
