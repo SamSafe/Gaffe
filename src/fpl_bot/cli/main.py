@@ -59,6 +59,13 @@ def ingest(
         str | None,
         typer.Option("--season-folder", help="For 'vaastav' parse, e.g. 2024-25"),
     ] = None,
+    horizon_days: Annotated[
+        int,
+        typer.Option(
+            "--horizon-days",
+            help="For 'oddsapi-props': only fetch fixtures kicking off within N days.",
+        ),
+    ] = oddsapi_props.DEFAULT_HORIZON_DAYS,
 ) -> None:
     """Run an ingestion. Default: fetch then parse. Use --raw-only or --parse-only."""
     if source not in _SUPPORTED_SOURCES:
@@ -219,7 +226,7 @@ def ingest(
             console.print(
                 "[blue]fetch_raw_player_props() — anytime-goalscorer props[/blue]"
             )
-            path = oddsapi_props.fetch_raw_player_props()
+            path = oddsapi_props.fetch_raw_player_props(horizon_days=horizon_days)
             console.print(f"  → {path}")
             meta = path.with_suffix(".meta.json")
             if meta.exists():
@@ -234,7 +241,16 @@ def ingest(
                     f"  quota: remaining={m.get('remaining_requests')}  "
                     f"used={m.get('used_requests')}"
                 )
-                if not m.get("events_with_prices"):
+                if not m.get("events_requested"):
+                    # Distinct from "priced nothing": we never asked about any
+                    # fixture, so this says nothing about bookmaker coverage.
+                    console.print(
+                        "[yellow]No fixtures inside the "
+                        f"{m.get('horizon_days')}-day horizon, so no market was "
+                        "queried. Widen it with --horizon-days if the next "
+                        "deadline is further out.[/yellow]"
+                    )
+                elif not m.get("events_with_prices"):
                     console.print(
                         "[yellow]No bookmaker has priced this market yet — normal "
                         "until ~2-3 days before kickoff. Re-run closer to the "

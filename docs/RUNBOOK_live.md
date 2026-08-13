@@ -129,7 +129,21 @@ Official references: [chips](https://www.premierleague.com/en/news/4679879/whats
 
 ## First three gameweeks — expect the bot at its weakest
 
-**Measured on a real GW1 dry run (2026-07-26, before any odds existed):** the
+> **VERDICT (2026-08-13, with full odds ingested): do not use the bot's GW1
+> recommendation.** Ingesting odds did not fix the season-opener inversion. The
+> minutes model is the binding constraint: it predicted **4.9 expected minutes
+> for Haaland**, which collapses every attacking return. The model expects
+> Haaland to score **0.0027** goals in GW1; the bookmakers price him at **57%
+> to score**. Across all 217 priced players, mean model goal expectation is
+> **0.0029 vs the market's 0.207 — off by ~70×**. Clean-sheet points survive
+> because they read the market probability directly, so defenders outrank
+> forwards 1.32 to 0.28 and the optimizer benches Haaland to captain a
+> defender. Player props cannot rescue it either: with expected minutes that
+> low the market rate hits its `min_minutes_fraction` floor and ~80% of the
+> signal is clamped away. Pick GW1 yourself; revisit the bot around GW5 once
+> the minutes model has real current-season data.
+
+**Measured on an earlier GW1 dry run (2026-07-26, before any odds existed):** the
 bot produced a £76.0m squad of £4-6m players, left **£24m unspent**, and ranked
 cheap defenders ~5× above elite forwards (mean xPts: DEF 1.62 vs FWD 0.32;
 Thiaw 2.96 vs Haaland 0.30). Two separate causes, worth telling apart:

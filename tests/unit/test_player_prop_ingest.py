@@ -472,3 +472,44 @@ class _FakeSession:
 
     def execute(self, stmt) -> None:
         self._sink.append(dict(stmt.compile().params))
+
+
+def test_normalizes_letters_nfkd_leaves_alone() -> None:
+    """Turkish dotless 'ı' is a distinct letter, not an accented 'i', so NFKD
+    never folds it. A real GW1 payload missed Kadıoğlu because of this."""
+    assert normalize_name("Ferdi Kadıoğlu") == normalize_name("Ferdi Kadioglu")
+    assert normalize_name("Straße") == "strasse"
+    assert normalize_name("Æthelred") == "aethelred"
+
+
+def test_resolves_when_the_book_prints_extra_given_names() -> None:
+    """Books often carry fuller legal names than FPL stores. All four of these
+    appeared unresolved in the first real priced pull (2026-08-13)."""
+    idx = NameIndex(
+        [
+            PlayerRow(535301, "Baleba", "Carlos", "Baleba", ARS),
+            PlayerRow(575476, "Murillo", "Murillo", "Costa dos Santos", ARS),
+            PlayerRow(514254, "Gomez", "Diego", "Gómez Amarilla", ARS),
+            # Same surname, different club — the safety case.
+            PlayerRow(171287, "Gomez", "Joe", "Gomez", COV),
+        ]
+    )
+    assert resolve_player_name("Carlos Baleba Noom Quomah", idx, {ARS}) == 535301
+    assert resolve_player_name("Murillo Santiago Costa dos Santos", idx, {ARS}) == 575476
+    assert resolve_player_name("Diego Alexander Gomez Amarilla", idx, {ARS}) == 514254
+    # Joe Gomez must NOT be swallowed by the longer Diego name: {joe, gomez}
+    # is not a subset of it.
+    assert resolve_player_name("Diego Alexander Gomez Amarilla", idx, {ARS, COV}) == 514254
+    assert resolve_player_name("Joe Gomez", idx, {COV}) == 171287
+
+
+def test_extra_given_names_still_refuse_an_ambiguous_match() -> None:
+    """Two teammates whose FPL names are token-identical: the longer bookmaker
+    name contains both, so the rule must decline rather than pick one."""
+    idx = NameIndex(
+        [
+            PlayerRow(1, "Santos", "Carlos", "Santos", ARS),
+            PlayerRow(2, "Santos", "Carlos", "Santos", ARS),
+        ]
+    )
+    assert resolve_player_name("Carlos Santos Filho", idx, {ARS}) is None

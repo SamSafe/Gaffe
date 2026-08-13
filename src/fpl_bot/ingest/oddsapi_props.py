@@ -48,8 +48,11 @@ ANYTIME_MARKET = "player_goal_scorer_anytime"
 DEFAULT_PROP_REGIONS = "us"
 # Our canonical market code in fact_player_odds.
 MARKET_CODE = "anytime_goalscorer"
-# Only pull events kicking off within this many days — one gameweek's worth.
-DEFAULT_HORIZON_DAYS = 8
+# Only pull events kicking off within this many days. Must comfortably exceed
+# the gap between a weekly run and the next deadline: at 8 days this silently
+# returned zero events when run 8.5 days before the GW1 deadline, even though
+# the books had already priced the market.
+DEFAULT_HORIZON_DAYS = 12
 # Hard ceiling on per-event requests in one run, so a double gameweek (or a
 # mis-set horizon) cannot quietly drain the monthly credit budget.
 DEFAULT_MAX_EVENTS = 14
@@ -187,9 +190,21 @@ def normalize_name(value: str) -> str:
     ascii_only = "".join(c for c in decomposed if not unicodedata.combining(c))
     # Keep the 'ø'→'o' class of mapping working: NFKD leaves some letters
     # untouched, so fold the remaining non-ASCII letters explicitly.
-    ascii_only = ascii_only.replace("ø", "o").replace("Ø", "O")
-    ascii_only = ascii_only.replace("ł", "l").replace("Ł", "L")
-    ascii_only = ascii_only.replace("đ", "d").replace("Đ", "D")
+    # Letters NFKD leaves intact because they are distinct letters rather than
+    # accented forms. Turkish dotless "ı" is the one that actually bit us:
+    # "Ferdi Kadioglu" from a book never matched FPL's "Kadıoğlu".
+    for src, dst in (
+        ("ø", "o"), ("Ø", "O"),
+        ("ł", "l"), ("Ł", "L"),
+        ("đ", "d"), ("Đ", "D"),
+        ("ı", "i"), ("İ", "I"),
+        ("ß", "ss"),
+        ("æ", "ae"), ("Æ", "AE"),
+        ("œ", "oe"), ("Œ", "OE"),
+        ("ð", "d"), ("Ð", "D"),
+        ("þ", "th"), ("Þ", "TH"),
+    ):
+        ascii_only = ascii_only.replace(src, dst)
     cleaned = re.sub(r"[^\w\s]", " ", ascii_only)
     return " ".join(cleaned.casefold().split())
 
@@ -301,6 +316,20 @@ def resolve_player_name(
     target_token_set = set(target_tokens)
     by_tokens = [c for c in candidates if target_token_set <= index.tokens(c)]
     if (hit := unique(by_tokens)) is not None:
+        return hit
+
+    # Rule 6, the mirror image: the bookmaker prints MORE given names than FPL
+    # stores ("Murillo Santiago Costa dos Santos" vs FPL's "Murillo" /
+    # "Costa dos Santos"; "Carlos Baleba Noom Quomah" vs "Carlos Baleba").
+    # Every token FPL knows must appear in the book's name, which is a strong
+    # condition: Joe Gomez cannot match "Diego Alexander Gomez Amarilla"
+    # because {joe, gomez} is not a subset of it. Uniqueness still applies.
+    by_reverse_tokens = [
+        c
+        for c in candidates
+        if index.tokens(c) and index.tokens(c) <= target_token_set
+    ]
+    if (hit := unique(by_reverse_tokens)) is not None:
         return hit
     return None
 

@@ -171,3 +171,67 @@ def test_gw19_gw20_free_hits_cannot_both_activate() -> None:
     assert constraint.upper() == 1
     assert "z_fh[19]" in str(constraint.body)
     assert "z_fh[20]" in str(constraint.body)
+
+
+def test_gw1_with_a_prepicked_squad_restructures_without_hits() -> None:
+    """FPL grants unlimited free transfers until the season's first deadline.
+
+    A manager who pre-picked a squad still holds a state with 1 free transfer,
+    so before this was handled the live GW1 solve made exactly ONE transfer and
+    called everything else a -4 hit. Verified against the real 26/27 opener.
+    """
+    candidates, positions, teams, prices = _make_balanced_pool()
+    # Own the 15 most expensive players, then make the cheap ones score best so
+    # a full restructure is clearly optimal if (and only if) it is free.
+    owned = sorted(candidates, key=lambda p: -prices[p])[:15]
+    state = BacktestState(
+        season_id=26,
+        gameweek=1,
+        squad=frozenset(owned),
+        bank=1000,
+        free_transfers=1,
+        cost_basis={p: prices[p] for p in owned},
+    )
+    inputs = _toy_inputs(
+        candidates=candidates,
+        positions=positions,
+        teams=teams,
+        prices=prices,
+        horizon=[1],
+        state=state,
+    )
+    inputs.predictions.update(
+        {(p, 1): (100.0 if p not in owned else 0.0) for p in candidates}
+    )
+    decisions, _ = solve_rolling_horizon(inputs, time_limit_s=60)
+    assert decisions.hits == 0, "GW1 transfers must never cost a hit"
+    assert len(decisions.transferred_in) > 1, (
+        "GW1 should be free to restructure beyond a single free transfer"
+    )
+
+
+def test_gw2_still_charges_hits_beyond_free_transfers() -> None:
+    """The GW1 exemption must not leak into the rest of the season."""
+    candidates, positions, teams, prices = _make_balanced_pool()
+    owned = sorted(candidates, key=lambda p: -prices[p])[:15]
+    state = BacktestState(
+        season_id=26,
+        gameweek=2,
+        squad=frozenset(owned),
+        bank=1000,
+        free_transfers=1,
+        cost_basis={p: prices[p] for p in owned},
+    )
+    inputs = _toy_inputs(
+        candidates=candidates,
+        positions=positions,
+        teams=teams,
+        prices=prices,
+        horizon=[2],
+        state=state,
+    )
+    inputs.predictions.update(
+        {(p, 2): (100.0 if p not in owned else 0.0) for p in candidates}
+    )
+    decisions, _ = solve_rolling_horizon(inputs, time_limit_s=60)
+    assert decisions.hits > 0, "beyond GW1, extra transfers must still cost hits"

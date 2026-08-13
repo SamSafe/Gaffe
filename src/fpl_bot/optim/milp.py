@@ -38,6 +38,8 @@ XI_SIZE = 11
 POSITION_SQUAD_COUNTS = {"GKP": 2, "DEF": 5, "MID": 5, "FWD": 3}
 PER_TEAM_CAP = 3
 HIT_COST = 4
+# Transfers for the season's opening gameweek are unlimited and free in FPL.
+SEASON_OPENING_GW = 1
 
 # Big-M for chip-suppression of hits. 15 max transfers × 4 hit cost = 60; use 100 for safety.
 HIT_BIGM = 100
@@ -374,8 +376,12 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
     m.con_ft_above_zero = Constraint(m.W, rule=_ft_above_zero)
 
     def _hits(m, w):
-        # Cold start: GW1 picks are free (no FPL hit penalty); ht[first_w] = 0
-        if w == first_w and not state.squad:
+        # Cold start: GW1 picks are free (no FPL hit penalty); ht[first_w] = 0.
+        # The season opener is free even WITH a pre-picked squad, because FPL
+        # allows unlimited transfers until the first deadline — a live GW1 solve
+        # otherwise sees a 1-FT budget and charges -4 for restructuring a team
+        # the manager could still change for nothing.
+        if w == SEASON_OPENING_GW or (w == first_w and not state.squad):
             return m.ht[w] == 0
         return m.ht[w] >= sum(m.bout[p, w] for p in m.P) - m.ft[w] - HIT_BIGM * (
             m.z_wc[w] + m.z_fh[w]
@@ -587,6 +593,14 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
     transfer_penalty_exempt_gws: set[int] = set()
     if not initial_squad:
         transfer_penalty_exempt_gws.add(first_w)
+    # FPL grants UNLIMITED free transfers until the season's first deadline, so
+    # changes made for GW1 never cost a hit — including when a squad has already
+    # been pre-picked, which the `not initial_squad` test above misses. Without
+    # this, a live GW1 solve from a saved squad sees a 1-FT budget and makes a
+    # single transfer, when the whole team is still free to restructure.
+    # Backtests are unaffected: they enter GW1 from a cold start, already exempt.
+    if SEASON_OPENING_GW in H:
+        transfer_penalty_exempt_gws.add(SEASON_OPENING_GW)
     if inputs.chip_schedule:
         for _slot in ("WC1", "WC2", "FH1", "FH2"):
             if _slot in inputs.chip_schedule:
