@@ -286,22 +286,44 @@ def build_prediction_feature_table(
 ) -> pl.DataFrame:
     """Phase 6 v2: feature rows for UPCOMING fixtures (no played data yet).
 
-    Per-player rolling features come from their LATEST played match in
-    `test_season`. New fixture rows synthesize team/position/days_into_season
-    from dim_fixture + fact_player_status.
+    Per-player rolling features come from their LATEST played match, preferring
+    `test_season` and falling back to the season before it.
+
+    That fallback is what makes a season opener work. Sourcing rolling features
+    from `test_season` alone left every one of them at the `fill_null(0)`
+    default in GW1 — the model then read "0 minutes in his last 1/3/5/10
+    matches, never started" for every player alive and returned ~5 expected
+    minutes for Haaland. Measured on the 26/27 opener, that inverted the whole
+    board: forwards averaged 0.28 predicted points against defenders' 1.32,
+    while the backtest path over five folds has forwards at 1.88 against
+    defenders' 1.44 (actuals 2.11 / 1.53). The two paths are supposed to agree.
+
+    Only the live predict-only path calls this, so backtests are untouched.
     """
     if not upcoming_fixture_ids:
         return pl.DataFrame()
 
-    history = build_feature_table(season_ids=[test_season])
+    history = build_feature_table(season_ids=[test_season - 1, test_season])
     if history.is_empty():
         per_player_rolling = pl.DataFrame()
     else:
+        # Sorting by kickoff and taking the last row per player prefers the
+        # current season automatically; the prior season is only reached when
+        # the player has not featured yet this season.
         per_player_rolling = (
             history.sort(["player_id", "kickoff_utc"])
             .group_by("player_id", maintain_order=True)
             .last()
         )
+        if "season_id" in per_player_rolling.columns:
+            # `season_match_count` means "appearances so far THIS season", so a
+            # carried-over row must reset it rather than claim last season's 38.
+            per_player_rolling = per_player_rolling.with_columns(
+                pl.when(pl.col("season_id") == test_season)
+                .then(pl.col("season_match_count"))
+                .otherwise(0)
+                .alias("season_match_count")
+            )
 
     fixtures_df = pit.upcoming_fixtures(upcoming_fixture_ids)
     players_df = pit.season_player_status_snapshot(test_season).rename(

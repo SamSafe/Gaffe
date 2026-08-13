@@ -133,3 +133,49 @@ def test_label_bucket_individual(minutes: int, expected: int) -> None:
     df = pl.DataFrame({"m": [minutes]})
     df = df.with_columns(_label_bucket(pl.col("m")).alias("b"))
     assert df["b"][0] == expected
+
+
+@pytest.mark.integration
+def test_prediction_features_fall_back_to_the_previous_season_at_gw1():
+    """A season opener has no current-season history, so rolling minutes
+    features must come from the previous season instead of the fill_null(0)
+    default.
+
+    Sourcing them from the test season alone made every player look like
+    "0 minutes in his last 1/3/5/10 matches, never started": the 26/27 opener
+    returned ~5 expected minutes for a nailed starter and ranked forwards at
+    0.28 predicted points against defenders' 1.32, inverting the board.
+    """
+    from sqlalchemy import select
+
+    from fpl_bot.db.models import DimFixture
+    from fpl_bot.db.session import session_scope
+    from fpl_bot.features.minutes import build_prediction_feature_table
+
+    with session_scope() as s:
+        gw1 = [
+            int(r[0])
+            for r in s.execute(
+                select(DimFixture.fixture_id).where(
+                    (DimFixture.season_id == 26) & (DimFixture.gameweek == 1)
+                )
+            ).all()
+        ]
+    if not gw1:
+        pytest.skip("season 26 GW1 fixtures not ingested locally")
+
+    df = build_prediction_feature_table(test_season=26, upcoming_fixture_ids=gw1)
+    assert not df.is_empty()
+    # Established players must carry real minutes history into GW1.
+    assert df["min_last_5"].max() > 0, (
+        "all rolling minutes features are zero at GW1 — the previous-season "
+        "fallback is not being applied"
+    )
+    nonzero = (df["min_last_5"] > 0).sum()
+    assert nonzero > 0.3 * df.height, (
+        f"only {nonzero}/{df.height} rows carry minutes history into GW1"
+    )
+    # "Appearances this season" must not inherit last season's tally.
+    assert df["season_match_count"].max() == 0, (
+        "season_match_count carried over from the previous season"
+    )
