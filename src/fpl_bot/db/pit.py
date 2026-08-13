@@ -829,10 +829,15 @@ def player_actual_pts_last_n_gws(
     from fpl_bot.db.models import DimFixture as _DimFixture
 
     with session_scope() as s:
+        # The last gameweek with RESULTS, not the last one on the calendar.
+        # Reading `dim_fixture` alone gave 38 for a season whose results were
+        # only ingested to GW29, so this queried GWs 34-38, found nothing, and
+        # returned {} — silently disabling the GW1-3 prior it exists to supply.
         max_gw = s.execute(
-            select(_func.max(_DimFixture.gameweek)).where(
-                _DimFixture.season_id == season_id
-            )
+            select(_func.max(_DimFixture.gameweek))
+            .select_from(FactPlayerMatch)
+            .join(_DimFixture, _DimFixture.fixture_id == FactPlayerMatch.fixture_id)
+            .where(_DimFixture.season_id == season_id)
         ).scalar()
         if max_gw is None:
             return {}

@@ -83,3 +83,28 @@ def test_defcon_skips_untuned_seasons() -> None:
 
     assert out == predictions
     compute.assert_not_called()
+
+
+def test_early_gw_prior_is_actually_populated_for_the_previous_season():
+    """The GW1-3 cold-start prior is the mechanism that keeps a season opener
+    sane, and it fails OPEN: `_apply_early_gw_prior` returns silently when the
+    lookup is empty, so a broken prior is invisible in the output.
+
+    It was broken exactly this way — the last gameweek was read from
+    `dim_fixture` (the schedule, GW38) rather than from ingested results
+    (GW29), so it queried five gameweeks with no data and returned {}. The
+    2026-08-13 GW1 run therefore had NO prior at all, and expected Haaland to
+    score 0.0027 goals.
+    """
+    from fpl_bot.db import pit
+
+    played = pit.all_player_match_with_kickoff(season_ids=[25])
+    if played.is_empty():
+        pytest.skip("no season-25 results ingested locally")
+
+    prior = pit.player_actual_pts_last_n_gws(25, n=5)
+    assert prior, (
+        "cold-start prior is empty for a season that has ingested results — "
+        "the GW1-3 blend is silently inert"
+    )
+    assert max(prior.values()) > 0.0, "prior returned only zero-point players"

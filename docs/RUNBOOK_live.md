@@ -129,8 +129,21 @@ Official references: [chips](https://www.premierleague.com/en/news/4679879/whats
 
 ## First three gameweeks — expect the bot at its weakest
 
-> **VERDICT (2026-08-13, with full odds ingested): do not use the bot's GW1
-> recommendation.** Ingesting odds did not fix the season-opener inversion. The
+> **UPDATE (2026-08-13, after fixing the cold-start prior):** the collapse
+> below was largely a BUG, not just early-season data poverty.
+> `pit.player_actual_pts_last_n_gws` read the last gameweek from `dim_fixture`
+> (the schedule, GW38) instead of from ingested results (GW29), so it queried
+> five empty gameweeks, returned `{}`, and `_apply_early_gw_prior` silently did
+> nothing — the GW1-3 prior has been inert. With it fixed, Haaland goes 0.46 ->
+> 3.50 xPts, the captain moves from a £4m defender to Palmer, and the objective
+> rises 234 -> 285. What remains IS genuine early-season weakness: at GW1 the
+> blend is 70% "last season's last-5 form" (a noisy 5-match sample), and
+> players with no PL history — promoted clubs, overseas signings — have no
+> prior at all and still inherit the model's defender bias. Treat GW1-3 output
+> as plausible-but-weak rather than broken.
+
+> **ORIGINAL VERDICT (2026-08-13, before the prior fix): do not use the bot's
+> GW1 recommendation.** Ingesting odds did not fix the season-opener inversion. The
 > minutes model is the binding constraint: it predicted **4.9 expected minutes
 > for Haaland**, which collapses every attacking return. The model expects
 > Haaland to score **0.0027** goals in GW1; the bookmakers price him at **57%
