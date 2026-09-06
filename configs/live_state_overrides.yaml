@@ -12,4 +12,21 @@
 #
 # Leave empty unless the public FPL endpoint lacks exact current state and
 # authenticated `FPL_BOT_FPL_COOKIE` ingest is unavailable.
-{}
+# 2026-09-06: private my-team ingest retired (expired token, and we are running
+# on the bot's own suggestions rather than live account sync). The public picks
+# endpoint supplies squad + bank but NOT free transfers, so FT is recorded here
+# from the visible transfer history:
+#   GW1 cold start -> 1 FT for GW2; GW2 used 0 -> 2 FT for GW3;
+#   GW3 used 1 -> 1 carried + 1 accrued = 2 FT for GW4.
+# chips_used resolves automatically from the GW1 snapshot's bboost -> BB1.
+# Bank matches entry/718959/event/3/picks (bank = 4 tenths).
+#
+# Not overridden: per-player cost_basis. Without the private endpoint the public
+# ingest records CURRENT price as purchase price, so sell-value is approximated.
+# Squad value is 100.3 vs 100.0 spent, i.e. the error is at most ~0.3m spread
+# across 15 players — small enough not to change transfer feasibility.
+26:
+  4:
+    718959:
+      bank_tenths: 4
+      free_transfers: 2

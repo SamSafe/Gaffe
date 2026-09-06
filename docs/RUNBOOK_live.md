@@ -258,7 +258,37 @@ comparison only, `--fit-mode all` also consumes alternate totals and Asian
 handicap lines; it is not the production default because historical downstream
 results were mixed.
 
-For exact current bank, free transfers, purchase prices, and sell prices,
+### Running without account authentication (current setup, 2026-09-06)
+
+Private `my-team` ingest is **retired for now**. `FPL_BOT_FPL_COOKIE` is
+commented out in `.env` and no access token is set, so `gaffe live ingest`
+takes the public `entry/<id>/event/<gw>/picks` path. That endpoint 404s for an
+upcoming gameweek, so ingest the LAST FINISHED gameweek and let the recommend
+step roll it forward:
+
+```bash
+uv run gaffe live ingest --season-id 26 --team-id <ID> --gameweek <LAST_FINISHED_GW>
+```
+
+What the public path does NOT carry, and must therefore be maintained by hand
+in `configs/live_state_overrides.yaml` before each recommend:
+
+- **`free_transfers`** — not exposed anywhere publicly. Track it from
+  `entry/<id>/history/`: each row's `event_transfers` is what was spent that
+  week, and FPL grants +1 per GW capped at 5. Getting this wrong is the one
+  error that silently changes the recommendation, because the MILP will take
+  free transfers it does not have rather than a hit.
+- **`bank_tenths`** — available as `entry_history.bank` on the picks payload,
+  and the ingest does store it, so override it only if it looks stale.
+- **per-player `cost_basis`** — the public ingest records CURRENT price as the
+  purchase price, so sell values drift from truth as prices move. Harmless
+  early; revisit if squad value and the sum of purchase prices diverge by more
+  than ~£0.5m.
+
+`chips_used` needs no override: it resolves from the snapshot's own
+`chips_used_json` (GW1 `bboost` → `BB1`).
+
+To restore authenticated ingest instead,
 open browser developer tools on a logged-in `fantasy.premierleague.com` page,
 open the Network panel, reload, and select a private `api/my-team/<id>` request.
 Copy its `X-API-Authorization` request-header value into the gitignored `.env`:
@@ -286,15 +316,49 @@ Wait until 09:00 UK time on the day after the final match, when FPL finalizes
 the gameweek, then run:
 
 ```bash
-uv run gaffe ingest fpl --season-id 26   # actuals land in bootstrap-static
+uv run gaffe ingest fpl --season-id 26   # refresh finalized status + fixtures
 uv run gaffe live retrospective --season-id 26 --team-id <YOUR_TEAM_ID> --gameweek <GW>
 ```
-Appends `actuals.json` with realized points (auto-sub + auto-vice scored).
+
+The retrospective prefers vaastav's per-match rows when available and otherwise
+pulls FPL's official `event/<GW>/live` feed, so it works during the mirror's usual
+publication lag. A finalized single-fixture gameweek also lands in
+`fact_player_match` for rolling features; double-gameweek aggregates are used only
+for scoring because they cannot be split safely by fixture. The command appends
+`actuals.json` with realized points (auto-sub + auto-vice scored) and records which
+source was used.
 
 26/27 is the bot's first live season, so this log is the only unbiased
 evidence about it that will ever exist — every other number in this repo
 comes from a backtest of a season the model was developed against. Skipping a
 week leaves a permanent hole in it.
+
+## How differential is the bot, really? — measured 2026-09-06
+
+`scripts/top_manager_holdings.py` reads the overall league (id 314) top N
+entries' public picks and aggregates true ownership and captaincy among
+managers actually winning this season. Against the GW4 recommendation:
+
+| | |
+|---|---|
+| bot squad's total top-50 EO | **172%** |
+| a top-50 manager's own squad totals | ~1500% |
+| bot's captain (Ampadu) owned by | **0%** of the top 50 |
+| Haaland: owned / captained in top 50 | **98% / 94%** (EO 192%) |
+| Isak: owned in top 50 | **94%** |
+
+The bot is not "differential" in the usual sense — it is close to disjoint
+from the winning cohort, and it is not currently beating them. Being without
+a 192%-EO asset is a per-gameweek rank bet of roughly twice that player's
+score. Read this table before accepting a recommendation, and treat a squad
+total under ~400% as a flag that the rho-EO term is dominating rather than
+tilting.
+
+Run it each week:
+
+```bash
+uv run python scripts/top_manager_holdings.py --gameweek <LAST_FINISHED_GW> --top 50
+```
 
 ## What the bot does / doesn't know — read before trusting blindly
 
@@ -307,7 +371,13 @@ week leaves a permanent hole in it.
   minutes distribution before goals/CS/bonus simulation; final-xPts
   attenuation remains only as a fallback for cached predictions.
 - status_code (i/n/s/u → drop, d → attenuate by chance_of_playing).
-- Top-10k EO (LiveFPL) for the template-differential ρ term.
+- Top-10k EO (LiveFPL) for the template-differential ρ term. LiveFPL rows are
+  keyed on FPL's own element id (its hidden first column), NOT on web_name.
+  Name keying silently mis-assigned every duplicated surname — 2026-27 has
+  fifteen, and `Palmer` resolved to Alex Palmer (a backup keeper) instead of
+  Cole Palmer, so the most-templated midfielder in the game read as a free
+  differential and the MILP bought and captained him. Fixed 2026-09-06; the
+  parse output's `resolved_by_name_fallback` count should stay at 0.
 
 **Does NOT know (override manually if you have better info):**
 - Last-minute lineup leaks / press-conference nuance beyond the FPL `news`
@@ -320,6 +390,58 @@ top-150-300k level — comparable to a good-but-not-elite human, fully
 automated. It does NOT reach top-20k; its edge is the bookmaker's edge, and
 the market is efficient. Treat the recommendation as a strong default to
 adjust with your own team-news read, not gospel.
+
+## Reading the "Season chip plan" block
+
+The scheduler plans all eight slots from the fixture calendar alone and does
+not know which chips have been spent; the MILP does, and fixes a spent slot's
+activation to zero. A spent slot is now printed struck through and marked
+ALREADY PLAYED — treat any unmarked line as the live plan.
+
+Two things that block on the calendar rather than on the model:
+
+- **TC and BB want a double gameweek, and DGWs do not exist yet.** They are
+  created later by postponements, so early in a season the first half contains
+  none at all. Both slots therefore fall back to "latest non-colliding GW in
+  the half" — which reads as TC1/BB1 parked at GW17-19. That is deferral, not
+  a recommendation: as soon as a real DGW enters the calendar the scheduler
+  claims it. Do not read a parked chip as "the bot wants to play it there".
+- TC previously used a different fallback — the argmax of per-GW max xPts —
+  which was doubly wrong, because the prediction table only covers the current
+  6-week horizon and early-season xPts is inflated by thin rolling features. It
+  put TC1 on GW4 of 2026-27 with no DGW anywhere in GW1-19, i.e. it would have
+  burned the chip immediately. Fixed 2026-09-06.
+
+## Player props are NOT ready to switch on — measured 2026-09-06
+
+`player_prop_market_weight` must stay 0.0 until the market rate is normalized.
+The de-vig in `derive/player_props.py` shaves a flat half-margin
+(`DEFAULT_ANYTIME_MARGIN = 0.07`), which is right for a two-way yes/no market
+and far too small for a full anytime-scorer player list.
+
+Measured on 2026-27 GW2, summing de-vigged `P(scores >= 1)` per fixture:
+
+| quantity | value |
+|---|---|
+| mean sum of P(scores) per fixture | **6.57** |
+| a fair book should sum to (expected distinct scorers) | ~2.3-2.8 |
+| implied residual overround | **~2.5x** |
+| GW2: market expected goals vs actual | 55.9 vs **29** |
+| GW1: market expected goals vs actual | 39.6 vs **21** |
+
+So blending the market rate in at any positive weight inflates goal
+expectations across the board by roughly 2.5x. Fix the normalization first —
+scale each fixture's player probabilities so they sum to that fixture's own
+market expected goals, which `fact_market_xg` already carries — then re-measure
+before touching the weight.
+
+For contrast, the model's own rate errs the other way: it expected 3.9 goals
+where 29 happened. That was the Understat blindness (below), and the shadow
+log shows the repair landing — distinct model rates per gameweek went 76/217
+(GW1) and 99/567 (GW2) to **296/329** (GW4), with the top rate rising from
+0.09 to 0.77 goals/90. A league whose best striker scores 0.09 per 90 was the
+symptom; GW4 is the first gameweek where the attacking model is discriminating
+between players at all.
 
 ## Phase 8 player props — inert on purpose
 
