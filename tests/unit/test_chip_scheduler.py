@@ -118,8 +118,18 @@ def test_wc1_plays_before_fh1():
     sched = make_chip_schedule(
         analytics=a, predictions_df=preds, team_id_per_player=team_id_per_player
     )
-    # FH1 at GW18 → WC1 should land at GW17.
-    assert sched.wc1 == 17, f"WC1 expected 17, got {sched.wc1}"
+    # WC1 is picked last, so it takes the latest free GW before FH1 (GW18).
+    # In this DGW-free first half TC1 and BB1 both defer to the tail of the
+    # half, so the exact GW WC1 lands on depends on how many slots are already
+    # taken. Assert the property the scheduler actually promises — WC1 comes
+    # before FH1, and as late as the free slots allow — not a literal GW.
+    assert sched.wc1 is not None
+    assert sched.wc1 < sched.fh1, f"WC1 at GW{sched.wc1} is not before FH1"
+    taken = {sched.fh1, sched.bb1, sched.tc1}
+    later_free = [
+        g for g in range(sched.wc1 + 1, sched.fh1) if g not in taken
+    ]
+    assert not later_free, f"WC1 at GW{sched.wc1} left later free slots {later_free}"
 
 
 def test_chips_dont_collide():
@@ -221,3 +231,50 @@ def test_free_hits_are_not_scheduled_in_both_gw19_and_gw20():
 
     assert schedule.fh1 == 19
     assert schedule.fh2 == 21
+
+
+def test_tc_is_not_burned_on_the_horizon_tip_when_no_dgw_exists():
+    """With no DGW in a half, TC must defer rather than take the nearest peak.
+
+    `predictions_df` in a live run only covers the played GWs plus the 6-week
+    rolling horizon, so an argmax fallback could never see past horizon-tip
+    and always landed TC on the first GW after the cold-start window. Measured
+    on 2026-27, where GW1-19 contains no double gameweek at all: TC1 was
+    scheduled for GW4, which would have played the chip immediately.
+    """
+    fixture_count = {(t, gw): 1 for gw in range(1, 39) for t in (1, 2, 3, 4)}
+    a = SeasonFixtureAnalytics(
+        season_id=99,
+        gws_per_team={t: list(range(1, 39)) for t in (1, 2, 3, 4)},
+        fixture_count=fixture_count,
+        all_gws=list(range(1, 39)),
+    )
+    team_id_per_player = {101: 1, 102: 2, 103: 3, 104: 4}
+    # Exactly the live shape: predictions exist only for GW4-9, and GW4 —
+    # the horizon tip nearest the cold start — carries the highest value.
+    rows = [
+        {"player_id": pid, "gameweek": gw, "e_xpts": 20.0 if gw == 4 else 3.0}
+        for pid in team_id_per_player
+        for gw in range(4, 10)
+    ]
+    sched = make_chip_schedule(
+        analytics=a,
+        predictions_df=pl.DataFrame(rows),
+        team_id_per_player=team_id_per_player,
+    )
+    assert sched.tc1 != 4, "TC1 burned on the horizon tip with no DGW to justify it"
+    assert sched.tc1 is None or sched.tc1 > 9, (
+        f"TC1 at GW{sched.tc1} is still inside the prediction horizon"
+    )
+
+
+def test_tc_still_claims_a_real_dgw_over_the_deferred_fallback():
+    """The deferral must not stop TC taking a genuine double gameweek."""
+    a = _make_analytics_with_bgw_dgw()  # DGW34, in the second half
+    team_id_per_player = {101: 1, 102: 2, 103: 3, 104: 4}
+    sched = make_chip_schedule(
+        analytics=a,
+        predictions_df=_make_predictions(team_id_per_player),
+        team_id_per_player=team_id_per_player,
+    )
+    assert sched.tc2 == 34, f"TC2 should claim DGW34, got GW{sched.tc2}"

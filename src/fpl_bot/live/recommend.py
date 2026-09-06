@@ -550,7 +550,16 @@ def _write_markdown(
     lines.append(f"## Chip: **{chip_played}**")
     lines.append("")
     lines.append("## Season chip plan")
+    # The scheduler plans all eight slots from the fixture calendar alone; it
+    # does not know which ones the manager has already spent. The MILP does
+    # (it fixes an already-used slot's activation to 0), so an unmarked plan
+    # line here is purely a reporting lie — it reads as "you still have a
+    # Bench Boost banked for GW19" when that chip is gone. Mark them.
+    chips_used = set(ctx.state_before.get("chips_used") or ())
     for slot, gw in ctx.chip_schedule.items():
+        if slot in chips_used:
+            lines.append(f"- {slot}: ~~GW{gw}~~ — ALREADY PLAYED, not available")
+            continue
         marker = " ← this GW" if gw == ctx.gameweek else ""
         lines.append(f"- {slot}: GW{gw}{marker}")
     lines.append("")

@@ -200,20 +200,38 @@ def make_chip_schedule(
         half_gws = [g for g in half_gws if g > COLD_START_GWS]
         if not half_gws:
             return None
-        # Prefer DGW captains; fall back to highest captain xPts overall.
+        # Prefer DGW captains.
         tc = _best_tc_gw(
             analytics, predictions_df, half_gws, used, team_id_per_player
         )
-        if tc is None:
-            per_gw_max = (
-                predictions_df.filter(pl.col("gameweek").is_in(half_gws))
-                .filter(~pl.col("gameweek").is_in(list(used)))
-                .group_by("gameweek")
-                .agg(pl.col("e_xpts").max().alias("max_e_xpts"))
-                .sort(["max_e_xpts", "gameweek"], descending=[True, False])
-            )
-            tc = int(per_gw_max[0, "gameweek"]) if not per_gw_max.is_empty() else None
-        return tc
+        if tc is not None:
+            return tc
+
+        # No DGW in this half. The previous fallback took the argmax of
+        # per-GW max e_xpts, which is wrong twice over:
+        #
+        #  1. `predictions_df` only covers the GWs the live run predicted —
+        #     the played GWs plus the 6-week rolling horizon. So the argmax
+        #     could never look past horizon-tip, and "best captain in the
+        #     first half" silently meant "best captain in the next six GWs".
+        #  2. Within that window it maximises the very quantity that is
+        #     inflated early in a season, for the reason `_pick_bb_in_half`
+        #     already documents: thin rolling features leave position
+        #     defaults dominating, so the earliest GW usually wins.
+        #
+        # Together those made TC1 land on the first GW past the cold-start
+        # window every time a season had no DGW yet — measured on 2026-27,
+        # which schedules TC1 at GW4 with no double gameweek anywhere in
+        # GW1-19. Burning a once-per-half chip there is strictly worse than
+        # holding it: DGWs are created by later postponements, so a real
+        # DGW target usually appears well after the calendar is first read.
+        #
+        # Mirror the BB fallback instead — take the LATEST non-colliding GW,
+        # which defers the commitment. The scheduler re-runs every gameweek,
+        # so as soon as a genuine DGW enters the calendar `_best_tc_gw`
+        # claims it; until then the chip is simply held.
+        candidates = [g for g in half_gws if g not in used]
+        return max(candidates) if candidates else None
 
     def _pick_bb_in_half(half_gws: list[int]) -> int | None:
         half_gws = [g for g in half_gws if g > COLD_START_GWS]
