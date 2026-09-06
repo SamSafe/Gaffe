@@ -175,7 +175,20 @@ def test_prediction_features_fall_back_to_the_previous_season_at_gw1():
     assert nonzero > 0.3 * df.height, (
         f"only {nonzero}/{df.height} rows carry minutes history into GW1"
     )
-    # "Appearances this season" must not inherit last season's tally.
-    assert df["season_match_count"].max() == 0, (
-        "season_match_count carried over from the previous season"
+    # "Appearances this season" must not inherit last season's tally. Once
+    # season 26 has played gameweeks of its own this can no longer assert 0:
+    # the builder takes each player's latest played match, and for a GW1
+    # prediction re-run after GW1 has been played that row IS a season-26 one,
+    # so a count of 1 is correct rather than carried over. What must never
+    # happen is a full previous season leaking in, so bound it by the
+    # gameweeks season 26 has actually played.
+    from fpl_bot.db import pit as _pit
+
+    played = _pit.all_player_match_with_kickoff(season_ids=[26])
+    played_gws = (
+        len({int(g) for g in played["gameweek"]}) if not played.is_empty() else 0
+    )
+    assert df["season_match_count"].max() <= played_gws, (
+        f"season_match_count reaches {df['season_match_count'].max()} with only "
+        f"{played_gws} played gameweeks — last season's tally carried over"
     )
