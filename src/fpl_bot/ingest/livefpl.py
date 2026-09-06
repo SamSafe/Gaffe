@@ -92,8 +92,9 @@ def parse_raw_livefpl(
         "fact_eo_snapshot": 0,
         "skipped_unmapped_player": 0,
         "skipped_parse_error": 0,
+        "resolved_by_name_fallback": 0,
     }
-    web_to_pid, _ = _build_lookups(season_id)
+    element_to_pid, web_to_pid, _ = _build_lookups(season_id)
     rows = _ROW_RE.findall(html)
     counts["rows_seen"] = len(rows)
 
@@ -105,6 +106,7 @@ def parse_raw_livefpl(
                 continue
             # cells: [id, type, web_name, team, top10k_eo, top10k_c, top10k_tc,
             #         overall_eo, overall_c, overall_tc, score]
+            element_id = _int_or_none(cells[0])
             web_name = _clean(cells[2])
             try:
                 t10_eo = _pct(cells[4])
@@ -114,7 +116,13 @@ def parse_raw_livefpl(
             except ValueError:
                 counts["skipped_parse_error"] += 1
                 continue
-            pid = web_to_pid.get(web_name)
+            # Exact id first; the ambiguity-pruned name map only covers
+            # players whose web_name is unique this season.
+            pid = element_to_pid.get(element_id) if element_id is not None else None
+            if pid is None:
+                pid = web_to_pid.get(web_name)
+                if pid is not None:
+                    counts["resolved_by_name_fallback"] += 1
             if pid is None:
                 counts["skipped_unmapped_player"] += 1
                 continue
@@ -155,6 +163,14 @@ def parse_raw_livefpl(
     return counts
 
 
+def _int_or_none(html_fragment: str) -> int | None:
+    """LiveFPL's hidden first cell carries FPL's own element id."""
+    try:
+        return int(_clean(html_fragment))
+    except ValueError:
+        return None
+
+
 def _clean(html_fragment: str) -> str:
     """Strip tags + collapse whitespace from a TD inner content."""
     text = re.sub(r"<[^>]+>", "", html_fragment)
@@ -172,11 +188,28 @@ def _pct(html_fragment: str) -> float:
 
 def _build_lookups(
     season_id: int,
-) -> tuple[dict[str, int], dict[str, str]]:
-    """(web_name → player_id, full_team_name → short_name) for this season."""
+) -> tuple[dict[int, int], dict[str, int], dict[str, str]]:
+    """(element_id → player_id, web_name → player_id, team full → short).
+
+    The web_name map is a FALLBACK ONLY, and it deliberately drops every name
+    that more than one of this season's players answers to. Keying EO on
+    web_name alone silently resolved a duplicate surname to whichever row the
+    query happened to return last: in 2026-27 fifteen surnames collide, and
+    `Palmer` resolved to Alex Palmer (a promoted-club backup keeper) rather
+    than Cole Palmer, handing Cole Palmer's real top-10k EO to the wrong
+    player and leaving the premium looking like an un-owned differential —
+    which is exactly the direction that makes the MILP over-buy him.
+
+    LiveFPL publishes FPL's own element id in the row's first cell, so the
+    exact `(season, fpl_element_id)` key is available and is now preferred.
+    """
     with session_scope() as s:
         player_rows = s.execute(
-            select(DimPlayer.player_id, DimPlayer.web_name)
+            select(
+                DimPlayer.player_id,
+                DimPlayer.web_name,
+                DimPlayerSeasonXref.fpl_element_id,
+            )
             .join(
                 DimPlayerSeasonXref,
                 DimPlayerSeasonXref.player_id == DimPlayer.player_id,
@@ -188,7 +221,20 @@ def _build_lookups(
                 DimTeam.season_id == season_id
             )
         ).all()
+
+    by_element = {int(p.fpl_element_id): int(p.player_id) for p in player_rows}
+
+    name_counts: dict[str, int] = {}
+    for p in player_rows:
+        name_counts[p.web_name] = name_counts.get(p.web_name, 0) + 1
+    by_name = {
+        p.web_name: int(p.player_id)
+        for p in player_rows
+        if name_counts[p.web_name] == 1
+    }
+
     return (
-        {p.web_name: int(p.player_id) for p in player_rows},
+        by_element,
+        by_name,
         {t.full_name: t.short_name for t in team_rows},
     )
