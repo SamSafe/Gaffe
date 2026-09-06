@@ -133,6 +133,11 @@ def all_player_match_with_kickoff(
                 FactPlayerMatch.transfers_out,
                 FactPlayerMatch.transfers_balance,
                 FactPlayerMatch.selected,
+                FactPlayerMatch.expected_goals,
+                FactPlayerMatch.expected_assists,
+                FactPlayerMatch.expected_goal_involvements,
+                FactPlayerMatch.expected_goals_conceded,
+                FactPlayerMatch.starts,
                 _DimFixture.season_id,
                 _DimFixture.gameweek,
                 _DimFixture.kickoff_utc,
@@ -171,6 +176,19 @@ def all_player_match_with_kickoff(
                 "total_points": r.total_points,
                 "was_home": r.was_home,
                 "price_tenths": r.price_tenths,
+                "expected_goals": float(r.expected_goals)
+                if r.expected_goals is not None
+                else None,
+                "expected_assists": float(r.expected_assists)
+                if r.expected_assists is not None
+                else None,
+                "expected_goal_involvements": float(r.expected_goal_involvements)
+                if r.expected_goal_involvements is not None
+                else None,
+                "expected_goals_conceded": float(r.expected_goals_conceded)
+                if r.expected_goals_conceded is not None
+                else None,
+                "starts": r.starts,
                 "transfers_in": r.transfers_in,
                 "transfers_out": r.transfers_out,
                 "transfers_balance": r.transfers_balance,

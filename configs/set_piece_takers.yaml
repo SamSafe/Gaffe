@@ -232,31 +232,31 @@
   Arsenal:
     penalty: Saka
     direct_fk: [Rice, Saka, Eze]
-    corner: [Tzolis, Rice, Saka, Madueke, Ødegaard]
+    corner: [Rice, Saka, Tzolis, Ødegaard, Bruno G., Madueke]
   Aston Villa:
     penalty: Buendía
     direct_fk: [Buendía]
-    corner: [Cash, McGinn]
+    corner: [Cash, McGinn, Buendía, Barkley]
   Bournemouth:
     penalty: Kroupi.Jr
-    direct_fk: [Tavernier, Kluivert, Brooks, Scott, Enes Ünal]
+    direct_fk: [Tavernier, Kluivert, Brooks, Scott]
     corner: [Tavernier, Scott, Kluivert, Brooks, Cook, Christie]
   Brentford:
     penalty: Thiago
     direct_fk: [Lewis-Potter, Jensen, Damsgaard]
-    corner: [Jensen, Damsgaard, Janelt, O.Dango]
+    corner: [Jensen, O.Dango, Damsgaard, Janelt]
   Brighton:
     penalty: Groß
-    direct_fk: [Ayari, Dunk, De Cuyper, Gomez]
-    corner: [De Cuyper, Groß, Minteh, F.Kadıoğlu, Ayari]
+    direct_fk: [Groß, Ayari, Dunk, De Cuyper, Gomez]
+    corner: [Groß, De Cuyper, F.Kadıoğlu, Ayari, Minteh]
   Chelsea:
     penalty: Palmer
     direct_fk: [James, Enzo, Palmer, Neto]
-    corner: [James, Neto, Enzo, Estêvão]
+    corner: [James, Neto, Enzo, Rogers, Estêvão]
   Coventry City:
     penalty: Wright
     direct_fk: [Rudoni, Torp]
-    corner: [Grimes, Rudoni, Torp]
+    corner: [Grimes, Torp, Rudoni]
   Crystal Palace:
     penalty: Mateta
     direct_fk: [Yeremy, Devenny]
@@ -266,46 +266,46 @@
     direct_fk: [Garner]
     corner: [Garner, Dewsbury-Hall]
   Fulham:
-    penalty: Robinson
+    penalty: Gonzalo
     direct_fk: [Iwobi]
-    corner: [Bobb, Iwobi, Kevin]
+    corner: [Iwobi, Bobb, Kevin]
   Hull City:
-    penalty: Crooks
+    penalty: McBurnie
     direct_fk: [Giles, Belloumi]
-    corner: [Giles, Belloumi, Slater]
+    corner: [Giles, Slater, Belloumi]
   Ipswich Town:
-    penalty: Hirst
+    penalty: Clarke
     direct_fk: [Núñez, Davis, Clarke]
-    corner: [Philogene, Davis, Núñez, Clarke]
+    corner: [Núñez, Davis, Clarke, Lukić, Philogene]
   Leeds:
     penalty: Calvert-Lewin
     direct_fk: [Stach, Longstaff, Aaronson]
-    corner: [Wilson, Stach, Longstaff, Tanaka]
+    corner: [Stach, Wilson, Longstaff, Tanaka]
   Liverpool:
-    penalty: Isak
+    penalty: Szoboszlai
     direct_fk: [Szoboszlai, Wirtz]
     corner: [Szoboszlai, Gakpo, Wirtz]
   Man City:
     penalty: Haaland
-    direct_fk: [Cherki, Marmoush, Foden, Reijnders]
-    corner: [Anderson, Foden, Cherki, Reijnders]
+    direct_fk: [Cherki, Marmoush, Foden]
+    corner: [Cherki, Anderson, Foden]
   Man Utd:
     penalty: B.Fernandes
     direct_fk: [B.Fernandes, Mbeumo, Mount]
-    corner: [Shaw, B.Fernandes, Mbeumo, Amad]
+    corner: [B.Fernandes, Mbeumo, Shaw, Amad]
   Newcastle:
     penalty: Woltemade
     direct_fk: [Hall, Schär]
-    corner: [J.Murphy, Hall, L.Miley, Elanga]
+    corner: [Hall, J.Murphy, L.Miley, Elanga]
   'Nott''m Forest':
     penalty: Wood
-    direct_fk: [Gibbs-White, Murillo, N.Williams, Hudson-Odoi]
-    corner: [Ndoye, Hutchinson, N.Williams, Bakwa]
+    direct_fk: [Gibbs-White, N.Williams, Murillo, Hudson-Odoi]
+    corner: [N.Williams, McAtee, Schlager, Hutchinson]
   Spurs:
     penalty: Solanke
-    direct_fk: [Pedro Porro, Xavi, Kudus, Tonali]
-    corner: [Pedro Porro, Kudus, Xavi, Tel, Tonali]
+    direct_fk: [Pedro Porro, Xavi, Kudus, Tel, Tonali]
+    corner: [Pedro Porro, Tonali, Robertson, Tel, Kudus, Xavi]
   Sunderland:
     penalty: Diarra
-    direct_fk: [Xhaka, E.Le Fée]
-    corner: [Xhaka, Hume, E.Le Fée]
+    direct_fk: [Xhaka, E.Le Fée, Angulo]
+    corner: [E.Le Fée, Xhaka, Hume]

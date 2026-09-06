@@ -47,12 +47,13 @@ def _insert_user_team(
     ft: int = 2,
     chips_used: list[str] | None = None,
     sell_prices: dict[int, int] | None = None,
+    recorded_at: dt.datetime | None = None,
 ) -> None:
     """players: list of (player_id, purchase_price, position, is_captain, is_vice)."""
     if players is None:
         players = [(90000 + i, 50 + i, i + 1, i == 0, i == 1) for i in range(15)]
     chips_used_json = json.dumps(chips_used or [])
-    now = dt.datetime.now(dt.UTC)
+    now = recorded_at or dt.datetime.now(dt.UTC)
     with session_scope() as s:
         for pid, price, pos, cap, vc in players:
             sell_price = sell_prices.get(pid, price) if sell_prices else price
@@ -148,6 +149,47 @@ def test_load_user_sell_prices_uses_latest_snapshot_values():
     sell_prices = load_user_sell_prices(season_id=99, gameweek=6, team_id=12345)
     assert sell_prices[90000] == 49
     assert sell_prices[90001] == 53
+
+
+def test_latest_complete_snapshot_replaces_players_from_an_older_pull():
+    """A same-GW transfer must not leave the sold player in the reconstructed
+    squad. Snapshot selection is per pull, not latest row per player.
+    """
+    older = dt.datetime(2026, 8, 20, 12, 0, tzinfo=dt.UTC)
+    newer = older + dt.timedelta(hours=1)
+    old_players = [
+        (90000 + i, 50 + i, i + 1, i == 0, i == 1) for i in range(15)
+    ]
+    new_players = [
+        (90001 + i, 60 + i, i + 1, i == 0, i == 1) for i in range(15)
+    ]
+    _insert_user_team(
+        players=old_players,
+        bank=25,
+        ft=2,
+        recorded_at=older,
+    )
+    _insert_user_team(
+        players=new_players,
+        bank=14,
+        ft=1,
+        sell_prices={90001: 58, 90015: 72},
+        recorded_at=newer,
+    )
+
+    state = load_user_state(season_id=99, gameweek=5, team_id=12345)
+    sell_prices = load_user_sell_prices(
+        season_id=99, gameweek=5, team_id=12345
+    )
+
+    assert state.squad == frozenset(range(90001, 90016))
+    assert len(state.squad) == 15
+    assert state.bank == 14
+    assert state.free_transfers == 1
+    assert 90000 not in state.cost_basis
+    assert 90000 not in sell_prices
+    assert sell_prices[90001] == 58
+    assert sell_prices[90015] == 72
 
 
 def test_load_user_state_missing_raises():

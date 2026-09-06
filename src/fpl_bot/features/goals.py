@@ -61,6 +61,61 @@ def _team_rolling_form(season_ids: list[int] | None) -> pl.DataFrame:
     )
 
 
+# ── Expected-stat source reconciliation ──────────────────────────────────────
+# Attacking features were sourced solely from Understat, via vaastav's mirror.
+# **vaastav stopped publishing that mirror after 2024-25**, so seasons 25 and
+# 26 have zero Understat rows and every xG/xA feature silently fell to 0.0 —
+# measured at 100% of rows on the 2026-27 GW2 prediction table.
+#
+# FPL's own API carries Opta expected stats (`fact_player_match.expected_*`,
+# migration 0010), covering 2022-23 onward including the live season. It is
+# therefore the primary source; Understat is kept only to extend coverage
+# back to seasons 19-21, rescaled onto the FPL scale so one feature column
+# does not change units mid-history.
+#
+# Scale factors measured over the 23,486 player-matches where both sources
+# exist (seasons 22-24), as mean-ratio of the FPL value to the Understat one.
+# The two models correlate at r = 0.89 (xG) and r = 0.71 (xA); rescaling fixes
+# the level, not the residual disagreement.
+US_TO_FPL_XG_SCALE = 0.8319
+US_TO_FPL_XA_SCALE = 0.7132
+# FPL reports no non-penalty xG. League-average share of xG that is
+# non-penalty, from the same overlap. `is_penalty_taker` is already a model
+# feature and carries the per-player correction this constant cannot.
+NPXG_SHARE_OF_XG = 0.9416
+
+
+def _reconcile_expected_stat_sources(pm: pl.DataFrame) -> pl.DataFrame:
+    """Coalesce FPL and Understat expected stats into single feature columns.
+
+    FPL wins wherever it reports a value, because it is the source that still
+    exists going forward; Understat fills the pre-2022-23 seasons. Columns
+    with no FPL equivalent (shots, key passes, xGChain, xGBuildup) are left
+    untouched and are simply absent from season 25 on.
+    """
+    for col in ("expected_goals", "expected_assists"):
+        if col not in pm.columns:
+            pm = pm.with_columns(pl.lit(None, dtype=pl.Float64).alias(col))
+    for col in ("xg", "xa", "npxg"):
+        if col not in pm.columns:
+            pm = pm.with_columns(pl.lit(None, dtype=pl.Float64).alias(col))
+
+    return pm.with_columns(
+        pl.coalesce(
+            pl.col("expected_goals").cast(pl.Float64),
+            pl.col("xg").cast(pl.Float64) * US_TO_FPL_XG_SCALE,
+        ).alias("xg"),
+        pl.coalesce(
+            pl.col("expected_assists").cast(pl.Float64),
+            pl.col("xa").cast(pl.Float64) * US_TO_FPL_XA_SCALE,
+        ).alias("xa"),
+        pl.coalesce(
+            pl.col("expected_goals").cast(pl.Float64) * NPXG_SHARE_OF_XG,
+            pl.col("npxg").cast(pl.Float64) * US_TO_FPL_XG_SCALE,
+        ).alias("npxg"),
+    )
+
+
 def build_feature_table(season_ids: list[int] | None = None) -> pl.DataFrame:
     """Build the goals/assists feature matrix.
 
@@ -112,8 +167,10 @@ def build_feature_table(season_ids: list[int] | None = None) -> pl.DataFrame:
         pm = pm.join(us, on=["player_id", "match_date"], how="left")
     else:
         pm = pm.with_columns(
-            [pl.lit(None).alias(c) for c in ("xg", "xa", "shots", "key_passes", "npg", "npxg", "xg_chain", "xg_buildup")]
+            [pl.lit(None, dtype=pl.Float64).alias(c) for c in ("xg", "xa", "shots", "key_passes", "npg", "npxg", "xg_chain", "xg_buildup")]
         )
+
+    pm = _reconcile_expected_stat_sources(pm)
 
     # ── Sort by player+time before any rolling computation ────────────────────
     pm = pm.sort(by=["player_id", "kickoff_utc"])
@@ -148,9 +205,19 @@ def build_feature_table(season_ids: list[int] | None = None) -> pl.DataFrame:
     # finishing_skill = rolling (npg − npxg) per 90 over a long window (10) —
     # positive = over-performs xG. The model can then boost predictions for
     # genuinely elite finishers. Long window damps small-sample luck.
+    # Penalty-free where Understat supplied npg/npxG; penalty-inclusive
+    # (goals − xG) for FPL-sourced rows, which have no non-penalty split.
+    # Penalties add ~0.79 to both terms, so the difference stays close to
+    # penalty-neutral either way.
     pm = pm.with_columns(
         (
-            ((pl.col("npg") - pl.col("npxg")) / minutes_factor)
+            (
+                pl.coalesce(
+                    pl.col("npg") - pl.col("npxg"),
+                    pl.col("goals").cast(pl.Float64) - pl.col("xg"),
+                )
+                / minutes_factor
+            )
             .shift(1)
             .over("player_id")
         ).alias("_finishing_delta_prev")
@@ -367,8 +434,16 @@ def build_prediction_feature_table(
     if not upcoming_fixture_ids:
         return pl.DataFrame()
 
-    # 1. Load historical played-fixture feature table for the season
-    history = build_feature_table(season_ids=[test_season])
+    # 1. Load historical played-fixture feature table, preferring `test_season`
+    #    and falling back to the season before it.
+    #
+    #    Without the fallback a season opener has no history at all, so step 6
+    #    below takes its `pl.lit(0.0)` branch and every attacking feature is
+    #    reported as a hard zero — "this player has never had a shot" for the
+    #    entire league. That is the same failure `af141e4` fixed for minutes;
+    #    it survived here because the two builders were fixed independently.
+    #    Measured on 2026-27 GW2: 100% of rows had xg_per_90_last_3 == 0.
+    history = build_feature_table(season_ids=[test_season - 1, test_season])
 
     # 2. Per-player latest row (max kickoff_utc)
     if history.is_empty():
@@ -432,14 +507,18 @@ def build_prediction_feature_table(
 
     # 5b. Team rolling form (Phase 7 model #3). For upcoming fixtures, use
     # each team's LATEST played-fixture form (carried forward).
-    team_form = _team_rolling_form([test_season])
+    # Same carry-forward as the player rolling features: at a season opener
+    # the current season has no played fixtures to form a rolling window over.
+    team_form = _team_rolling_form([test_season - 1, test_season])
     if not team_form.is_empty():
+        # Order by kickoff, not gameweek: the window now spans two seasons and
+        # last season's GW38 must not outrank this season's GW2.
         gw_lookup = pit.upcoming_fixtures(
             team_form["fixture_id"].unique().to_list()
-        ).select("fixture_id", "gameweek")
+        ).select("fixture_id", "kickoff_utc")
         latest_form = (
             team_form.join(gw_lookup, on="fixture_id", how="left")
-            .sort(["team_id", "gameweek"])
+            .sort(["team_id", "kickoff_utc"])
             .group_by("team_id", maintain_order=True)
             .agg(
                 pl.col("team_goals_for_last_5").last(),

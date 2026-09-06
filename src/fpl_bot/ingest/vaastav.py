@@ -182,7 +182,10 @@ def _ingest_fixtures(season_path: Path, season_id: int) -> dict[int, int]:
                 set_={
                     "gameweek": stmt.excluded.gameweek,
                     "kickoff_utc": stmt.excluded.kickoff_utc,
-                    "finished": stmt.excluded.finished,
+                    # The mirror can lag the official API. Once a fixture is
+                    # known finished, a stale vaastav fixtures.csv must not
+                    # downgrade it to unfinished during the weekly cycle.
+                    "finished": DimFixture.finished | stmt.excluded.finished,
                 },
             )
             s.execute(stmt)
@@ -218,6 +221,21 @@ def _ingest_gw_data(
         df = pl.read_csv(gw_file, ignore_errors=True, infer_schema_length=10000)
         total += _ingest_one_gw_df(df, element_to_code, fixture_to_code)
     return total
+
+
+def _as_float(value: object) -> float | None:
+    """Coerce a vaastav CSV cell to float, tolerating blanks and bad rows.
+
+    `pl.read_csv(..., ignore_errors=True)` can hand back a string for a column
+    that is numeric in most files but empty in a few, so a bare `float()` is
+    not safe here.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _ingest_one_gw_df(
@@ -269,6 +287,19 @@ def _ingest_one_gw_df(
                 clearances_blocks_interceptions=row.get(
                     "clearances_blocks_interceptions"
                 ),
+                # FPL's own Opta expected stats. vaastav carries these from
+                # 2022-23 onward; earlier seasons get NULL via .get(). They
+                # are the replacement for the Understat mirror, which vaastav
+                # stopped publishing after 2024-25.
+                expected_goals=_as_float(row.get("expected_goals")),
+                expected_assists=_as_float(row.get("expected_assists")),
+                expected_goal_involvements=_as_float(
+                    row.get("expected_goal_involvements")
+                ),
+                expected_goals_conceded=_as_float(
+                    row.get("expected_goals_conceded")
+                ),
+                starts=row.get("starts"),
             )
             # Idempotent within a transaction. `recorded_at` is server-side
             # `now()` which is stable across all rows in the same transaction,

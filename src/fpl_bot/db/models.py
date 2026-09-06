@@ -198,6 +198,16 @@ class FactPlayerMatch(Base):
     tackles: Mapped[int | None] = mapped_column(SmallInteger)
     recoveries: Mapped[int | None] = mapped_column(SmallInteger)
     clearances_blocks_interceptions: Mapped[int | None] = mapped_column(SmallInteger)
+    # FPL's own Opta-derived expected stats (migration 0010). Present in
+    # vaastav's gw CSVs from 2022-23 onward and in the `event/{GW}/live`
+    # endpoint; NULL for earlier seasons. These replace Understat as the
+    # attacking-feature source — vaastav stopped mirroring Understat after
+    # 2024-25, which left every xG feature silently zeroed from season 25 on.
+    expected_goals: Mapped[float | None] = mapped_column(Numeric(7, 5))
+    expected_assists: Mapped[float | None] = mapped_column(Numeric(7, 5))
+    expected_goal_involvements: Mapped[float | None] = mapped_column(Numeric(7, 5))
+    expected_goals_conceded: Mapped[float | None] = mapped_column(Numeric(7, 5))
+    starts: Mapped[int | None] = mapped_column(SmallInteger)
 
 
 class FactUnderstatPlayerMatch(Base):

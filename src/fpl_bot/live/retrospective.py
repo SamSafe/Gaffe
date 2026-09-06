@@ -87,6 +87,39 @@ def compute_retrospective(
     d = rec["decisions"]
 
     actual_pts, actual_minutes = _per_player_actuals_for_gw(season_id, gameweek)
+    actuals_source = "fact_player_match"
+    if not actual_pts:
+        # Vaastav normally lags the official gameweek finalization by a few
+        # days. Use FPL's aggregate event-live payload for scoring in that
+        # window, but do not write it into the per-fixture training table (a
+        # DGW payload cannot split every stat cleanly by fixture).
+        from fpl_bot.ingest import fpl_api
+
+        raw_path = fpl_api.fetch_raw_fpl_event_live(gameweek)
+        try:
+            fpl_api.parse_raw_fpl_event_live_matches(
+                raw_path, season_id=season_id, gameweek=gameweek
+            )
+        except RuntimeError:
+            # Aggregate scoring remains valid for a DGW, even though writing
+            # those aggregates as per-fixture training rows would not be.
+            pass
+        else:
+            actual_pts, actual_minutes = _per_player_actuals_for_gw(
+                season_id, gameweek
+            )
+        if actual_pts:
+            counts = {}
+        else:
+            actual_pts, actual_minutes, counts = (
+                fpl_api.parse_raw_fpl_event_live_actuals(raw_path, season_id)
+            )
+        if not actual_pts:
+            raise RuntimeError(
+                f"No actual player results available for season={season_id}, "
+                f"gameweek={gameweek}; official feed counts={counts}"
+            )
+        actuals_source = "fpl_event_live"
 
     # Build a positions dict for the scorer
     from fpl_bot.db import pit
@@ -134,6 +167,7 @@ def compute_retrospective(
                 "season_id": season_id,
                 "gameweek": gameweek,
                 "team_id": team_id,
+                "actuals_source": actuals_source,
                 "gw_points": scorer_out.gw_points,
                 "auto_subs": list(scorer_out.auto_subs),
                 "used_vice": scorer_out.used_vice,

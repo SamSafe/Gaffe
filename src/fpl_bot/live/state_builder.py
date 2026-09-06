@@ -213,31 +213,26 @@ def load_user_state(
             )
         snapshot_gw = int(max_gw_row)
 
-        # Subquery: latest recorded_at per player in this (season, snapshot_gw, team)
-        latest = (
-            select(
-                FactUserTeamSnapshot.player_id,
-                sa_func.max(FactUserTeamSnapshot.recorded_at).label("max_rec"),
-            )
+        # Every ingest writes one complete squad with a shared transaction
+        # timestamp. Select the latest *pull* as a unit. Taking the latest row
+        # per player merges players from older pulls after a transfer and can
+        # reconstruct an impossible squad with more than 15 players.
+        latest_recorded_at = (
+            select(sa_func.max(FactUserTeamSnapshot.recorded_at))
             .where(
                 (FactUserTeamSnapshot.season_id == season_id)
                 & (FactUserTeamSnapshot.gameweek == snapshot_gw)
                 & (FactUserTeamSnapshot.team_id == team_id)
             )
-            .group_by(FactUserTeamSnapshot.player_id)
-            .subquery("uts_latest")
+            .scalar_subquery()
         )
         rows = s.execute(
             select(FactUserTeamSnapshot)
-            .join(
-                latest,
-                (latest.c.player_id == FactUserTeamSnapshot.player_id)
-                & (latest.c.max_rec == FactUserTeamSnapshot.recorded_at),
-            )
             .where(
                 (FactUserTeamSnapshot.season_id == season_id)
                 & (FactUserTeamSnapshot.gameweek == snapshot_gw)
                 & (FactUserTeamSnapshot.team_id == team_id)
+                & (FactUserTeamSnapshot.recorded_at == latest_recorded_at)
             )
         ).scalars().all()
 
@@ -305,33 +300,25 @@ def load_user_sell_prices(
         if max_gw_row is None:
             return {}
         snapshot_gw = int(max_gw_row)
-        latest = (
-            select(
-                FactUserTeamSnapshot.player_id,
-                sa_func.max(FactUserTeamSnapshot.recorded_at).label("max_rec"),
-            )
+        latest_recorded_at = (
+            select(sa_func.max(FactUserTeamSnapshot.recorded_at))
             .where(
                 (FactUserTeamSnapshot.season_id == season_id)
                 & (FactUserTeamSnapshot.gameweek == snapshot_gw)
                 & (FactUserTeamSnapshot.team_id == team_id)
             )
-            .group_by(FactUserTeamSnapshot.player_id)
-            .subquery("uts_sell_latest")
+            .scalar_subquery()
         )
         rows = s.execute(
             select(
                 FactUserTeamSnapshot.player_id,
                 FactUserTeamSnapshot.selling_price_tenths,
             )
-            .join(
-                latest,
-                (latest.c.player_id == FactUserTeamSnapshot.player_id)
-                & (latest.c.max_rec == FactUserTeamSnapshot.recorded_at),
-            )
             .where(
                 (FactUserTeamSnapshot.season_id == season_id)
                 & (FactUserTeamSnapshot.gameweek == snapshot_gw)
                 & (FactUserTeamSnapshot.team_id == team_id)
+                & (FactUserTeamSnapshot.recorded_at == latest_recorded_at)
             )
         ).all()
     return {int(r.player_id): int(r.selling_price_tenths) for r in rows}

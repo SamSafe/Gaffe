@@ -29,6 +29,7 @@ from fpl_bot.db.models import (
     DimPlayer,
     DimPlayerSeasonXref,
     DimTeam,
+    FactPlayerMatch,
     FactPlayerStatus,
     FactUserTeamSnapshot,
 )
@@ -80,6 +81,238 @@ def fetch_raw_fpl_api(endpoint: str) -> Path:
             raw_path.write_bytes(payload)
 
     return raw_path
+
+
+def fetch_raw_fpl_event_live(gameweek: int) -> Path:
+    """Fetch the official aggregate live results for one gameweek.
+
+    Unlike the two season-wide endpoints in ``ENDPOINTS``, this URL is
+    parameterized by gameweek. The payload is useful immediately after FPL
+    finalizes a gameweek, before the vaastav per-match mirror is published.
+    """
+    if gameweek < 1:
+        raise ValueError(f"gameweek must be positive, got {gameweek}")
+    url = f"{FPL_BASE}/event/{gameweek}/live/"
+    raw_path = _today_dir("fpl_api") / f"event_{gameweek}_live.json"
+
+    with audit_fetch(source="fpl_api", url=url, user_agent=settings.user_agent) as audit:
+        with httpx.Client(
+            headers={"User-Agent": settings.user_agent},
+            timeout=settings.request_timeout_seconds,
+        ) as client:
+            r = client.get(url)
+            audit.response_code = r.status_code
+            r.raise_for_status()
+            payload = r.content
+
+        audit.byte_size = len(payload)
+        audit.content_hash = sha256(payload).hexdigest()
+        audit.raw_path = str(raw_path)
+        if raw_path.exists() and sha256(raw_path.read_bytes()).hexdigest() == audit.content_hash:
+            audit.parse_status = "skipped_unchanged"
+        else:
+            raw_path.write_bytes(payload)
+
+    return raw_path
+
+
+def parse_raw_fpl_event_live_actuals(
+    raw_path: Path, season_id: int
+) -> tuple[dict[int, int], dict[int, int], dict[str, int]]:
+    """Map FPL's gameweek aggregates to stable player ids.
+
+    Returns ``(points, minutes, counts)``. These aggregates deliberately do
+    not write ``fact_player_match``: during a double gameweek the official
+    endpoint cannot split every non-scoring stat cleanly by fixture. Vaastav
+    remains the per-match training source; this feed makes the live
+    retrospective accurate while that mirror catches up.
+    """
+    payload = json.loads(raw_path.read_text())
+    with session_scope() as s:
+        rows = s.execute(
+            DimPlayerSeasonXref.__table__.select().where(
+                DimPlayerSeasonXref.season_id == season_id
+            )
+        ).all()
+    element_to_pid = {int(r.fpl_element_id): int(r.player_id) for r in rows}
+
+    points: dict[int, int] = {}
+    minutes: dict[int, int] = {}
+    counts = {"elements_seen": 0, "players_resolved": 0, "players_unresolved": 0}
+    for element in payload.get("elements", []) or []:
+        counts["elements_seen"] += 1
+        player_id = element_to_pid.get(_coerce_int(element.get("id"), default=-1))
+        if player_id is None:
+            counts["players_unresolved"] += 1
+            continue
+        stats = element.get("stats") or {}
+        points[player_id] = _coerce_int(stats.get("total_points"), default=0)
+        minutes[player_id] = _coerce_int(stats.get("minutes"), default=0)
+        counts["players_resolved"] += 1
+    return points, minutes, counts
+
+
+def parse_raw_fpl_event_live_matches(
+    raw_path: Path, season_id: int, gameweek: int
+) -> dict[str, int]:
+    """Write a finalized single-fixture gameweek to ``fact_player_match``.
+
+    FPL's live endpoint reports player stats aggregated across the gameweek.
+    They are per-match only when each club has exactly one fixture, so this
+    parser explicitly refuses double gameweeks. It also refuses unfinished
+    fixtures to prevent live, partial results entering training features.
+    Vaastav can later add a newer bitemporal row for the same player/fixture.
+    """
+    payload = json.loads(raw_path.read_text())
+    with session_scope() as s:
+        xref_rows = s.execute(
+            DimPlayerSeasonXref.__table__.select().where(
+                DimPlayerSeasonXref.season_id == season_id
+            )
+        ).all()
+        fixture_xref_rows = s.execute(
+            DimFixtureSeasonXref.__table__.select().where(
+                DimFixtureSeasonXref.season_id == season_id
+            )
+        ).all()
+        fixture_rows = s.execute(
+            DimFixture.__table__.select().where(
+                (DimFixture.season_id == season_id)
+                & (DimFixture.gameweek == gameweek)
+            )
+        ).all()
+        status_rows = s.execute(
+            FactPlayerStatus.__table__.select()
+            .where(FactPlayerStatus.season_id == season_id)
+            .order_by(FactPlayerStatus.recorded_at)
+        ).all()
+
+    if not fixture_rows:
+        raise RuntimeError(
+            f"No fixtures found for season={season_id}, gameweek={gameweek}"
+        )
+    if any(not bool(r.finished) for r in fixture_rows):
+        raise RuntimeError(
+            f"Refusing partial event-live ingest for unfinished gameweek {gameweek}"
+        )
+
+    fixtures_by_team: dict[int, list[object]] = {}
+    fixture_by_id = {int(r.fixture_id): r for r in fixture_rows}
+    for row in fixture_rows:
+        fixtures_by_team.setdefault(int(row.home_team_id), []).append(row)
+        fixtures_by_team.setdefault(int(row.away_team_id), []).append(row)
+    if any(len(rows) != 1 for rows in fixtures_by_team.values()):
+        raise RuntimeError(
+            f"Refusing per-match ingest for double gameweek {gameweek}; "
+            "event-live stats are gameweek aggregates"
+        )
+
+    element_to_pid = {
+        int(r.fpl_element_id): int(r.player_id) for r in xref_rows
+    }
+    fpl_fixture_to_stable = {
+        int(r.fpl_fixture_id): int(r.fixture_id) for r in fixture_xref_rows
+    }
+    # Prefer the last squad/status observation from before the gameweek began.
+    # A real-world transfer completed after the matches must not move a DNP's
+    # zero-minute row onto his new club's earlier fixture.
+    status_cutoff = min(r.kickoff_utc for r in fixture_rows)
+    latest_status: dict[int, object] = {}
+    latest_status_before_kickoff: dict[int, object] = {}
+    for row in status_rows:
+        latest_status[int(row.player_id)] = row
+        if row.recorded_at <= status_cutoff:
+            latest_status_before_kickoff[int(row.player_id)] = row
+
+    counts = {
+        "elements_seen": 0,
+        "fact_player_match": 0,
+        "skipped_unresolved_player": 0,
+        "skipped_no_fixture": 0,
+    }
+    with session_scope() as s:
+        for element in payload.get("elements", []) or []:
+            counts["elements_seen"] += 1
+            player_id = element_to_pid.get(
+                _coerce_int(element.get("id"), default=-1)
+            )
+            if player_id is None:
+                counts["skipped_unresolved_player"] += 1
+                continue
+            status = latest_status_before_kickoff.get(player_id) or latest_status.get(
+                player_id
+            )
+            if status is None:
+                counts["skipped_unresolved_player"] += 1
+                continue
+
+            explained_fixtures = {
+                fpl_fixture_to_stable.get(_coerce_int(item.get("fixture"), -1))
+                for item in element.get("explain", []) or []
+                if isinstance(item, dict)
+            }
+            explained_fixtures.discard(None)
+            if len(explained_fixtures) > 1:
+                raise RuntimeError(
+                    f"Player {player_id} has multiple fixtures in gameweek {gameweek}"
+                )
+            if explained_fixtures:
+                fixture_id = int(next(iter(explained_fixtures)))
+            else:
+                team_fixtures = fixtures_by_team.get(int(status.team_id), [])
+                if len(team_fixtures) != 1:
+                    counts["skipped_no_fixture"] += 1
+                    continue
+                fixture_id = int(team_fixtures[0].fixture_id)
+
+            fixture = fixture_by_id.get(fixture_id)
+            if fixture is None:
+                counts["skipped_no_fixture"] += 1
+                continue
+            stats = element.get("stats") or {}
+            stmt = pg_insert(FactPlayerMatch).values(
+                player_id=player_id,
+                fixture_id=fixture_id,
+                minutes=_coerce_int(stats.get("minutes")),
+                goals=_coerce_int(stats.get("goals_scored")),
+                assists=_coerce_int(stats.get("assists")),
+                clean_sheet=bool(_coerce_int(stats.get("clean_sheets"))),
+                goals_conceded=_coerce_int(stats.get("goals_conceded")),
+                saves=_coerce_int(stats.get("saves")),
+                yellow_cards=_coerce_int(stats.get("yellow_cards")),
+                red_cards=_coerce_int(stats.get("red_cards")),
+                bonus=_coerce_int(stats.get("bonus")),
+                bps=_coerce_int(stats.get("bps")),
+                total_points=_coerce_int(stats.get("total_points")),
+                was_home=int(status.team_id) == int(fixture.home_team_id),
+                price_tenths=int(status.price_tenths),
+                defensive_contribution=_coerce_int(
+                    stats.get("defensive_contribution")
+                ),
+                tackles=_coerce_int(stats.get("tackles")),
+                recoveries=_coerce_int(stats.get("recoveries")),
+                clearances_blocks_interceptions=_coerce_int(
+                    stats.get("clearances_blocks_interceptions")
+                ),
+                # Opta expected stats. This endpoint is the only source for
+                # them during the live season — vaastav publishes the same
+                # fields but lags, and its Understat mirror (the previous
+                # attacking-feature source) stopped after 2024-25.
+                expected_goals=_coerce_float(stats.get("expected_goals")),
+                expected_assists=_coerce_float(stats.get("expected_assists")),
+                expected_goal_involvements=_coerce_float(
+                    stats.get("expected_goal_involvements")
+                ),
+                expected_goals_conceded=_coerce_float(
+                    stats.get("expected_goals_conceded")
+                ),
+                starts=_coerce_int(stats.get("starts")),
+            ).on_conflict_do_nothing(
+                index_elements=["player_id", "fixture_id", "recorded_at"]
+            )
+            s.execute(stmt)
+            counts["fact_player_match"] += 1
+    return counts
 
 
 def parse_raw_fpl_api(endpoint: str, raw_path: Path, season_id: int) -> dict[str, int]:
@@ -360,6 +593,22 @@ def _coerce_int(value: object, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _coerce_float(value: object) -> float | None:
+    """Coerce an FPL stat to float, returning None when it is absent.
+
+    FPL returns expected stats as strings ("0.42"). Unlike `_coerce_int` this
+    defaults to None rather than 0, because a missing expected-goals value
+    means "not reported", not "zero chance" — the models must be able to tell
+    the two apart.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _latest_status_price(player_id: int) -> int:
