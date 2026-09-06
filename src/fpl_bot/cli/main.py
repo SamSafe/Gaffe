@@ -436,6 +436,7 @@ def live_ingest(
 def live_recommend(
     gameweek: Annotated[int, typer.Option("--gameweek")],
     team_id: Annotated[int | None, typer.Option("--team-id", envvar="FPL_TEAM_ID")] = None,
+    rho: Annotated[float, typer.Option("--rho", min=0.0, help="Ownership penalty; 0 maximizes expected points")] = 0.0,
     season_id: Annotated[int, typer.Option("--season-id")] = settings.current_season_id,
     train_seasons: Annotated[
         str, typer.Option("--train-seasons", help="comma-separated")
@@ -447,7 +448,7 @@ def live_recommend(
 
     ts = [int(s) for s in train_seasons.split(",") if s.strip()]
     md_path, json_path = generate_recommendation(
-        season_id=season_id, gameweek=gameweek, team_id=team_id, train_seasons=ts
+        season_id=season_id, gameweek=gameweek, team_id=team_id, train_seasons=ts, rho=rho
     )
     console.print(f"[green]wrote {md_path}[/green]")
     console.print(f"[green]wrote {json_path}[/green]")

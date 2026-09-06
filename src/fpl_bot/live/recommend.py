@@ -24,8 +24,9 @@ from fpl_bot.eval.milp_backtest import (
     _resolve_price_at_gw,
     _team_id_per_player_for_season,
 )
-from fpl_bot.eval.xpts_eval import _run_one_fold, run_predict_only
+from fpl_bot.eval.xpts_eval import run_predict_only
 from fpl_bot.features import manual_overrides
+from fpl_bot.live.market_state import apply_current_market, selling_price
 from fpl_bot.live.state_builder import (
     LiveStatusOverrides,
     load_status_overrides,
@@ -95,7 +96,7 @@ def generate_recommendation(
     team_id: int,
     train_seasons: list[int],
     horizon: int = 6,
-    rho: float = 1.0,
+    rho: float = 0.0,
     alpha: float = 0.8,
     beta: float = 0.0,
     n_iterations: int = 500,
@@ -120,15 +121,8 @@ def generate_recommendation(
         # If the cache covers the target gameweek, we're done. Otherwise
         # we'll extend with predict-only rows below.
 
-    if eval_df is None or eval_df.is_empty():
-        result = _run_one_fold(
-            train_seasons, season_id, n_iterations=n_iterations, seed=42
-        )
-        if result is not None:
-            _, eval_df, _ = result
-            if cache_predictions and eval_df is not None and not eval_df.is_empty():
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                eval_df.write_parquet(cache_path)
+    # A live cache miss needs only upcoming predictions. Running a historical
+    # evaluation fold here trains the stack twice and cannot fill future GWs.
 
     pred_by_pgw: dict[tuple[int, int], float] = {}
     if eval_df is not None and not eval_df.is_empty():
@@ -256,23 +250,13 @@ def generate_recommendation(
         unexclude_returning=unexclude_returning,
     )
 
-    # 4. Team / position / price resolution (same as backtest), then a
-    #    bootstrap-snapshot fallback for anything the backtest sources cannot
-    #    know yet. Both read `fact_player_match`, so before a season's first
-    #    kickoff they return NOTHING and every player would be filtered out as
-    #    invalid. The fallback is additive — played-match data still wins
-    #    wherever it exists — so mid-season behaviour is unchanged.
-    teams = _team_id_per_player_for_season(season_id, all_players)
-    prices_by_pgw = _per_player_per_gw_prices(season_id, all_players)
+    # Current bootstrap is authoritative for live clubs and purchase prices,
+    # including owned players absent from the prediction table.
+    market_players = sorted(set(all_players) | set(state.squad))
+    teams = _team_id_per_player_for_season(season_id, market_players)
+    prices_by_pgw = _per_player_per_gw_prices(season_id, market_players)
     status_team_price = pit.latest_team_and_price_per_player(season_id)
-    for pid in all_players:
-        fallback = status_team_price.get(pid)
-        if fallback is None:
-            continue
-        team_id_fb, price_fb = fallback
-        teams.setdefault(pid, team_id_fb)
-        for gw in all_gws:
-            prices_by_pgw.setdefault((pid, gw), price_fb)
+    apply_current_market(teams, prices_by_pgw, status_team_price, target_horizon_gws)
     positions = (
         pit.all_player_positions()
         .to_pandas()
@@ -358,10 +342,9 @@ def generate_recommendation(
         basis = state.cost_basis.get(p) if p in state.squad else None
         if basis is not None:
             if price_predict_available:
-                tax = max(0, (projected_horizon_end - basis) // 2)
-                sell_prices[p] = projected_horizon_end - tax
+                sell_prices[p] = selling_price(projected_horizon_end, basis)
             else:
-                sell_prices[p] = exact_sell_prices.get(p, projected_horizon_end)
+                sell_prices[p] = exact_sell_prices.get(p, selling_price(current, basis))
         else:
             sell_prices[p] = projected_horizon_end
 
@@ -370,7 +353,7 @@ def generate_recommendation(
         for p in candidates
         for w in horizon_gws
     }
-    eo = eo_for_candidates(candidates)
+    eo = eo_for_candidates(candidates) if rho else {}
     teams_dict = {p: teams[p] for p in candidates if p in teams}
     positions_dict = {p: positions.get(p, "MID") for p in candidates}
 
@@ -393,6 +376,10 @@ def generate_recommendation(
     )
 
     decisions, meta = solve_rolling_horizon(inputs, time_limit_s=180)
+
+    meta["rho"] = rho
+    meta["alpha"] = alpha
+    meta["beta"] = beta
 
     # 8. Write outputs
     if output_dir is None:
