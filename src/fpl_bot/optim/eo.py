@@ -33,31 +33,38 @@ DEFAULT_CAPTAIN_BUMP = 1.0  # multiplier on overall ownership; ρ tuning absorbs
 TOP10K_BLEND_WEIGHT = 0.7
 
 
-def overall_eo_snapshot() -> pl.DataFrame:
+def overall_eo_snapshot(season_id: int | None = None) -> pl.DataFrame:
     """Returns latest-snapshot overall EO per player.
 
     Columns: player_id, eo (in [0, 100] same units as
     fact_player_status.selected_by_percent).
+
+    `season_id` restricts the snapshot to one season. Live callers leave it
+    None (the newest snapshot IS the live season). A BACKTEST must pass its
+    test season: without it the newest row wins globally, so a 2025-26
+    backtest would be scored against 2026-27 ownership — a template built
+    from a different player population, with promoted and relegated clubs
+    swapped out. That is not a mild approximation, it is the wrong template.
     """
     with session_scope() as s:
-        latest = (
-            select(
-                FactPlayerStatus.player_id,
-                func.max(FactPlayerStatus.recorded_at).label("max_rec"),
-            )
-            .group_by(FactPlayerStatus.player_id)
-            .subquery()
+        latest_q = select(
+            FactPlayerStatus.player_id,
+            func.max(FactPlayerStatus.recorded_at).label("max_rec"),
         )
-        rows = s.execute(
-            select(
-                FactPlayerStatus.player_id,
-                FactPlayerStatus.selected_by_percent,
-            ).join(
-                latest,
-                (latest.c.player_id == FactPlayerStatus.player_id)
-                & (latest.c.max_rec == FactPlayerStatus.recorded_at),
-            )
-        ).all()
+        if season_id is not None:
+            latest_q = latest_q.where(FactPlayerStatus.season_id == season_id)
+        latest = latest_q.group_by(FactPlayerStatus.player_id).subquery()
+        rows_q = select(
+            FactPlayerStatus.player_id,
+            FactPlayerStatus.selected_by_percent,
+        ).join(
+            latest,
+            (latest.c.player_id == FactPlayerStatus.player_id)
+            & (latest.c.max_rec == FactPlayerStatus.recorded_at),
+        )
+        if season_id is not None:
+            rows_q = rows_q.where(FactPlayerStatus.season_id == season_id)
+        rows = s.execute(rows_q).all()
 
     if not rows:
         return pl.DataFrame()
@@ -72,22 +79,26 @@ def overall_eo_snapshot() -> pl.DataFrame:
     )
 
 
-def latest_top10k_eo() -> dict[int, float]:
+def latest_top10k_eo(season_id: int | None = None) -> dict[int, float]:
     """Return {player_id: top10k_effective_ownership_fraction} for the most
     recent (event_time) LiveFPL snapshot. Empty when no rows exist.
+
+    `season_id` scopes the snapshot to one season — see `overall_eo_snapshot`
+    for why a backtest must pass it.
     """
     with session_scope() as s:
-        latest = (
+        latest_q = (
             select(
                 FactEoSnapshot.player_id,
                 func.max(FactEoSnapshot.event_time).label("max_t"),
             )
             .where(FactEoSnapshot.rank_band == "top10k")
             .where(FactEoSnapshot.source == "livefpl")
-            .group_by(FactEoSnapshot.player_id)
-            .subquery()
         )
-        rows = s.execute(
+        if season_id is not None:
+            latest_q = latest_q.where(FactEoSnapshot.season_id == season_id)
+        latest = latest_q.group_by(FactEoSnapshot.player_id).subquery()
+        rows_q = (
             select(
                 FactEoSnapshot.player_id,
                 FactEoSnapshot.effective_ownership,
@@ -98,25 +109,32 @@ def latest_top10k_eo() -> dict[int, float]:
             )
             .where(FactEoSnapshot.rank_band == "top10k")
             .where(FactEoSnapshot.source == "livefpl")
-        ).all()
+        )
+        if season_id is not None:
+            rows_q = rows_q.where(FactEoSnapshot.season_id == season_id)
+        rows = s.execute(rows_q).all()
     return {int(r.player_id): float(r.effective_ownership) / 100.0 for r in rows}
 
 
 def eo_for_candidates(
     candidate_player_ids: list[int],
+    season_id: int | None = None,
 ) -> dict[int, float]:
     """Map of player_id → effective_ownership fraction in [0, 1].
 
     Blends LiveFPL top10k EO with overall `selected_by_percent` when both
     are available. Falls back to overall alone when LiveFPL hasn't snapshot
     the player. Players with no signal → 0.0 (treated as anti-template).
+
+    Pass `season_id` from a backtest so the template comes from the season
+    being tested rather than from today.
     """
-    overall_df = overall_eo_snapshot()
+    overall_df = overall_eo_snapshot(season_id)
     overall: dict[int, float] = {}
     if not overall_df.is_empty():
         sub = overall_df.filter(pl.col("player_id").is_in(candidate_player_ids))
         overall = {int(r["player_id"]): float(r["eo"]) / 100.0 for r in sub.iter_rows(named=True)}
-    top10k = latest_top10k_eo()
+    top10k = latest_top10k_eo(season_id)
     out: dict[int, float] = {}
     for pid in candidate_player_ids:
         o = overall.get(pid)

@@ -967,7 +967,10 @@ def backtest_season(
             for w in horizon_gws
         }
 
-        eo = eo_for_candidates(candidates)
+        # Scope the template to the season under test — otherwise the rho-EO
+        # term penalises alignment with TODAY's ownership, which for a past
+        # season is a different set of clubs and players entirely.
+        eo = eo_for_candidates(candidates, season_id=test_season)
         teams_dict = {p: teams[p] for p in candidates if p in teams}
         positions_dict = {p: positions.get(p, "MID") for p in candidates}
 
