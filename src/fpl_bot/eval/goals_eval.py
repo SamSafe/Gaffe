@@ -12,6 +12,7 @@ from fpl_bot.models.goals import (
     poisson_deviance,
     train_per_90_model,
 )
+from fpl_bot.models.validation import train_with_chronological_validation
 
 WALK_FORWARD_FOLDS: list[dict] = [
     {"train": [19, 20], "test": 21},
@@ -70,7 +71,9 @@ def run_walk_forward_cv(
             dev_baseline = poisson_deviance(y_test, baseline_rate, mins_test)
 
             for weighted in weighted_options:
-                model = train_per_90_model(train, target=target, valid=test, weighted=weighted)
+                model = train_with_chronological_validation(
+                    train_per_90_model, train, target=target, weighted=weighted
+                )
                 pred_rate = model.predict_per_90(test)
                 dev_model = poisson_deviance(y_test, pred_rate, mins_test)
                 results.append(

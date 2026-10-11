@@ -18,6 +18,7 @@ from fpl_bot.models.goals import (
     poisson_deviance,
     train_per_90_model,
 )
+from fpl_bot.models.validation import train_with_chronological_validation
 
 RESULTS_DIR = Path("docs/design/phase2_2_results")
 
@@ -54,54 +55,15 @@ def _train_with_subset(
     train: pl.DataFrame, valid: pl.DataFrame, target: str, features: list[str]
 ) -> tuple[float, np.ndarray]:
     """Train a Poisson model on a feature subset; return (deviance, predicted rates)."""
-    import lightgbm as lgb
-
     label_col = LABEL_COLUMNS[target]
     needed = [*features, label_col, "minutes_factor"]
-    train_df = train.select(needed).drop_nulls(label_col).drop_nulls("minutes_factor")
     valid_df = valid.select(needed).drop_nulls(label_col).drop_nulls("minutes_factor")
-
-    X_t = train_df.select(features).to_pandas().to_numpy()
-    y_t = train_df.select(label_col).to_pandas().to_numpy().ravel()
-    m_t = train_df.select("minutes_factor").to_pandas().to_numpy().ravel()
-    init_t = np.log(np.clip(m_t, 1e-6, None))
-
-    X_v = valid_df.select(features).to_pandas().to_numpy()
     y_v = valid_df.select(label_col).to_pandas().to_numpy().ravel()
     m_v = valid_df.select("minutes_factor").to_pandas().to_numpy().ravel()
-    init_v = np.log(np.clip(m_v, 1e-6, None))
-
-    train_set = lgb.Dataset(
-        X_t, label=y_t, feature_name=features, free_raw_data=False, init_score=init_t, weight=m_t
+    model = train_with_chronological_validation(
+        train_per_90_model, train, target=target, feature_subset=features
     )
-    valid_set = lgb.Dataset(
-        X_v,
-        label=y_v,
-        feature_name=features,
-        reference=train_set,
-        free_raw_data=False,
-        init_score=init_v,
-        weight=m_v,
-    )
-    params = {
-        "objective": "poisson",
-        "metric": "poisson",
-        "num_leaves": 31,
-        "learning_rate": 0.05,
-        "min_data_in_leaf": 50,
-        "verbosity": -1,
-        "seed": 42,
-    }
-    booster = lgb.train(
-        params,
-        train_set,
-        num_boost_round=1000,
-        valid_sets=[train_set, valid_set],
-        valid_names=["train", "valid"],
-        callbacks=[lgb.log_evaluation(period=0), lgb.early_stopping(50, verbose=False)],
-    )
-    score = booster.predict(X_v, num_iteration=booster.best_iteration, raw_score=True)
-    rate = np.exp(score)
+    rate = model.predict_per_90(valid_df)
     return poisson_deviance(y_v, rate, m_v), rate
 
 
@@ -159,8 +121,7 @@ def feature_importance_table(test_season: int = 24, target: str = "goals") -> st
     all_seasons = sorted(set(fold["train"] + [fold["test"]]))
     feature_df = _drop_unusable(build_feature_table(season_ids=all_seasons), target)
     train = feature_df.filter(pl.col("season_id").is_in(fold["train"]))
-    valid = feature_df.filter(pl.col("season_id") == fold["test"])
-    model = train_per_90_model(train, target=target, valid=valid)
+    model = train_with_chronological_validation(train_per_90_model, train, target=target)
 
     importance = model.booster.feature_importance(importance_type="gain")
     pairs = sorted(
@@ -193,7 +154,7 @@ def plot_calibration_for_fold(
     train = feature_df.filter(pl.col("season_id").is_in(fold["train"]))
     valid = feature_df.filter(pl.col("season_id") == fold["test"])
 
-    model = train_per_90_model(train, target=target, valid=valid)
+    model = train_with_chronological_validation(train_per_90_model, train, target=target)
     pred_rate = model.predict_per_90(valid)
     label_col = LABEL_COLUMNS[target]
     y = valid.select(label_col).to_pandas().to_numpy().ravel().astype(np.float64)

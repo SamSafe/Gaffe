@@ -1,5 +1,44 @@
 # Live Weekly Runbook (26/27 season)
 
+## Audit update — 2026-10-11
+
+The local database has now been refreshed through finalized GW5. GW6 is still
+in progress. The default training seasons now include 26; only finalized
+matches should be ingested into that training set. For team 718959, the audited
+GW7 override records £2.8m bank, two free transfers, BB1/TC1/WC1 already used,
+and purchase prices reconstructed from public transfer and player histories.
+Refresh this state after any new transfer; it is a snapshot, not account sync.
+
+Live recommendations now always regenerate their horizon. Historical parquet
+caches are retained for backtest research and cannot supply a fresh live
+forecast. Outputs also save `fixture_predictions.parquet`,
+`player_predictions.json`, predicted GW points, and the selected bench order.
+Retrospectives consume that saved bench order rather than sorting by actual
+points. Older artifacts without an order use an explicitly labelled fallback.
+
+The live feature builders include the latest completed result. Rest days and
+the season match count follow the club's fixture schedule, including fixtures
+not yet ingested, because training rows exist for every club fixture (unused
+players included). Live saves/cards use the same priors as historical
+simulation. Defensive-contribution forecasts are multiplied by expected
+fixture appearances in both live and backtest runs. Corrected purchase-price
+overrides also govern selling values, so public snapshots cannot grant the
+full profit on a rise. A `cost_basis` entry carries forward to later
+gameweeks until a newer block replaces it; bank, free transfers and chips
+apply only to their own gameweek. Update the price after re-buying a player.
+
+At this audit, all GW7 and GW8 fixtures have market-xG coverage. GW9–12 have
+none and use market defaults; the recommendation now reports that coverage.
+Run again after GW6 is finalized, and refresh odds/news near the GW7 deadline
+on **17 October, 04:00 America/Edmonton**. Detailed results and remaining model
+validation requirements are in `docs/AUDIT_2026-10-11_team_718959.md`.
+
+Core prediction trainers now choose boosting rounds using the most recent
+20% of distinct kickoff groups inside the training history, with a three-hour
+gap for match results. They then refit on all completed training rows using
+the chosen round count. No future evaluation labels choose the stopping point.
+Recommendation metadata records `training_policy: chronological_v1`.
+
 How to run the bot for a real gameweek. Follow top-to-bottom each week,
 ideally ~3-6 hours before the deadline (after team news + once odds are
 posted, before lineups leak).
@@ -50,7 +89,7 @@ squad.
    ```
 
 4. **Decide `train_seasons`.** Until 26/27 has ~5+ played GWs, train on
-   everything through 25/26 (`19,20,21,22,23,24,25` — the current default).
+   everything through 25/26 (`19,20,21,22,23,24,25` — the preseason setting).
    Once 26/27 has enough played GWs (≈GW6+), append 26 in `config.py`. The
    cold-start GW1-3 prior automatically uses the most-recent NON-test
    season's last-5-GW actuals (see `eval/milp_backtest._build...prior`).
@@ -69,21 +108,12 @@ squad.
    25/26 — harmless but inactive). The checked-in season-26 block was last
    regenerated from the 2026-08-11 bootstrap and resolves all 20 clubs.
 
-6. **Prediction caches: nothing to do at rollover.** The cache filename
-   embeds the test season *and* the train-season list
-   (`season_26_train_19_20_21_22_23_24_25.parquet`, see
-   `live/recommend.py`), so a new season or a changed `train_seasons`
-   writes a new key and cannot serve last season's predictions. Do **not**
-   blanket-delete `data/cache/xpts_predictions/` — it holds the historical
-   backtest baselines (including the kept `.pre_teamform` /
-   `.bps_legacy_current_odds` reference variants) at ~12 min/fold to rebuild.
-
-   The real staleness risk is different: changing *model or feature code*
-   while the season/train key stays the same silently reuses the old
-   predictions. After such a change, delete only the affected key(s):
-   ```bash
-   rm -f data/cache/xpts_predictions/season_26_train_19_20_21_22_23_24_25.parquet
-   ```
+6. **Prediction caches:** live recommendations always regenerate their
+   horizon. Research backtest and raw-sample caches now include the training
+   policy version as well as season/train IDs, so legacy stopping-policy
+   caches are ignored. They do not track every feature-code change. Keep historical reference variants and
+   regenerate only the research key being evaluated after a model change;
+   never blanket-delete `data/cache/xpts_predictions/`.
 
 ### Check the PREVIOUS season is complete before trusting GW1-3
 
@@ -250,7 +280,7 @@ uv run gaffe derive market-xg --season-id 26
 #    --train-seasons until 26/27 has ~5+ played GWs (see season-start step 4).
 uv run gaffe live recommend \
     --season-id 26 --team-id <YOUR_TEAM_ID> --gameweek <GW> \
-    --train-seasons 19,20,21,22,23,24,25
+    --train-seasons 19,20,21,22,23,24,25,26
 ```
 
 The default uses the cross-fold-validated conservative fitter. For shadow

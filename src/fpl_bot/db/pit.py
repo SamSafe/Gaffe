@@ -644,6 +644,42 @@ def upcoming_fixtures(fixture_ids: list[int]) -> pl.DataFrame:
     )
 
 
+def team_fixture_kickoffs(season_id: int) -> pl.DataFrame:
+    """Every scheduled fixture of a season, once per participating team.
+
+    Includes fixtures not yet played or ingested; postponed fixtures without
+    a kickoff are omitted. Live feature builders use the schedule to advance
+    rest days and match counts through fixtures that precede a forecast.
+
+    Returns columns: team_id, fixture_id, kickoff_utc.
+    """
+    from fpl_bot.db.models import DimFixture as _DimFixture
+
+    with session_scope() as s:
+        rows = s.execute(
+            select(
+                _DimFixture.fixture_id,
+                _DimFixture.kickoff_utc,
+                _DimFixture.home_team_id,
+                _DimFixture.away_team_id,
+            ).where(
+                (_DimFixture.season_id == season_id)
+                & _DimFixture.kickoff_utc.is_not(None)
+            )
+        ).all()
+    if not rows:
+        return pl.DataFrame(
+            schema={"team_id": pl.Int64, "fixture_id": pl.Int64, "kickoff_utc": pl.Datetime("us", "UTC")}
+        )
+    return pl.DataFrame(
+        [
+            {"team_id": int(team), "fixture_id": int(r.fixture_id), "kickoff_utc": r.kickoff_utc}
+            for r in rows
+            for team in (r.home_team_id, r.away_team_id)
+        ]
+    ).with_columns(pl.col("kickoff_utc").dt.convert_time_zone("UTC"))
+
+
 def fixture_gameweeks_for_season(season_id: int) -> dict[int, int]:
     """Map fixture_id to gameweek for one season."""
     from fpl_bot.db.models import DimFixture as _DimFixture

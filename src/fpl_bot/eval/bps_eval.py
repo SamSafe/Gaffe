@@ -47,6 +47,7 @@ from fpl_bot.models.bps import (
 from fpl_bot.models.goals import LABEL_COLUMNS as GOALS_LABEL_COLUMNS
 from fpl_bot.models.goals import train_per_90_model
 from fpl_bot.models.minutes import train_minutes_model
+from fpl_bot.models.validation import train_with_chronological_validation
 
 WALK_FORWARD_FOLDS: list[dict] = [
     {"train": [19, 20], "test": 21},
@@ -128,7 +129,9 @@ def _train_minutes_predictor(
     test = df.filter(pl.col("season_id") == test_season)
     if train.is_empty() or test.is_empty():
         return pl.DataFrame()
-    model = train_minutes_model(train, valid=test, feature_mode=feature_mode)
+    model = train_with_chronological_validation(
+        train_minutes_model, train, feature_mode=feature_mode
+    )
     probs = model.predict_proba(test)
     return test.select("player_id", "fixture_id").with_columns(
         pl.Series("p_minutes_zero", probs[:, 0]),
@@ -161,7 +164,9 @@ def _train_goals_or_assists_predictor(
     test = df.filter(pl.col("season_id") == test_season)
     if train.is_empty() or test.is_empty():
         return pl.DataFrame()
-    model = train_per_90_model(train, target=target, valid=test, weighted=True)
+    model = train_with_chronological_validation(
+        train_per_90_model, train, target=target, weighted=True
+    )
     rate = model.predict_per_90(test)
     out_col = f"lambda_{target}_per_90"
     return test.select("player_id", "fixture_id").with_columns(
@@ -191,7 +196,7 @@ def _train_minutes_predict_only(
     )
     if train_df.is_empty() or test_df.is_empty():
         return pl.DataFrame()
-    model = train_minutes_model(train_df, valid=train_df)
+    model = train_with_chronological_validation(train_minutes_model, train_df)
     probs = model.predict_proba(test_df)
     return test_df.select("player_id", "fixture_id").with_columns(
         pl.Series("p_minutes_zero", probs[:, 0]),
@@ -218,7 +223,9 @@ def _train_goals_or_assists_predict_only(
     )
     if train_df.is_empty() or test_df.is_empty():
         return pl.DataFrame()
-    model = train_per_90_model(train_df, target=target, valid=train_df, weighted=True)
+    model = train_with_chronological_validation(
+        train_per_90_model, train_df, target=target, weighted=True
+    )
     rate = model.predict_per_90(test_df)
     out_col = f"lambda_{target}_per_90"
     return test_df.select("player_id", "fixture_id").with_columns(

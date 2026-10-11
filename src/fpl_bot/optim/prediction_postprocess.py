@@ -28,17 +28,17 @@ def apply_prediction_postprocessing(
     position_calibration: dict[str, float] | None = None,
     defcon_shrinkage: float | None = None,
     defcon_per_position_shrinkage: dict[str, float] | None = DEFCON_PER_POSITION_SHRINKAGE,
-    extend_defcon_future: bool = False,
+    appearance_exposure_by_pgw: dict[tuple[int, int], float] | None = None,
     fwd_calibration: bool = False,
     apply_suspension: bool = True,
     cache_dir: Path = Path("data/cache/xpts_predictions"),
 ) -> dict[tuple[int, int], float]:
     """Return a post-processed copy of raw xPts predictions.
 
-    `extend_defcon_future=False` preserves historical backtest behavior:
-    DefCon is added only to player/GW rows observed in the DefCon source.
-    Live can set it to True to project DefCon rates into upcoming GWs after
-    the latest observed appearance.
+    DefCon is a per-appearance rate, so it is added to every predicted
+    player/GW and scaled by `appearance_exposure_by_pgw` (expected
+    appearances, summed over a double gameweek). Backtest and live share
+    this path. A missing exposure entry counts as one certain appearance.
     """
     out = dict(pred_by_pgw)
     if not out:
@@ -51,7 +51,7 @@ def apply_prediction_postprocessing(
         season_id=season_id,
         defcon_shrinkage=defcon_shrinkage,
         defcon_per_position_shrinkage=defcon_per_position_shrinkage,
-        extend_defcon_future=extend_defcon_future,
+        appearance_exposure_by_pgw=appearance_exposure_by_pgw,
     )
     if fwd_calibration:
         _apply_fwd_calibration(out, season_id=season_id, cache_dir=cache_dir)
@@ -123,7 +123,7 @@ def _apply_defcon(
     season_id: int,
     defcon_shrinkage: float | None,
     defcon_per_position_shrinkage: dict[str, float] | None,
-    extend_defcon_future: bool,
+    appearance_exposure_by_pgw: dict[tuple[int, int], float] | None = None,
 ) -> None:
     if defcon_shrinkage is None and defcon_per_position_shrinkage is None:
         return
@@ -134,11 +134,9 @@ def _apply_defcon(
         return
     from fpl_bot.eval.defcon_adjustment import compute_defcon_adjustments
 
-    target_gws = (
-        sorted({gw for (_, gw) in pred_by_pgw if gw > 0})
-        if extend_defcon_future
-        else None
-    )
+    # Target every predicted pair. Targeting only the player/GWs present in
+    # the DefCon source (minutes > 0) told a backtest who would play.
+    target_gws = sorted({gw for (_, gw) in pred_by_pgw if gw > 0})
     target_player_ids = sorted({pid for pid, _gw in pred_by_pgw})
     if defcon_per_position_shrinkage is not None:
         defcon = compute_defcon_adjustments(
@@ -150,7 +148,8 @@ def _apply_defcon(
         for (pid, gw), value in list(pred_by_pgw.items()):
             adj = defcon.get((pid, gw))
             if adj is not None:
-                pred_by_pgw[(pid, gw)] = value + adj
+                exposure = (appearance_exposure_by_pgw or {}).get((pid, gw), 1.0)
+                pred_by_pgw[(pid, gw)] = value + adj * exposure
         return
 
     defcon = compute_defcon_adjustments(
@@ -161,7 +160,8 @@ def _apply_defcon(
     for (pid, gw), value in list(pred_by_pgw.items()):
         adj = defcon.get((pid, gw))
         if adj is not None:
-            pred_by_pgw[(pid, gw)] = value + defcon_shrinkage * adj
+            exposure = (appearance_exposure_by_pgw or {}).get((pid, gw), 1.0)
+            pred_by_pgw[(pid, gw)] = value + defcon_shrinkage * adj * exposure
 
 
 def _apply_fwd_calibration(

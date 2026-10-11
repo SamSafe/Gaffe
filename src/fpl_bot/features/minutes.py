@@ -10,6 +10,7 @@ fields can be appended at predict time without retraining.
 """
 from __future__ import annotations
 
+import datetime as dt
 from collections import defaultdict
 from typing import Literal
 
@@ -17,6 +18,7 @@ import numpy as np
 import polars as pl
 
 from fpl_bot.db import pit
+from fpl_bot.features.prediction_history import append_prediction_history_rows
 
 POSITION_CODES = ("GKP", "DEF", "MID", "FWD")
 MinutesFeatureMode = Literal["baseline", "rotation"]
@@ -114,7 +116,9 @@ def _label_bucket(minutes: pl.Expr) -> pl.Expr:
     )
 
 
-def build_feature_table(season_ids: list[int] | None = None) -> pl.DataFrame:
+def build_feature_table(
+    season_ids: list[int] | None = None, *, include_latest_match: bool = False
+) -> pl.DataFrame:
     """Build the per-(player, fixture) feature matrix.
 
     Each row's features are derived strictly from earlier-kickoff matches for
@@ -151,6 +155,9 @@ def build_feature_table(season_ids: list[int] | None = None) -> pl.DataFrame:
             pl.lit(None, dtype=pl.Float64).alias("team_core_churn_3"),
             pl.lit(None, dtype=pl.Float64).alias("team_core_churn_5"),
         )
+
+    if include_latest_match:
+        raw = append_prediction_history_rows(raw)
 
     # Sort by player + time so shift/rolling operate in chronological order
     df = raw.sort(by=["player_id", "kickoff_utc"])
@@ -280,6 +287,54 @@ def feature_columns_for_mode(mode: MinutesFeatureMode) -> list[str]:
     raise ValueError(f"unknown minutes feature mode: {mode}")
 
 
+def _advance_through_schedule(
+    cross: pl.DataFrame, schedule: pl.DataFrame, *, as_of: dt.datetime | None
+) -> pl.DataFrame:
+    """Advance rest days and the season match count to each forecast fixture.
+
+    Training rows exist for every club fixture, including unused squad
+    players, so both features follow the club schedule: rest is ~7 days and
+    the count tracks the gameweek. Measuring rest from the last *ingested*
+    match instead fed 28-70 days across a GW7-12 horizon, a gap seen in
+    training only at season openers, and cut established starters' P(60+)
+    from ~0.82 to ~0.70. Fixtures between the latest completed row (or
+    `as_of`, for players without one) and the target count as played rows.
+    """
+    utc_target = pl.col("kickoff_utc").dt.convert_time_zone("UTC")
+    since = pl.col("_history_kickoff")
+    keys = cross.select(
+        "player_id",
+        "fixture_id",
+        "current_team_id",
+        utc_target.alias("_target"),
+        (since if as_of is None else since.fill_null(as_of)).alias("_since"),
+    )
+    prior = schedule.select(
+        pl.col("team_id").alias("current_team_id"),
+        pl.col("kickoff_utc").dt.convert_time_zone("UTC").alias("_prior"),
+    )
+    between = (
+        keys.join(prior, on="current_team_id")
+        .filter((pl.col("_prior") > pl.col("_since")) & (pl.col("_prior") < pl.col("_target")))
+        .group_by("player_id", "fixture_id")
+        .agg(pl.len().alias("_intervening"), pl.col("_prior").max())
+    )
+    return (
+        cross.join(between, on=["player_id", "fixture_id"], how="left")
+        .with_columns(
+            (
+                (utc_target - pl.coalesce("_prior", "_history_kickoff")).dt.total_seconds()
+                / 86400.0
+            ).alias("days_since_last_match"),
+            (
+                pl.col("season_match_count").fill_null(0).cast(pl.Int64)
+                + pl.col("_intervening").fill_null(0).cast(pl.Int64)
+            ).alias("season_match_count"),
+        )
+        .drop("_prior", "_intervening", "_history_kickoff")
+    )
+
+
 def build_prediction_feature_table(
     test_season: int,
     upcoming_fixture_ids: list[int],
@@ -303,7 +358,9 @@ def build_prediction_feature_table(
     if not upcoming_fixture_ids:
         return pl.DataFrame()
 
-    history = build_feature_table(season_ids=[test_season - 1, test_season])
+    history = build_feature_table(
+        season_ids=[test_season - 1, test_season], include_latest_match=True
+    )
     if history.is_empty():
         per_player_rolling = pl.DataFrame()
     else:
@@ -353,8 +410,21 @@ def build_prediction_feature_table(
         "bucket_last_1", "days_since_last_match", "season_match_count",
     ]
     if not per_player_rolling.is_empty():
-        keep = ["player_id"] + [c for c in rolling_cols if c in per_player_rolling.columns]
-        cross = cross.join(per_player_rolling.select(keep), on="player_id", how="left")
+        keep = ["player_id", "kickoff_utc"] + [
+            c for c in rolling_cols if c in per_player_rolling.columns
+        ]
+        # The appended prediction row sits 1µs after the latest completed match.
+        rolling = per_player_rolling.select(keep).with_columns(
+            (pl.col("kickoff_utc") - pl.duration(microseconds=1))
+            .dt.convert_time_zone("UTC")
+            .alias("_history_kickoff")
+        ).drop("kickoff_utc")
+        cross = cross.join(rolling, on="player_id", how="left")
+        cross = _advance_through_schedule(
+            cross,
+            pit.team_fixture_kickoffs(test_season),
+            as_of=rolling["_history_kickoff"].max(),
+        )
     for c in rolling_cols:
         if c in cross.columns:
             cross = cross.with_columns(pl.col(c).fill_null(0))

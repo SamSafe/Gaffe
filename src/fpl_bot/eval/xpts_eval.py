@@ -48,6 +48,7 @@ from fpl_bot.models.minutes import (
     apply_availability_to_minutes_predictions,
     apply_expected_minutes_overrides,
 )
+from fpl_bot.models.validation import TRAINING_POLICY_VERSION
 from fpl_bot.models.xpts import FPL_GOAL_BY_POSITION
 
 WALK_FORWARD_FOLDS: list[dict] = [
@@ -405,6 +406,16 @@ def _run_one_fold(
         .join(naive_sum, on=["player_id", "fixture_id"], how="left")
         .join(position_baseline, on=["player_id", "fixture_id"], how="left")
         .join(
+            # Expected appearances scale per-appearance additions (DefCon)
+            # without revealing who actually played.
+            prepared.player_predictions.select(
+                "player_id", "fixture_id",
+                (1.0 - pl.col("p_minutes_zero")).alias("p_appearance"),
+            ),
+            on=["player_id", "fixture_id"],
+            how="left",
+        )
+        .join(
             test_pm.select("player_id", "fixture_id", "total_points", "kickoff_utc"),
             on=["player_id", "fixture_id"],
             how="inner",
@@ -624,7 +635,7 @@ def run_fold_with_raw_samples(
 ) -> Path | None:
     """Phase 4 SAA support: dump per-iteration raw FPL points for an arbitrary
     walk-forward fold. Cache layout matches the Phase 3 predictions cache:
-    `season_{N}_train_{...}_n{N_ITER}.parquet`.
+    `season_{N}_train_{...}_n{N_ITER}_{TRAINING_POLICY_VERSION}.parquet`.
     """
     result = _run_one_fold(
         train_seasons,
@@ -640,7 +651,7 @@ def run_fold_with_raw_samples(
         return None
     output_dir.mkdir(parents=True, exist_ok=True)
     train_str = "_".join(str(s) for s in train_seasons)
-    out_path = output_dir / f"season_{test_season}_train_{train_str}_n{n_iterations}.parquet"
+    out_path = output_dir / f"season_{test_season}_train_{train_str}_n{n_iterations}_{TRAINING_POLICY_VERSION}.parquet"
     raw_df.write_parquet(out_path)
     return out_path
 
@@ -705,7 +716,8 @@ def run_predict_only(
     `_run_one_fold` but without `total_points` (no actuals exist).
 
     Returns columns: player_id, fixture_id, e_xpts, p_xpts_ge_6,
-    e_xpts_naive, e_xpts_position, kickoff_utc.
+    e_xpts_naive, e_xpts_position, kickoff_utc, plus the live minutes,
+    appearance probabilities and attacking rates used by the simulator.
     """
     if not upcoming_fixture_ids:
         return pl.DataFrame()
@@ -741,7 +753,13 @@ def run_predict_only(
 
     from fpl_bot.db.models import DimFixture, FactPlayerStatus
     from fpl_bot.db.session import session_scope
-    from fpl_bot.features.bps import FoldPredictionInputs
+    from fpl_bot.features.bps import (
+        RC_RATE_PER_90,
+        SAVES_PER_90_GK,
+        YC_RATE_PER_90,
+        FoldPredictionInputs,
+        _resolved_pk_taker_set,
+    )
 
     with session_scope() as s:
         fixture_rows = s.execute(
@@ -799,6 +817,11 @@ def run_predict_only(
         fixtures_df = fixtures_df.join(hm, on=["fixture_id", "home_team_id"], how="left")
         fixtures_df = fixtures_df.join(am, on=["fixture_id", "away_team_id"], how="left")
     # Fill missing market_xg with sensible defaults
+    for column in (
+        "home_team_lambda", "away_team_lambda", "home_market_cs_prob", "away_market_cs_prob"
+    ):
+        if column not in fixtures_df.columns:
+            fixtures_df = fixtures_df.with_columns(pl.lit(None, dtype=pl.Float64).alias(column))
     fixtures_df = fixtures_df.with_columns(
         pl.col("home_team_lambda").fill_null(1.4),
         pl.col("away_team_lambda").fill_null(1.2),
@@ -862,10 +885,12 @@ def run_predict_only(
         _write_prop_shadow_log(pm, prop_shadow_out)
     # Other fields required by the simulator
     pm = pm.with_columns(
-        pl.lit(0.0).alias("saves_rate_per_90"),
-        pl.lit(0.0).alias("yc_rate_per_90"),
-        pl.lit(0.0).alias("rc_rate_per_90"),
-        pl.lit(False).alias("is_penalty_taker"),
+        pl.when(pl.col("position_code") == "GKP")
+        .then(SAVES_PER_90_GK).otherwise(0.0).alias("saves_rate_per_90"),
+        pl.lit(YC_RATE_PER_90).alias("yc_rate_per_90"),
+        pl.lit(RC_RATE_PER_90).alias("rc_rate_per_90"),
+        pl.col("player_id").is_in(list(_resolved_pk_taker_set(test_season)))
+        .alias("is_penalty_taker"),
         pl.col("current_team_id").alias("team_id"),
     )
 
@@ -923,9 +948,23 @@ def run_predict_only(
     # Match the column order of `_run_one_fold`'s eval_df for downstream
     # concat compatibility (polars `concat` aligns by position by default;
     # caller uses `how="diagonal_relaxed"` to align by name as belt-and-suspenders).
+    out = out.join(
+        pm.select(
+            "player_id", "fixture_id", "gameweek", "p_minutes_zero",
+            "p_minutes_short", "p_minutes_full", "lambda_goals_per_90",
+            "lambda_assists_per_90",
+        ),
+        on=["player_id", "fixture_id"], how="left",
+    ).with_columns(
+        (1.0 - pl.col("p_minutes_zero")).alias("p_appearance"),
+        (30.0 * pl.col("p_minutes_short") + 75.0 * pl.col("p_minutes_full"))
+        .alias("expected_minutes"),
+    )
     return out.select(
         "player_id", "fixture_id", "e_xpts", "p_xpts_ge_6",
         "e_xpts_naive", "e_xpts_position", "total_points", "kickoff_utc",
+        "gameweek", "p_minutes_zero", "p_minutes_short", "p_minutes_full",
+        "p_appearance", "expected_minutes", "lambda_goals_per_90", "lambda_assists_per_90",
     )
 
 

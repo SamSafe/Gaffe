@@ -31,6 +31,7 @@ from fpl_bot.db import pit
 from fpl_bot.db.models import DimFixture, FactPlayerMatch
 from fpl_bot.db.session import session_scope
 from fpl_bot.eval.xpts_eval import _run_one_fold
+from fpl_bot.models.validation import TRAINING_POLICY_VERSION
 from fpl_bot.optim.candidate_filter import select_candidates
 from fpl_bot.optim.chip_scheduler import free_hit_gws, horizon_before_free_hit
 from fpl_bot.optim.eo import eo_for_candidates
@@ -123,10 +124,8 @@ class BacktestSeasonResult:
         ])
 
 
-def _per_player_per_gw_predictions(eval_df: pl.DataFrame) -> dict[tuple[int, int], float]:
-    """Aggregate fixture-level e_xpts to (player_id, gameweek). Eval_df from
-    xpts_eval has player_id, fixture_id, e_xpts, total_points. We need to
-    join in gameweek from dim_fixture."""
+def _with_fixture_gameweek(eval_df: pl.DataFrame) -> pl.DataFrame:
+    """Replace any gameweek column with the one in dim_fixture."""
     fids = eval_df["fixture_id"].unique().to_list()
     with session_scope() as s:
         rows = s.execute(
@@ -136,11 +135,36 @@ def _per_player_per_gw_predictions(eval_df: pl.DataFrame) -> dict[tuple[int, int
         ).all()
     fid_to_gw = {r.fixture_id: r.gameweek for r in rows}
 
-    df = eval_df.with_columns(
+    return eval_df.with_columns(
         pl.col("fixture_id")
         .replace_strict(fid_to_gw, default=0)
         .alias("gameweek")
     )
+
+
+def _per_player_per_gw_appearances(
+    eval_df: pl.DataFrame,
+) -> dict[tuple[int, int], float] | None:
+    """Expected appearances per (player_id, gameweek), summed over a DGW.
+
+    Returns None for prediction caches written before `p_appearance` existed.
+    """
+    if "p_appearance" not in eval_df.columns:
+        return None
+    agg = _with_fixture_gameweek(eval_df).group_by(["player_id", "gameweek"]).agg(
+        pl.col("p_appearance").sum()
+    )
+    return {
+        (int(r["player_id"]), int(r["gameweek"])): float(r["p_appearance"])
+        for r in agg.iter_rows(named=True)
+    }
+
+
+def _per_player_per_gw_predictions(eval_df: pl.DataFrame) -> dict[tuple[int, int], float]:
+    """Aggregate fixture-level e_xpts to (player_id, gameweek). Eval_df from
+    xpts_eval has player_id, fixture_id, e_xpts, total_points. We need to
+    join in gameweek from dim_fixture."""
+    df = _with_fixture_gameweek(eval_df)
     agg = df.group_by(["player_id", "gameweek"]).agg(
         pl.col("e_xpts").sum().alias("e_xpts_gw"),
         pl.col("total_points").sum().alias("actual_pts_gw"),
@@ -647,7 +671,7 @@ def _build_walk_forward_eval_df(
         train_through = chunk_start - 1 if chunk_start > 1 else None
         # Per-chunk cache
         suffix = "baseline" if train_through is None else f"thru_gw{train_through}"
-        chunk_cache = cache_dir / f"season_{test_season}_train_{train_str}_{suffix}.parquet"
+        chunk_cache = cache_dir / f"season_{test_season}_train_{train_str}_{suffix}_{TRAINING_POLICY_VERSION}.parquet"
         if cache_predictions and chunk_cache.exists():
             eval_df = pl.read_parquet(chunk_cache)
         else:
@@ -718,7 +742,7 @@ def backtest_season(
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     train_str = "_".join(str(s) for s in train_seasons)
-    cache_path = cache_dir / f"season_{test_season}_train_{train_str}.parquet"
+    cache_path = cache_dir / f"season_{test_season}_train_{train_str}_{TRAINING_POLICY_VERSION}.parquet"
     if walk_forward_chunk is not None:
         eval_df = _build_walk_forward_eval_df(
             test_season=test_season,
@@ -751,6 +775,7 @@ def backtest_season(
         position_calibration=position_calibration,
         defcon_shrinkage=defcon_shrinkage,
         defcon_per_position_shrinkage=defcon_per_position_shrinkage,
+        appearance_exposure_by_pgw=_per_player_per_gw_appearances(eval_df),
         fwd_calibration=fwd_calibration,
         apply_suspension=apply_suspension,
         cache_dir=cache_dir,

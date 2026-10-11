@@ -20,10 +20,10 @@ from fpl_bot.eval.minutes_eval import (
 from fpl_bot.features.minutes import FEATURE_COLUMNS, build_feature_table
 from fpl_bot.models.minutes import (
     LABEL_COLUMN,
-    MONOTONIC_FEATURE_SIGNS,
     NUM_CLASSES,
     train_minutes_model,
 )
+from fpl_bot.models.validation import train_with_chronological_validation
 
 RESULTS_DIR = Path("docs/design/phase2_1_results")
 
@@ -51,42 +51,12 @@ def _train_with_feature_subset(
     features: list[str],
 ) -> tuple[float, np.ndarray]:
     """Train on a feature subset and return (log_loss, probs) on valid."""
-    import lightgbm as lgb
-
-    train_df = train.select([*features, LABEL_COLUMN]).drop_nulls(LABEL_COLUMN)
-    X_train = train_df.select(features).to_pandas().to_numpy()
-    y_train = train_df.select(LABEL_COLUMN).to_pandas().to_numpy().ravel()
+    model = train_with_chronological_validation(
+        train_minutes_model, train, feature_subset=features
+    )
     valid_df = valid.select([*features, LABEL_COLUMN]).drop_nulls(LABEL_COLUMN)
-    X_valid = valid_df.select(features).to_pandas().to_numpy()
     y_valid = valid_df.select(LABEL_COLUMN).to_pandas().to_numpy().ravel()
-
-    train_set = lgb.Dataset(X_train, label=y_train, feature_name=features, free_raw_data=False)
-    valid_set = lgb.Dataset(
-        X_valid, label=y_valid, feature_name=features, reference=train_set, free_raw_data=False
-    )
-    params = {
-        "objective": "multiclass",
-        "num_class": NUM_CLASSES,
-        "metric": "multi_logloss",
-        "num_leaves": 31,
-        "learning_rate": 0.05,
-        "min_data_in_leaf": 50,
-        "monotone_constraints": [MONOTONIC_FEATURE_SIGNS.get(f, 0) for f in features],
-        "verbosity": -1,
-        "seed": 42,
-    }
-    booster = lgb.train(
-        params,
-        train_set,
-        num_boost_round=1000,
-        valid_sets=[train_set, valid_set],
-        valid_names=["train", "valid"],
-        callbacks=[
-            lgb.log_evaluation(period=0),
-            lgb.early_stopping(stopping_rounds=50, verbose=False),
-        ],
-    )
-    probs = booster.predict(X_valid, num_iteration=booster.best_iteration)
+    probs = model.predict_proba(valid_df)
     return float(log_loss(y_valid, probs, labels=list(range(NUM_CLASSES)))), probs
 
 
@@ -151,7 +121,7 @@ def plot_calibration_for_fold(
     train = feature_df.filter(pl.col("season_id").is_in(fold["train"]))
     valid = feature_df.filter(pl.col("season_id") == fold["test"])
 
-    model = train_minutes_model(train, valid=valid)
+    model = train_with_chronological_validation(train_minutes_model, train)
     probs = model.predict_proba(valid)
     y = valid.select(LABEL_COLUMN).to_pandas().to_numpy().ravel()
     eces = _ece(probs, y, n_bins=n_bins)
@@ -202,8 +172,7 @@ def feature_importance_table(test_season: int = 24) -> str:
     all_seasons = sorted(set(fold["train"] + [fold["test"]]))
     feature_df = _drop_unusable(build_feature_table(season_ids=all_seasons))
     train = feature_df.filter(pl.col("season_id").is_in(fold["train"]))
-    valid = feature_df.filter(pl.col("season_id") == fold["test"])
-    model = train_minutes_model(train, valid=valid)
+    model = train_with_chronological_validation(train_minutes_model, train)
 
     importance = model.booster.feature_importance(importance_type="gain")
     pairs = sorted(

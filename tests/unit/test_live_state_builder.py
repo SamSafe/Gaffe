@@ -103,6 +103,39 @@ def _insert_status(
         )
 
 
+def test_corrected_cost_basis_replaces_public_sell_price(tmp_path, monkeypatch):
+    from fpl_bot.db import pit
+
+    _insert_user_team(players=[(90001, 60, 1, True, False)], sell_prices={90001: 60})
+    overrides = tmp_path / "overrides.yaml"
+    overrides.write_text("99:\n  5:\n    12345:\n      cost_basis:\n        90001: 55\n")
+    monkeypatch.setattr(settings, "live_state_overrides_path", overrides)
+    monkeypatch.setattr(pit, "latest_team_and_price_per_player", lambda _: {90001: (1, 60)})
+    assert load_user_sell_prices(season_id=99, gameweek=5, team_id=12345) == {90001: 57}
+
+
+def test_corrected_cost_basis_carries_to_later_gameweeks(tmp_path, monkeypatch):
+    """A GW4 purchase price still governs GW5, until a newer block replaces it."""
+    from fpl_bot.db import pit
+
+    _insert_user_team(players=[(90001, 60, 1, True, False), (90002, 70, 2, False, True)])
+    overrides = tmp_path / "overrides.yaml"
+    overrides.write_text(
+        "99:\n"
+        "  4:\n    12345:\n      bank_tenths: 99\n      cost_basis:\n        90001: 55\n        90002: 60\n"
+        "  5:\n    12345:\n      cost_basis:\n        90002: 66\n"
+        "  6:\n    12345:\n      cost_basis:\n        90001: 40\n"
+    )
+    monkeypatch.setattr(settings, "live_state_overrides_path", overrides)
+    monkeypatch.setattr(
+        pit, "latest_team_and_price_per_player", lambda _: {90001: (1, 60), 90002: (1, 70)}
+    )
+    assert load_user_sell_prices(season_id=99, gameweek=5, team_id=12345) == {90001: 57, 90002: 68}
+    state = load_user_state(season_id=99, gameweek=5, team_id=12345)
+    assert state.cost_basis == {90001: 55, 90002: 66}
+    assert state.bank == 25  # bank is weekly: GW4's override must not carry
+
+
 def test_load_user_state_basic():
     _insert_user_team(season_id=99, gameweek=5, team_id=12345)
     state = load_user_state(season_id=99, gameweek=5, team_id=12345)

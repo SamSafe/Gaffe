@@ -21,6 +21,7 @@ from sqlalchemy import select
 
 from fpl_bot.db.models import DimFixture
 from fpl_bot.db.session import session_scope
+from fpl_bot.models.validation import TRAINING_POLICY_VERSION
 
 
 def cache_path_for_fold(
@@ -30,7 +31,7 @@ def cache_path_for_fold(
     cache_dir: Path = Path("data/cache/xpts_raw_samples"),
 ) -> Path:
     train_str = "_".join(str(s) for s in train_seasons)
-    return cache_dir / f"season_{test_season}_train_{train_str}_n{n_iterations}.parquet"
+    return cache_dir / f"season_{test_season}_train_{train_str}_n{n_iterations}_{TRAINING_POLICY_VERSION}.parquet"
 
 
 def load_raw_samples(

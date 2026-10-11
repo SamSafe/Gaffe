@@ -25,6 +25,7 @@ from sqlalchemy import select
 from fpl_bot.db import pit
 from fpl_bot.db.models import DimFixture
 from fpl_bot.db.session import session_scope
+from fpl_bot.models.validation import TRAINING_POLICY_VERSION
 
 HAUL_THRESHOLD = 6
 POSITIONS = ("GKP", "DEF", "MID", "FWD")
@@ -62,7 +63,7 @@ def _load_fold_eval_df(
 ) -> pl.DataFrame | None:
     """Load cached eval_df for a fold; returns None if absent."""
     train_str = "_".join(str(s) for s in train_seasons)
-    path = cache_dir / f"season_{test_season}_train_{train_str}.parquet"
+    path = cache_dir / f"season_{test_season}_train_{train_str}_{TRAINING_POLICY_VERSION}.parquet"
     if not path.exists():
         return None
     return pl.read_parquet(path)

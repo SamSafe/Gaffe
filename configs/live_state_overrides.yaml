@@ -25,8 +25,33 @@
 # ingest records CURRENT price as purchase price, so sell-value is approximated.
 # Squad value is 100.3 vs 100.0 spent, i.e. the error is at most ~0.3m spread
 # across 15 players — small enough not to change transfer feasibility.
+# GW7 audited 2026-10-11 from public picks, transfer/chip history and player prices.
 26:
   4:
     718959:
       bank_tenths: 4
+      free_transfers: 2
+  7:
+    718959:
+      bank_tenths: 28
+      chips_used:
+      - BB1
+      - TC1
+      - WC1
+      cost_basis:
+        60307: 57
+        146426: 42
+        154561: 60
+        199798: 45
+        201658: 60
+        216646: 62
+        222531: 79
+        223094: 155
+        244850: 76
+        465730: 48
+        466075: 55
+        473284: 46
+        475168: 75
+        513418: 60
+        522047: 50
       free_transfers: 2

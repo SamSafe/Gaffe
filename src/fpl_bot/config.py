@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_prefix="FPL_BOT_",
+        env_ignore_empty=True,
         extra="ignore",
     )
 
@@ -22,7 +23,7 @@ class Settings(BaseSettings):
     # Seasons the prediction models train on, comma-separated season_ids.
     # Append the current season once it has ~5+ played GWs (see
     # docs/RUNBOOK_live.md); before that its rolling features are too thin.
-    train_seasons: str = "19,20,21,22,23,24,25"
+    train_seasons: str = "19,20,21,22,23,24,25,26"
 
     raw_data_dir: Path = Path("data/raw")
     user_agent: str = "fpl-bot/0.1 (research; non-commercial)"

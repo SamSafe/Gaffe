@@ -85,18 +85,20 @@ def train_per_90_model(
     num_boost_round: int = 1000,
     early_stopping_rounds: int = 50,
     seed: int = 42,
+    feature_subset: list[str] | None = None,
 ) -> TrainedPer90Model:
     """Train a Poisson per-90 model. target ∈ {'goals', 'assists'}."""
     if target not in LABEL_COLUMNS:
         raise ValueError(f"target must be 'goals' or 'assists'; got {target!r}")
     label_col = LABEL_COLUMNS[target]
+    feature_names = feature_subset if feature_subset is not None else FEATURE_COLUMNS
     monotone = GOALS_MONOTONIC if target == "goals" else ASSISTS_MONOTONIC
-    monotone_constraints = [monotone.get(f, 0) for f in FEATURE_COLUMNS]
+    monotone_constraints = [monotone.get(f, 0) for f in feature_names]
 
-    needed_cols = [*FEATURE_COLUMNS, label_col, "minutes_factor"]
+    needed_cols = [*feature_names, label_col, "minutes_factor"]
     train_df = train.select(needed_cols).drop_nulls(label_col).drop_nulls("minutes_factor")
 
-    X_train = train_df.select(FEATURE_COLUMNS).to_pandas().to_numpy()
+    X_train = train_df.select(feature_names).to_pandas().to_numpy()
     y_train = train_df.select(label_col).to_pandas().to_numpy().ravel()
     mins_train = train_df.select("minutes_factor").to_pandas().to_numpy().ravel()
     init_train = np.log(np.clip(mins_train, 1e-6, None))
@@ -105,7 +107,7 @@ def train_per_90_model(
     train_set = lgb.Dataset(
         X_train,
         label=y_train,
-        feature_name=FEATURE_COLUMNS,
+        feature_name=feature_names,
         free_raw_data=False,
         init_score=init_train,
         weight=weight_train,
@@ -115,14 +117,14 @@ def train_per_90_model(
     valid_names = ["train"]
     if valid is not None and not valid.is_empty():
         v = valid.select(needed_cols).drop_nulls(label_col).drop_nulls("minutes_factor")
-        X_valid = v.select(FEATURE_COLUMNS).to_pandas().to_numpy()
+        X_valid = v.select(feature_names).to_pandas().to_numpy()
         y_valid = v.select(label_col).to_pandas().to_numpy().ravel()
         mins_valid = v.select("minutes_factor").to_pandas().to_numpy().ravel()
         init_valid = np.log(np.clip(mins_valid, 1e-6, None))
         valid_set = lgb.Dataset(
             X_valid,
             label=y_valid,
-            feature_name=FEATURE_COLUMNS,
+            feature_name=feature_names,
             reference=train_set,
             free_raw_data=False,
             init_score=init_valid,
@@ -166,7 +168,7 @@ def train_per_90_model(
 
     return TrainedPer90Model(
         booster=booster,
-        feature_names=FEATURE_COLUMNS,
+        feature_names=feature_names,
         target=target,
         num_iterations=booster.best_iteration or booster.num_trees(),
     )

@@ -273,7 +273,7 @@ class TrainedMinutesModel:
         return cls(
             booster=booster,
             feature_names=feature_names,
-            num_iterations=booster.best_iteration or booster.num_trees(),
+            num_iterations=booster.best_iteration or booster.current_iteration(),
         )
 
 
@@ -288,9 +288,10 @@ def train_minutes_model(
     early_stopping_rounds: int = 50,
     seed: int = 42,
     feature_mode: MinutesFeatureMode = "baseline",
+    feature_subset: list[str] | None = None,
 ) -> TrainedMinutesModel:
     """Train a 3-class LightGBM minutes model on a feature DataFrame."""
-    feature_names = feature_columns_for_mode(feature_mode)
+    feature_names = feature_subset if feature_subset is not None else feature_columns_for_mode(feature_mode)
     monotone_constraints = [MONOTONIC_FEATURE_SIGNS.get(f, 0) for f in feature_names]
 
     train_df = train.select([*feature_names, LABEL_COLUMN]).drop_nulls(LABEL_COLUMN)
@@ -354,5 +355,5 @@ def train_minutes_model(
     return TrainedMinutesModel(
         booster=booster,
         feature_names=feature_names,
-        num_iterations=booster.best_iteration or booster.num_trees(),
+        num_iterations=booster.best_iteration or booster.current_iteration(),
     )

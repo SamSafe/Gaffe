@@ -12,8 +12,8 @@ where f is non-decreasing. The fit naturally bends the curve UP at the
 high end where actuals exceed predictions — exactly the elite-FWD
 region — while leaving the well-calibrated low/mid range alone.
 
-PIT-correctness: the calibrator for a test season is fit ONLY on other
-folds' held-out predictions (never the test season itself). For 25/26
+PIT-correctness: the calibrator for a test season is fit ONLY on earlier
+folds' held-out predictions. For 25/26
 that means folds 21-24's (pred, actual) FWD pairs.
 """
 from __future__ import annotations
@@ -26,14 +26,12 @@ import polars as pl
 from sklearn.isotonic import IsotonicRegression
 
 from fpl_bot.db import pit
+from fpl_bot.models.validation import TRAINING_POLICY_VERSION
 
 # Default fold caches used to source out-of-fold FWD pairs.
 _FOLD_CACHES = {
-    21: "season_21_train_19_20.parquet",
-    22: "season_22_train_19_20_21.parquet",
-    23: "season_23_train_19_20_21_22.parquet",
-    24: "season_24_train_19_20_21_22_23.parquet",
-    25: "season_25_train_19_20_21_22_23_24.parquet",
+    season: f"season_{season}_train_{'_'.join(str(s) for s in range(19, season))}_{TRAINING_POLICY_VERSION}.parquet"
+    for season in range(21, 26)
 }
 
 
@@ -83,7 +81,7 @@ def fit_fwd_calibrator(
     test_season: int,
     cache_dir: Path = Path("data/cache/xpts_predictions"),
 ) -> FwdCalibrator | None:
-    """Fit an isotonic FWD calibrator on all folds EXCEPT `test_season`.
+    """Fit an isotonic FWD calibrator on folds strictly before `test_season`.
 
     Returns None if there aren't enough out-of-fold FWD pairs (the caller
     then skips calibration).
@@ -98,7 +96,7 @@ def fit_fwd_calibrator(
 
     pairs: list[tuple[float, float]] = []
     for season_id, fname in _FOLD_CACHES.items():
-        if season_id == test_season:
+        if season_id >= test_season:
             continue
         pairs.extend(
             _fwd_pairs_from_cache(cache_dir / fname, season_id, fwd_ids)

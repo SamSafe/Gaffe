@@ -228,84 +228,85 @@
 # Re-run and re-paste when FPL updates roles (their pre-season list is a
 # guess for unsettled teams, and promoted clubs' orders shift once they play).
 # 20 of 20 teams have FPL-listed takers.
+# Refreshed from official bootstrap, 2026-10-11.
 26:
   Arsenal:
     penalty: Saka
-    direct_fk: [Rice, Saka, Eze]
-    corner: [Rice, Saka, Tzolis, Ødegaard, Bruno G., Madueke]
+    direct_fk: [Rice, Saka, Eze, Ødegaard]
+    corner: [Rice, Saka, Tzolis, Bruno G., Madueke]
   Aston Villa:
     penalty: Buendía
     direct_fk: [Buendía]
-    corner: [Cash, McGinn, Buendía, Barkley]
+    corner: [McGinn, Buendía, Cash, Barkley]
   Bournemouth:
     penalty: Kroupi.Jr
     direct_fk: [Tavernier, Kluivert, Brooks, Scott]
-    corner: [Tavernier, Scott, Kluivert, Brooks, Cook, Christie]
+    corner: [Tavernier, Scott, Kluivert, Brooks]
   Brentford:
     penalty: Thiago
     direct_fk: [Lewis-Potter, Jensen, Damsgaard]
-    corner: [Jensen, O.Dango, Damsgaard, Janelt]
+    corner: [Jensen, Damsgaard, Janelt, O.Dango, Lewis-Potter]
   Brighton:
     penalty: Groß
     direct_fk: [Groß, Ayari, Dunk, De Cuyper, Gomez]
     corner: [Groß, De Cuyper, F.Kadıoğlu, Ayari, Minteh]
   Chelsea:
     penalty: Palmer
-    direct_fk: [James, Enzo, Palmer, Neto]
-    corner: [James, Neto, Enzo, Rogers, Estêvão]
+    direct_fk: [James, Palmer, Rogers, Neto]
+    corner: [James, Neto, Henderson, Rogers, Estêvão, Gusto]
   Coventry City:
     penalty: Wright
     direct_fk: [Rudoni, Torp]
-    corner: [Grimes, Torp, Rudoni]
+    corner: [Grimes, Torp, Tchaouna, Hamer, Rudoni]
   Crystal Palace:
     penalty: Mateta
     direct_fk: [Yeremy, Devenny]
-    corner: [Wharton, Yeremy, Hughes, Kamada]
+    corner: [Yeremy, Wharton, Kamada, Hughes]
   Everton:
-    penalty: Ndiaye
+    penalty: Barry
     direct_fk: [Garner]
-    corner: [Garner, Dewsbury-Hall]
+    corner: [Garner, Dewsbury-Hall, Hackney]
   Fulham:
     penalty: Gonzalo
     direct_fk: [Iwobi]
-    corner: [Iwobi, Bobb, Kevin]
+    corner: [Iwobi, Bobb, Sessegnon, Kevin]
   Hull City:
     penalty: McBurnie
     direct_fk: [Giles, Belloumi]
-    corner: [Giles, Slater, Belloumi]
+    corner: [Slater, Belloumi, Giles]
   Ipswich Town:
     penalty: Clarke
     direct_fk: [Núñez, Davis, Clarke]
-    corner: [Núñez, Davis, Clarke, Lukić, Philogene]
+    corner: [Lukić, Fatawu, Núñez, Clarke, Philogene]
   Leeds:
     penalty: Calvert-Lewin
-    direct_fk: [Stach, Longstaff, Aaronson]
+    direct_fk: [Stach, Wilson, Longstaff, Aaronson]
     corner: [Stach, Wilson, Longstaff, Tanaka]
   Liverpool:
     penalty: Szoboszlai
     direct_fk: [Szoboszlai, Wirtz]
-    corner: [Szoboszlai, Gakpo, Wirtz]
+    corner: [Szoboszlai, Wirtz, Gakpo, Tsimikas]
   Man City:
     penalty: Haaland
-    direct_fk: [Cherki, Marmoush, Foden]
-    corner: [Cherki, Anderson, Foden]
+    direct_fk: [Cherki, Foden, Enzo]
+    corner: [Cherki, Foden, Anderson, Enzo]
   Man Utd:
     penalty: B.Fernandes
-    direct_fk: [B.Fernandes, Mbeumo, Mount]
+    direct_fk: [B.Fernandes, Mbeumo, Rashford, Mount]
     corner: [B.Fernandes, Mbeumo, Shaw, Amad]
   Newcastle:
-    penalty: Woltemade
-    direct_fk: [Hall, Schär]
-    corner: [Hall, J.Murphy, L.Miley, Elanga]
+    penalty: Osula
+    direct_fk: [Hall, Schär, Dedić, Osula]
+    corner: [Hall, Elanga, Barnes, J.Murphy, L.Miley]
   'Nott''m Forest':
-    penalty: Wood
-    direct_fk: [Gibbs-White, N.Williams, Murillo, Hudson-Odoi]
-    corner: [N.Williams, McAtee, Schlager, Hutchinson]
+    penalty: Gibbs-White
+    direct_fk: [Gibbs-White, Murillo, N.Williams, Hudson-Odoi]
+    corner: [McAtee, N.Williams, Schlager]
   Spurs:
     penalty: Solanke
-    direct_fk: [Pedro Porro, Xavi, Kudus, Tel, Tonali]
-    corner: [Pedro Porro, Tonali, Robertson, Tel, Kudus, Xavi]
+    direct_fk: [Pedro Porro, Xavi, Tel, Marmoush, Maddison, Kudus]
+    corner: [Pedro Porro, Sávio, Tel, Fernandes, Maddison, Robertson, Kudus, Marmoush]
   Sunderland:
     penalty: Diarra
-    direct_fk: [Xhaka, E.Le Fée, Angulo]
+    direct_fk: [N.Angulo, Xhaka, E.Le Fée]
     corner: [E.Le Fée, Xhaka, Hume]

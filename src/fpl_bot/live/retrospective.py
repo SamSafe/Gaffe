@@ -143,11 +143,19 @@ def compute_retrospective(
         objective_value=d["objective_value"],
     )
 
-    # Use the chip-aware scorer with bench order by predicted xPts. We don't
-    # have the original pred_dict here, so fall back to actual_pts as a
-    # proxy (the bench order matters only for auto-sub; using actuals is
-    # an OK retroactive approximation).
-    bench_order_xpts = {p: float(actual_pts.get(p, 0)) for p in decisions.squad}
+    # Preserve the pre-deadline order. Sorting by realized points gives the
+    # retrospective hindsight and can inflate the measured performance.
+    if "bench_order" in d:
+        bench_order_xpts = {
+            int(p): float(len(d["bench_order"]) - index)
+            for index, p in enumerate(d["bench_order"])
+        }
+        bench_order_source = "saved_recommendation"
+    else:
+        # Older artifacts did not retain order; use a reproducible fallback
+        # and make the limitation explicit rather than choosing with actuals.
+        bench_order_xpts = {p: -float(p) for p in decisions.squad}
+        bench_order_source = "legacy_player_id_fallback"
 
     scorer_out = score_gw(
         ScorerInputs(
@@ -168,6 +176,7 @@ def compute_retrospective(
                 "gameweek": gameweek,
                 "team_id": team_id,
                 "actuals_source": actuals_source,
+                "bench_order_source": bench_order_source,
                 "gw_points": scorer_out.gw_points,
                 "auto_subs": list(scorer_out.auto_subs),
                 "used_vice": scorer_out.used_vice,

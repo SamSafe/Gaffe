@@ -19,6 +19,7 @@ import polars as pl
 
 from fpl_bot.db import pit
 from fpl_bot.eval.milp_backtest import (
+    _per_player_per_gw_appearances,
     _per_player_per_gw_predictions,
     _per_player_per_gw_prices,
     _resolve_price_at_gw,
@@ -33,6 +34,7 @@ from fpl_bot.live.state_builder import (
     load_user_sell_prices,
     load_user_state,
 )
+from fpl_bot.models.validation import TRAINING_POLICY_VERSION
 from fpl_bot.optim.candidate_filter import select_candidates
 from fpl_bot.optim.chip_scheduler import (
     free_hit_gws,
@@ -43,6 +45,7 @@ from fpl_bot.optim.eo import eo_for_candidates
 from fpl_bot.optim.fixture_analytics import load_fixture_analytics
 from fpl_bot.optim.milp import MilpInputs, solve_rolling_horizon
 from fpl_bot.optim.prediction_postprocess import apply_prediction_postprocessing
+from fpl_bot.optim.state import ALL_CHIP_SLOTS, CHIPS_FIRST_HALF, SECOND_HALF_FIRST_GW
 
 OUTPUT_ROOT = Path("data/live/recommendations")
 
@@ -107,19 +110,14 @@ def generate_recommendation(
     """Run the full Phase 6 pipeline and write recommendation files.
 
     Returns (markdown_path, json_path).
+    ``cache_predictions`` is retained for caller compatibility; live horizons
+    always regenerate because historical evaluation caches lack freshness keys.
     """
-    # 1. Load or generate predictions. Try the backtest cache first (played
-    #    GWs only); if the target gameweek isn't there, fall back to the
-    #    Phase 6 v2 predict-only path which synthesizes feature rows for
-    #    upcoming fixtures.
-    cache_path = cache_dir / (
-        f"season_{season_id}_train_{'_'.join(str(s) for s in train_seasons)}.parquet"
-    )
+    # 1. Generate fresh predictions from upcoming-fixture feature rows.
     eval_df: pl.DataFrame | None = None
-    if cache_predictions and cache_path.exists():
-        eval_df = pl.read_parquet(cache_path)
-        # If the cache covers the target gameweek, we're done. Otherwise
-        # we'll extend with predict-only rows below.
+    # Historical evaluation caches are not live forecasts: their keys do not
+    # identify current results, odds, news, overrides, or feature code. Always
+    # regenerate the live horizon rather than silently serving stale values.
 
     # A live cache miss needs only upcoming predictions. Running a historical
     # evaluation fold here trains the stack twice and cannot fill future GWs.
@@ -129,7 +127,7 @@ def generate_recommendation(
         pred_by_pgw = _per_player_per_gw_predictions(eval_df)
 
     cached_gws = sorted({gw for (_, gw) in pred_by_pgw if gw > 0})
-    target_horizon_gws = list(range(gameweek, gameweek + horizon))
+    target_horizon_gws = list(range(gameweek, min(39, gameweek + horizon)))
     from fpl_bot.live.news_extract import (
         build_pred_attenuator,
         latest_news_per_player,
@@ -215,7 +213,9 @@ def generate_recommendation(
         season_id=season_id,
         train_seasons=train_seasons,
         cache_dir=cache_dir,
-        extend_defcon_future=True,
+        appearance_exposure_by_pgw=(
+            _per_player_per_gw_appearances(eval_df) if eval_df is not None else None
+        ),
     )
 
     all_gws = sorted({gw for (_, gw) in pred_by_pgw if gw > 0})
@@ -380,11 +380,56 @@ def generate_recommendation(
     meta["rho"] = rho
     meta["alpha"] = alpha
     meta["beta"] = beta
+    from sqlalchemy import func as sa_func
+    from sqlalchemy import select
+
+    from fpl_bot.db.models import DimFixture, FactMarketXg, FactPlayerMatch
+    from fpl_bot.db.session import session_scope
+
+    with session_scope() as s:
+        market_coverage = s.execute(
+            select(
+                DimFixture.gameweek,
+                sa_func.count(sa_func.distinct(DimFixture.fixture_id)),
+                sa_func.count(sa_func.distinct(FactMarketXg.fixture_id)),
+            ).outerjoin(FactMarketXg, FactMarketXg.fixture_id == DimFixture.fixture_id)
+            .where(DimFixture.season_id == season_id, DimFixture.gameweek.in_(target_horizon_gws))
+            .group_by(DimFixture.gameweek).order_by(DimFixture.gameweek)
+        ).all()
+        latest_results_gw = s.scalar(
+            select(sa_func.max(DimFixture.gameweek))
+            .join(FactPlayerMatch, FactPlayerMatch.fixture_id == DimFixture.fixture_id)
+            .where(DimFixture.season_id == season_id)
+        )
+    meta["data_quality"] = {
+        "training_policy": TRAINING_POLICY_VERSION,
+        "completed_results_through_gw": latest_results_gw,
+        "simulation_iterations": n_iterations,
+        "train_seasons": train_seasons,
+        "bookmaker_coverage": {
+            str(gw): {"fixtures": int(total), "priced_fixtures": int(priced)}
+            for gw, total, priced in market_coverage
+        },
+        "gameweeks_with_market_fallback": [
+            int(gw) for gw, total, priced in market_coverage if priced < total
+        ],
+    }
 
     # 8. Write outputs
     if output_dir is None:
         output_dir = OUTPUT_ROOT / f"season_{season_id}" / f"gw_{gameweek}"
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if eval_df is not None:
+        eval_df.write_parquet(output_dir / "fixture_predictions.parquet")
+    forecast_rows = [
+        {"player_id": pid, "gameweek": gw, "expected_points": value}
+        for (pid, gw), value in sorted(pred_by_pgw_filtered.items())
+        if gw in target_horizon_gws
+    ]
+    (output_dir / "player_predictions.json").write_text(
+        json.dumps(forecast_rows, indent=2)
+    )
 
     md_path = output_dir / "recommendation.md"
     json_path = output_dir / "recommendation.json"
@@ -416,6 +461,7 @@ def generate_recommendation(
         positions_dict,
         buy_prices,
         sell_prices,
+        pred_dict,
     )
     _write_markdown(
         md_path,
@@ -439,6 +485,7 @@ def _write_json_sidecar(
     positions: dict[int, str],
     buy_prices: dict[int, int],
     sell_prices: dict[int, int],
+    pred_dict: dict[tuple[int, int], float],
 ) -> None:
     out = {
         "generated_at": dt.datetime.now(dt.UTC).isoformat(),
@@ -454,6 +501,19 @@ def _write_json_sidecar(
             "chip_played": decisions.chip_played,
             "hits": decisions.hits,
             "objective_value": decisions.objective_value,
+            "bench_order": sorted(
+                decisions.squad - decisions.starting_xi,
+                key=lambda p: (-pred_dict.get((p, ctx.gameweek), 0.0), p),
+            ),
+            "expected_points_by_player": {
+                str(p): pred_dict.get((p, ctx.gameweek), 0.0)
+                for p in sorted(decisions.squad)
+            },
+            "expected_gw_points": sum(
+                pred_dict.get((p, ctx.gameweek), 0.0)
+                for p in (decisions.squad if decisions.chip_played in ("BB1", "BB2") else decisions.starting_xi)
+            ) + (2 if decisions.chip_played in ("TC1", "TC2") else 1)
+            * pred_dict.get((decisions.captain, ctx.gameweek), 0.0) - 4 * decisions.hits,
         },
         "solve_meta": meta,
     }
@@ -499,10 +559,10 @@ def _write_markdown(
 
     squad_by_pos = _by_pos(set(decisions.squad))
     xi_by_pos = _by_pos(set(decisions.starting_xi))
+    # Same key as the JSON `bench_order` that retrospectives score against.
     bench = sorted(
         set(decisions.squad) - set(decisions.starting_xi),
-        key=lambda p: pred_dict.get((p, ctx.gameweek), 0.0),
-        reverse=True,
+        key=lambda p: (-pred_dict.get((p, ctx.gameweek), 0.0), p),
     )
 
     lines: list[str] = []
@@ -510,6 +570,12 @@ def _write_markdown(
     lines.append("")
     lines.append(f"Generated: {dt.datetime.now(dt.UTC).isoformat()}")
     lines.append(f"Solver: {meta.get('termination', 'unknown')} (obj={meta.get('objective', 'NA'):.2f})")
+    quality = meta.get("data_quality", {})
+    if quality:
+        lines.append(f"Completed results through GW{quality['completed_results_through_gw']}.")
+        fallback = quality.get("gameweeks_with_market_fallback", [])
+        if fallback:
+            lines.append("Bookmaker coverage is incomplete for " + ", ".join(f"GW{gw}" for gw in fallback) + "; those forecasts use market defaults.")
     lines.append("")
     lines.append("## Squad (15 players)")
     for pos in ("GKP", "DEF", "MID", "FWD"):
@@ -562,6 +628,17 @@ def _write_markdown(
             continue
         marker = " ← this GW" if gw == ctx.gameweek else ""
         lines.append(f"- {slot}: GW{gw}{marker}")
+    # The scheduler places a Free Hit only on a known blank GW, so a banked
+    # chip can be absent from the plan entirely. Silence there reads as
+    # "nothing to decide" while the chip quietly expires.
+    for slot in ALL_CHIP_SLOTS:
+        if slot in chips_used or slot in ctx.chip_schedule:
+            continue
+        expires = SECOND_HALF_FIRST_GW - 1 if slot in CHIPS_FIRST_HALF else 38
+        if ctx.gameweek <= expires:
+            lines.append(
+                f"- {slot}: unscheduled, still available — lost if unused by GW{expires}"
+            )
     lines.append("")
 
     if ctx.overrides["excluded_player_ids"] or ctx.overrides["xpts_attenuator"]:

@@ -16,7 +16,9 @@ from fpl_bot.features import manual_overrides
 POSITION_CODES = ("GKP", "DEF", "MID", "FWD")
 
 
-def _team_rolling_form(season_ids: list[int] | None) -> pl.DataFrame:
+def _team_rolling_form(
+    season_ids: list[int] | None, *, include_latest_match: bool = False
+) -> pl.DataFrame:
     """Per-(team_id, fixture_id) rolling attack/defense form (Phase 7 model #3).
 
     Returns columns: team_id, fixture_id, team_goals_for_last_5,
@@ -43,8 +45,8 @@ def _team_rolling_form(season_ids: list[int] | None) -> pl.DataFrame:
     )
     tf = tf.sort(by=["team_id", "kickoff_utc"])
     tf = tf.with_columns(
-        pl.col("team_goals_for").cast(pl.Float32).shift(1).over("team_id").alias("gf_prev"),
-        pl.col("team_goals_conceded").cast(pl.Float32).shift(1).over("team_id").alias("gc_prev"),
+        pl.col("team_goals_for").cast(pl.Float32).shift(0 if include_latest_match else 1).over("team_id").alias("gf_prev"),
+        pl.col("team_goals_conceded").cast(pl.Float32).shift(0 if include_latest_match else 1).over("team_id").alias("gc_prev"),
     )
     tf = tf.with_columns(
         pl.col("gf_prev")
@@ -116,7 +118,9 @@ def _reconcile_expected_stat_sources(pm: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def build_feature_table(season_ids: list[int] | None = None) -> pl.DataFrame:
+def build_feature_table(
+    season_ids: list[int] | None = None, *, include_latest_match: bool = False
+) -> pl.DataFrame:
     """Build the goals/assists feature matrix.
 
     PIT correctness: rolling features use `shift(1).over(player_id)` to
@@ -171,6 +175,11 @@ def build_feature_table(season_ids: list[int] | None = None) -> pl.DataFrame:
         )
 
     pm = _reconcile_expected_stat_sources(pm)
+
+    if include_latest_match:
+        from fpl_bot.features.prediction_history import append_prediction_history_rows
+
+        pm = append_prediction_history_rows(pm)
 
     # ── Sort by player+time before any rolling computation ────────────────────
     pm = pm.sort(by=["player_id", "kickoff_utc"])
@@ -443,7 +452,9 @@ def build_prediction_feature_table(
     #    entire league. That is the same failure `af141e4` fixed for minutes;
     #    it survived here because the two builders were fixed independently.
     #    Measured on 2026-27 GW2: 100% of rows had xg_per_90_last_3 == 0.
-    history = build_feature_table(season_ids=[test_season - 1, test_season])
+    history = build_feature_table(
+        season_ids=[test_season - 1, test_season], include_latest_match=True
+    )
 
     # 2. Per-player latest row (max kickoff_utc)
     if history.is_empty():
@@ -509,7 +520,9 @@ def build_prediction_feature_table(
     # each team's LATEST played-fixture form (carried forward).
     # Same carry-forward as the player rolling features: at a season opener
     # the current season has no played fixtures to form a rolling window over.
-    team_form = _team_rolling_form([test_season - 1, test_season])
+    team_form = _team_rolling_form(
+        [test_season - 1, test_season], include_latest_match=True
+    )
     if not team_form.is_empty():
         # Order by kickoff, not gameweek: the window now spans two seasons and
         # last season's GW38 must not outrank this season's GW2.

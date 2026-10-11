@@ -27,6 +27,7 @@ from fpl_bot.models.clean_sheet import (
     rolling_cs5_baseline,
     train_clean_sheet_model,
 )
+from fpl_bot.models.validation import train_with_chronological_validation
 
 WALK_FORWARD_FOLDS: list[dict] = [
     {"train": [19, 20], "test": 21},
@@ -89,7 +90,9 @@ def run_walk_forward_cv(
         test_enc = encoder.transform(test)
         feature_names = feature_names_with_team_id(encoder)
 
-        model = train_clean_sheet_model(train_enc, feature_names, valid=test_enc)
+        model = train_with_chronological_validation(
+            train_clean_sheet_model, train_enc, feature_names=feature_names
+        )
 
         market_test = test_enc[MARKET_PROB_COLUMN].to_numpy()
         y_test = test_enc[LABEL_COLUMN].to_numpy().astype(int)

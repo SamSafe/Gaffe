@@ -178,6 +178,12 @@ is PIT-correct.
 | Tier 1.4 BPS audit (no change) | 1517 | 0 |
 | **Final** | **1517** | **+302** |
 
+> **2026-10-11 caveat on Tier 1.1:** this backtest applied DefCon only to
+> player/GWs with `minutes > 0`, so the +81 includes look-ahead on who
+> played. With the leak removed, DefCon still improves 25/26 squared error,
+> but by about 40% of the leaky gain. See
+> [`MODEL_IMPROVEMENT_2026-10-11.md`](../MODEL_IMPROVEMENT_2026-10-11.md#review-corrections).
+
 Gap to user (my team) (1661 over 29 played GWs): −144 (was −446 at start).
 
 ---

@@ -21,6 +21,7 @@ from sqlalchemy import select
 from fpl_bot.config import settings
 from fpl_bot.db.models import FactPlayerStatus, FactUserTeamSnapshot
 from fpl_bot.db.session import session_scope
+from fpl_bot.live.market_state import selling_price
 from fpl_bot.optim.state import SECOND_HALF_FIRST_GW, BacktestState
 
 # status_code outcomes
@@ -71,14 +72,52 @@ def _live_state_override(
           cost_basis: {118748: 125}
           squad: [118748, ...]   # optional full replacement
     """
+    return _team_override_blocks(season_id=season_id, team_id=team_id).get(gameweek, {})
+
+
+def _team_override_blocks(*, season_id: int, team_id: int) -> dict[int, dict[str, Any]]:
+    """Every gameweek's override block for one team, keyed by gameweek."""
     path = settings.live_state_overrides_path
     if not path.exists():
         return {}
     raw = yaml.safe_load(path.read_text()) or {}
-    season_block = _as_int_key_map(raw).get(season_id, {})
-    gw_block = _as_int_key_map(season_block).get(gameweek, {})
-    team_block = _as_int_key_map(gw_block).get(team_id, {})
-    return team_block if isinstance(team_block, dict) else {}
+    season_block = _as_int_key_map(_as_int_key_map(raw).get(season_id, {}))
+    out: dict[int, dict[str, Any]] = {}
+    for gw, gw_block in season_block.items():
+        team_block = _as_int_key_map(gw_block).get(team_id)
+        if isinstance(team_block, dict):
+            out[gw] = team_block
+    return out
+
+
+def _override_cost_basis(
+    *, season_id: int, gameweek: int, team_id: int
+) -> tuple[dict[int, int], int]:
+    """Purchase prices from the latest override block at or before `gameweek`,
+    plus how many of them were carried from an earlier gameweek.
+
+    Bank, free transfers and chips change weekly, so they apply only to their
+    own gameweek. A purchase price belongs to the holding, so a corrected one
+    carries forward; without that, the next week's public snapshot (current
+    price as purchase price) silently credits the full profit on a rise.
+    Record a new price after re-buying a player: a carried entry cannot tell.
+    """
+    basis: dict[int, int] = {}
+    carried: set[int] = set()
+    for gw, block in sorted(_team_override_blocks(season_id=season_id, team_id=team_id).items()):
+        if gw > gameweek:
+            break
+        raw = block.get("cost_basis") or block.get("purchase_prices")
+        for pid, price in _as_int_key_map(raw).items():
+            try:
+                basis[pid] = int(price)
+            except (TypeError, ValueError):
+                continue
+            if gw < gameweek:
+                carried.add(pid)
+            else:
+                carried.discard(pid)
+    return basis, len(carried)
 
 
 def _apply_live_state_override(
@@ -91,21 +130,22 @@ def _apply_live_state_override(
     override = _live_state_override(
         season_id=season_id, gameweek=gameweek, team_id=team_id
     )
-    if not override:
+    basis, carried = _override_cost_basis(
+        season_id=season_id, gameweek=gameweek, team_id=team_id
+    )
+    if carried:
+        print(
+            f"  carrying {carried} purchase price(s) from earlier "
+            f"live_state_overrides; update them after any transfer"
+        )
+    if not override and not basis:
         return state
 
     squad = state.squad
     if "squad" in override:
         squad = frozenset(int(p) for p in override.get("squad") or [])
 
-    cost_basis = dict(state.cost_basis)
-    raw_basis = override.get("cost_basis") or override.get("purchase_prices")
-    if isinstance(raw_basis, dict):
-        for pid, price in raw_basis.items():
-            try:
-                cost_basis[int(pid)] = int(price)
-            except (TypeError, ValueError):
-                continue
+    cost_basis = {**state.cost_basis, **basis}
 
     chips_used = state.chips_used
     if "chips_used" in override:
@@ -321,7 +361,16 @@ def load_user_sell_prices(
                 & (FactUserTeamSnapshot.recorded_at == latest_recorded_at)
             )
         ).all()
-    return {int(r.player_id): int(r.selling_price_tenths) for r in rows}
+    prices = {int(r.player_id): int(r.selling_price_tenths) for r in rows}
+    basis, _ = _override_cost_basis(season_id=season_id, gameweek=gameweek, team_id=team_id)
+    if basis:
+        from fpl_bot.db import pit
+
+        market = pit.latest_team_and_price_per_player(season_id)
+        for player_id, purchase in basis.items():
+            if player_id in prices and player_id in market:
+                prices[player_id] = selling_price(int(market[player_id][1]), int(purchase))
+    return prices
 
 
 def load_status_overrides(

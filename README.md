@@ -59,6 +59,20 @@ a clear mechanism (banned players score 0), so it shipped.
 **It has not been run live for a full season yet.** Everything here is
 validated on historical backtests. The real test is 2026/27.
 
+**October 2026 audit:** archived prediction-fold evaluations used the test
+season for LightGBM early stopping. Core minutes, goals/assists, bonus inputs,
+clean-sheet evaluation and their diagnostics now select boosting rounds on a
+chronological holdout inside the training fold, then refit on all available
+training history. Live forecasting uses the same policy. Versioned research
+cache keys prevent reuse of the old stopping policy's predictions. The
+archived metrics remain exploratory; complete joint-xPts and team backtests
+need regeneration, including pre-deadline odds and season-specific metadata.
+See
+[`the team 718959 audit`](docs/AUDIT_2026-10-11_team_718959.md) for the fixes
+made to live features, state, simulation, caching and retrospective scoring,
+and [`the improvement plan`](docs/MODEL_IMPROVEMENT_2026-10-11.md) for the new
+component benchmarks and remaining validation requirements.
+
 ---
 
 ## How it works

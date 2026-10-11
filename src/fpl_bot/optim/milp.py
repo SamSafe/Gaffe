@@ -914,6 +914,20 @@ def solve_milp(
             os.unlink(sol_path)
 
 
+def _choose_vice_captain(
+    starting_xi: frozenset[int],
+    captain: int | None,
+    predictions: dict[tuple[int, int], float],
+    gameweek: int,
+) -> int | None:
+    """The MILP has no vice reward, so choose the best eligible forecast."""
+    eligible = sorted(
+        starting_xi - {captain},
+        key=lambda p: (-predictions.get((p, gameweek), 0.0), p),
+    )
+    return eligible[0] if eligible else None
+
+
 def extract_decisions(
     model: ConcreteModel,
     inputs: MilpInputs,
@@ -928,9 +942,8 @@ def extract_decisions(
     squad_first = frozenset(p for p in inputs.candidates if value(model.x[p, first_w]) > 0.5)
     xi = frozenset(p for p in inputs.candidates if value(model.y[p, first_w]) > 0.5)
     capts = [p for p in inputs.candidates if value(model.c[p, first_w]) > 0.5]
-    vices = [p for p in inputs.candidates if value(model.v[p, first_w]) > 0.5]
     captain = capts[0] if capts else None
-    vice = vices[0] if vices else None
+    vice = _choose_vice_captain(xi, captain, inputs.predictions, first_w)
     transferred_in = frozenset(
         p for p in inputs.candidates if value(model.bin[p, first_w]) > 0.5
     )

@@ -31,6 +31,7 @@ from fpl_bot.models.clean_sheet import (
     brier_score,
     train_clean_sheet_model,
 )
+from fpl_bot.models.validation import train_with_chronological_validation
 
 RESULTS_DIR = Path("docs/design/phase2_3_results")
 
@@ -68,7 +69,9 @@ def _train_with_subset(
     valid: pl.DataFrame,
     feature_subset: list[str],
 ) -> tuple[float, np.ndarray]:
-    model = train_clean_sheet_model(train, feature_subset, valid=valid)
+    model = train_with_chronological_validation(
+        train_clean_sheet_model, train, feature_names=feature_subset
+    )
     market_test = valid[MARKET_PROB_COLUMN].to_numpy()
     y_test = valid[LABEL_COLUMN].to_numpy().astype(int)
     p = model.predict_cs_prob(valid, market_test)
@@ -132,7 +135,9 @@ def feature_importance_table(test_season: int = 24) -> str:
     valid = encoder.transform(valid)
     feature_names = feature_names_with_team_id(encoder)
 
-    model = train_clean_sheet_model(train, feature_names, valid=valid)
+    model = train_with_chronological_validation(
+        train_clean_sheet_model, train, feature_names=feature_names
+    )
     importance = model.booster.feature_importance(importance_type="gain")
     pairs = sorted(
         zip(model.feature_names, importance, strict=False), key=lambda kv: -kv[1]
@@ -163,7 +168,9 @@ def subgroup_ece_table(test_season: int = 24) -> str:
     valid_enc = encoder.transform(valid)
     feature_names = feature_names_with_team_id(encoder)
 
-    model = train_clean_sheet_model(train_enc, feature_names, valid=valid_enc)
+    model = train_with_chronological_validation(
+        train_clean_sheet_model, train_enc, feature_names=feature_names
+    )
     market_test = valid_enc[MARKET_PROB_COLUMN].to_numpy()
     y_test = valid_enc[LABEL_COLUMN].to_numpy().astype(int)
     p_market = market_test
@@ -231,7 +238,9 @@ def plot_calibration_for_fold(
     valid_enc = encoder.transform(valid)
     feature_names = feature_names_with_team_id(encoder)
 
-    model = train_clean_sheet_model(train_enc, feature_names, valid=valid_enc)
+    model = train_with_chronological_validation(
+        train_clean_sheet_model, train_enc, feature_names=feature_names
+    )
     market_test = valid_enc[MARKET_PROB_COLUMN].to_numpy()
     y_test = valid_enc[LABEL_COLUMN].to_numpy().astype(int)
     p_model = model.predict_cs_prob(valid_enc, market_test)

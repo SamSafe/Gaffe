@@ -9,6 +9,7 @@ from sklearn.metrics import log_loss
 
 from fpl_bot.features.minutes import MinutesFeatureMode, build_feature_table
 from fpl_bot.models.minutes import LABEL_COLUMN, train_minutes_model
+from fpl_bot.models.validation import train_with_chronological_validation
 
 WALK_FORWARD_FOLDS: list[dict] = [
     {"train": [19, 20], "test": 21},
@@ -133,7 +134,9 @@ def run_walk_forward_cv(
         if train.is_empty() or test.is_empty():
             continue
 
-        model = train_minutes_model(train, valid=test, feature_mode=feature_mode)
+        model = train_with_chronological_validation(
+            train_minutes_model, train, feature_mode=feature_mode
+        )
         probs_model = model.predict_proba(test)
         y_test = test.select(LABEL_COLUMN).to_pandas().to_numpy().ravel()
 
