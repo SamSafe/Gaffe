@@ -31,6 +31,7 @@ from fpl_bot.db import pit
 from fpl_bot.db.models import DimFixture, FactPlayerMatch
 from fpl_bot.db.session import session_scope
 from fpl_bot.eval.xpts_eval import _run_one_fold
+from fpl_bot.live.market_state import selling_price
 from fpl_bot.models.validation import TRAINING_POLICY_VERSION
 from fpl_bot.optim.candidate_filter import select_candidates
 from fpl_bot.optim.chip_scheduler import free_hit_gws, horizon_before_free_hit
@@ -107,7 +108,8 @@ class BacktestSeasonResult:
     validity_budget: bool = True
     validity_transfers: bool = True
     validity_chips: bool = True
-    validity_no_future_leakage: bool = True
+    # Accounting success cannot certify historical input observation times.
+    validity_no_future_leakage: bool = False
     validity_failures: list[str] = field(default_factory=list)
     # Performance metrics (reported)
     perf_total_points: int = 0
@@ -372,11 +374,9 @@ def _check_validity(
         errors.append(f"GW{record.gameweek} replayed chip: {decisions.chip_played}")
         chips_ok = False
 
-    # Future leakage: solver inputs only contain pre-deadline data — verified
-    # at design level (predictions come from xpts_eval._run_one_fold which uses
-    # walk-forward CV; static-import audit covers optim/ as well). No runtime
-    # check possible without sentinel rows; presume true if other gates pass.
-    no_leak_ok = True
+    # Accounting cannot establish the observation time of historical features,
+    # markets or metadata. Never manufacture a passing provenance gate.
+    no_leak_ok = False
 
     return budget_ok, transfers_ok, chips_ok, no_leak_ok, errors
 
@@ -727,6 +727,7 @@ def backtest_season(
     defcon_per_position_shrinkage: dict[str, float] | None = DEFCON_PER_POSITION_SHRINKAGE,
     fwd_calibration: bool = False,
     apply_suspension: bool = True,
+    captain_minutes_attenuation: bool = False,
 ) -> BacktestSeasonResult:
     """Run rolling MILP backtest for one test season.
 
@@ -895,6 +896,10 @@ def backtest_season(
         test_season=test_season, rho=rho, alpha=alpha, beta=beta, horizon=horizon
     )
 
+    result.validity_failures.append(
+        "Pre-deadline provenance is unverified for historical odds, horizon features and player metadata."
+    )
+
     print(f"Starting backtest: season {test_season}, {len(all_gws)} GWs, "
           f"{len(valid_players)} eligible players, horizon={horizon}")
 
@@ -955,7 +960,7 @@ def backtest_season(
             captain_attenuator = {
                 p: min(recent_min.get(p, 0) / max_minutes, 1.0)
                 for p in candidates_set
-            }
+            } if captain_minutes_attenuation else None
 
         candidates = sorted(candidates_set)
         if not candidates:
@@ -967,11 +972,7 @@ def backtest_season(
         # the sell price for non-state-squad players who could be bought-then-sold
         # within the horizon — they have no cost basis yet so no spread).
         buy_prices = {p: _resolve_price_at_gw(p, gw, prices_by_pgw) for p in candidates}
-        # Sell prices: FPL's sell-tax rule.
-        #   tax = max(0, (current - cost_basis) // 2)  (50% tax on profit only)
-        #   sell = current - tax
-        # When current < basis: profit < 0, tax = 0, sell = current ✓
-        # When current ≥ basis: tax = profit//2, sell = basis + ceil(profit/2)
+        # Shared FPL rule: purchase price plus half the profit, rounded down.
         # Players not in state.squad have no cost basis yet → sell = current
         # (could only be sold within-horizon after a buy, no profit possible
         # under static prices).
@@ -980,8 +981,7 @@ def backtest_season(
             current = buy_prices[p]
             basis = state.cost_basis.get(p) if p in state.squad else None
             if basis is not None:
-                tax = max(0, (current - basis) // 2)
-                sell_prices[p] = current - tax
+                sell_prices[p] = selling_price(current, basis)
             else:
                 sell_prices[p] = current
 

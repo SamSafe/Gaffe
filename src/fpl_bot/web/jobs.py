@@ -86,6 +86,8 @@ class JobManager:
         ]
         if request.refresh_odds:
             command.append("--refresh-odds")
+        if request.freeze_bot:
+            command.append("--freeze-bot")
         job.update(status="running")
         self._save(job)
         try:

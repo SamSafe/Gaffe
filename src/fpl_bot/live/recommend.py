@@ -45,7 +45,12 @@ from fpl_bot.optim.eo import eo_for_candidates
 from fpl_bot.optim.fixture_analytics import load_fixture_analytics
 from fpl_bot.optim.milp import MilpInputs, solve_rolling_horizon
 from fpl_bot.optim.prediction_postprocess import apply_prediction_postprocessing
-from fpl_bot.optim.state import ALL_CHIP_SLOTS, CHIPS_FIRST_HALF, SECOND_HALF_FIRST_GW
+from fpl_bot.optim.state import (
+    ALL_CHIP_SLOTS,
+    CHIPS_FIRST_HALF,
+    SECOND_HALF_FIRST_GW,
+    BacktestState,
+)
 
 OUTPUT_ROOT = Path("data/live/recommendations")
 
@@ -106,6 +111,7 @@ def generate_recommendation(
     cache_predictions: bool = True,
     cache_dir: Path = Path("data/cache/xpts_predictions"),
     output_dir: Path | None = None,
+    state_override: BacktestState | None = None,
 ) -> tuple[Path, Path]:
     """Run the full Phase 6 pipeline and write recommendation files.
 
@@ -222,8 +228,10 @@ def generate_recommendation(
     all_players = sorted({pid for (pid, _) in pred_by_pgw})
 
     # 2. Load user state from latest snapshot
-    state = load_user_state(season_id=season_id, gameweek=gameweek, team_id=team_id)
-    exact_sell_prices = load_user_sell_prices(
+    if state_override is not None and (state_override.season_id != season_id or state_override.gameweek != gameweek):
+        raise ValueError("The supplied bot state must match the forecast season and gameweek")
+    state = state_override or load_user_state(season_id=season_id, gameweek=gameweek, team_id=team_id)
+    exact_sell_prices = {} if state_override is not None else load_user_sell_prices(
         season_id=season_id, gameweek=gameweek, team_id=team_id
     )
 

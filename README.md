@@ -158,7 +158,7 @@ uv run gaffe serve
 # Opens http://127.0.0.1:8080. Use --no-open or --port 8081 if preferred.
 ```
 
-The desktop-first dashboard also adapts to phone screen sizes. Overview, squad,
+The desktop-first dashboard also supports paired HTTPS phone access. Overview, squad,
 transfer planning, performance and settings replace routine terminal work:
 set your team ID, **Refresh data**, then **Generate forecast**. Model runs happen
 in the background. The planner checks budgets, half-profit selling prices,
@@ -172,6 +172,15 @@ saved artifacts before training. Credentials stay server-side in `.env`; local
 preferences, public snapshots and forecast archives are gitignored. The server
 binds to localhost. See [the app guide](docs/APP.md) and
 [the implementation plan](docs/APP_PLAN.md).
+
+Enable scheduled updates in Settings to refresh results and run the complete
+weekly forecast and independent bot cycle. The bot begins from your current
+squad once, then retains its own bank, holdings, transfers and chips. Linux
+users can run `uv run gaffe install-service` to keep the app running after the
+terminal closes. Pair a phone from Settings using a one-use QR link. The
+computer must stay running; the public tunnel address changes after restart.
+See the [corrected development benchmark](docs/OPERATIONS_BENCHMARK.md) for
+historical results and their data timing limits.
 
 ![Gaffe desktop dashboard](docs/images/app-desktop.png)
 

@@ -52,5 +52,5 @@ def test_free_hit_budget_check_uses_temporary_budget_not_reverted_bank() -> None
     assert budget_ok
     assert transfers_ok
     assert chips_ok
-    assert leak_ok
+    assert not leak_ok
     assert errors == []

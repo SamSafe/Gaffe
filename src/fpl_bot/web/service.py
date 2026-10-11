@@ -289,6 +289,22 @@ def dashboard(store: Store) -> dict:
         warnings.append(
             "Some purchase prices are estimated; transfer budgets need checking on FPL."
         )
+    from fpl_bot.live.ledger import Ledger
+
+    try:
+        bot = (
+            Ledger(store, prefs.team_id).summary(performance)
+            if prefs.team_id
+            else {"active": False, "rows": [], "covered_weeks": 0}
+        )
+    except ValueError:
+        bot = {
+            "active": False,
+            "rows": [],
+            "covered_weeks": 0,
+            "error": "Bot decision integrity check failed. Inspect the local ledger before running it again.",
+        }
+        warnings.append(bot["error"])
     return {
         "preferences": prefs.model_dump(),
         "season": store.season,
@@ -325,6 +341,7 @@ def dashboard(store: Store) -> dict:
             "bot_compared": sum(r["bot_points"] for r in covered),
             "lead": sum(r["lead"] for r in covered),
         },
+        "bot": bot,
         "freshness": meta,
         "warnings": warnings,
         "connections": {

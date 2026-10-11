@@ -46,7 +46,9 @@ dev = [
     "pre-commit>=3.7",
 ]
 web = [
+    "cryptography>=44,<49",
     "fastapi>=0.115,<1",
+    "qrcode>=8,<9",
     "uvicorn>=0.30,<1",
 ]
 

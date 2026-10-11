@@ -13,7 +13,7 @@ uv run gaffe serve
 
 The app opens at `http://127.0.0.1:8080`. `--no-open` suppresses browser launch;
 `--port 8081` chooses another port. The server is local and single-process.
-It has responsive phone layouts; remote hosting and account login are deferred.
+It has responsive phone layouts and optional paired HTTPS access.
 An existing recommendation and audit snapshot can populate it immediately.
 For a fresh clone, use Settings to select an FPL entry, then refresh its data.
 Historical model training data and the CBC solver still need the one-time setup
@@ -32,10 +32,11 @@ in [the live runbook](RUNBOOK_live.md).
 4. **Transfer planner:** begin with the model plan, edit transfers, optionally
    choose a captain, then compare. It enforces 2/5/5/3 squad positions, max three
    per club, exact half-profit sale prices, bank and four-point transfer hits.
-5. **Performance:** inspect net actual points, saved bot scores, provisional
-   weeks and missing coverage. Each bot plan starts from the actual team that
-   week; this is not a continuously simulated bot season. Chip usage affects
-   the comparison. Only finalized pre-deadline plans count.
+5. **Performance:** inspect the independent bot separately from earlier weekly
+   recommendations. Start the bot once from your exact current squad and it
+   carries its own bank, holdings, transfers and chips. Its decisions freeze
+   before deadlines and score only finalized results. Earlier recommendations
+   are a partial comparison that starts from your actual squad each week.
 6. Apply the chosen moves on FPL. Refresh near the next deadline.
 
 The instant planner estimates one week's XI plus captain points after hits.
@@ -53,6 +54,60 @@ unrefreshed public snapshot as authenticated account synchronization.
 Bookmaker refresh is optional in Settings and consumes the configured API's
 request allowance. The dashboard reports later weeks with market fallback.
 
+## Scheduled updates and persistent service
+
+Enable **Run scheduled updates** in Settings. The scheduler checks once a minute
+and uses the same single-job queue as manual actions. It refreshes every six
+hours, or hourly while results are provisional or a frozen bot week awaits
+settlement. It runs a complete refresh, your forecast and the independent bot
+six hours before deadlines, then again 90 minutes before deadlines. The final
+cycle freezes the bot; a lightweight fallback freezes the latest saved draft
+15 minutes before the deadline. Failed slots retry after 15 minutes. Missed
+deadlines remain unscored and carry the bot's squad and free transfers forward.
+
+The independent bot uses recorded forecast prices. Its initial state matches
+the public squad, which may exclude transfers made since the previous deadline.
+The hash chain detects edits to frozen decisions; it is local integrity evidence,
+not third-party certification of the computer's clock or files.
+
+On Linux with a running user systemd session:
+
+```bash
+uv run gaffe install-service
+systemctl --user status gaffe.service
+systemctl --user restart gaffe.service
+systemctl --user stop gaffe.service
+```
+
+The unit uses this checkout's virtual environment and starts at port 8080.
+It restarts after process failure and starts with the user's session. It does
+not keep the computer awake or guarantee operation after logout. Reinstall the
+unit if you move the checkout. Do not run a second server over the same store.
+
+## Pair a phone
+
+On the desktop, open **Settings → Phone access**. Enable access and install the
+optional official Cloudflare tunnel helper for a trusted HTTPS address across
+networks. The app verifies the official release binary's SHA-256 digest before
+installing it. Create a pairing link, then scan the QR code or open the link on
+the phone. The link expires in five minutes and can be used once. It grants
+access, so keep it private. Paired devices receive a secure, HTTP-only cookie
+valid for 30 days; only its hash is saved. Revoke devices or disable access from
+the desktop. The phone cannot manage pairing or network settings.
+
+The localhost app remains at port 8080. A separate HTTPS gateway listens on
+8443 for local access with a private certificate; a loopback HTTP gateway on
+8444 sits behind the encrypted tunnel. Unpaired clients cannot read team data
+or trigger jobs. The public tunnel URL changes after restart, requiring a fresh
+pairing on the new hostname. The desktop service and internet connection must
+remain running. A permanent domain requires separate hosting configuration.
+
+Schedule slots, the bot ledger, certificates, device hashes and the verified
+helper are stored in ignored `data/web/`; none are committed. The decision ledger
+lives at `data/web/season_N/team_ID/bot/ledger.json`, with full forecast artifacts
+under its `forecasts/` folder. See the [corrected benchmark](OPERATIONS_BENCHMARK.md)
+for evidence and historical data timing limits.
+
 ## Data and local boundary
 
 - `data/web/preferences.json`: team, horizon and timezone, without credentials.
@@ -67,8 +122,8 @@ request allowance. The dashboard reports later weeks with market fallback.
 
 API keys, cookies, access tokens, connection strings and raw worker logs are
 never returned to the browser. Mutations require an ephemeral same-origin
-token, and the server accepts local hosts. This is a local app, not a remotely
-authenticated multi-user service. Job requests select fixed worker operations,
+token, and the server accepts local hosts. Phone access adds a paired single-owner gateway; this is not a multi-user
+service. Job requests select fixed worker operations,
 with validated numeric inputs; the API does not accept shell commands or paths.
 
 If a job fails, the dashboard retains existing snapshots/forecasts and reports

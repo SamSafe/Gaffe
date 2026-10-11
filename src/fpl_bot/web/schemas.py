@@ -11,6 +11,9 @@ class Preferences(BaseModel):
     team_id: int | None = Field(default=None, ge=1, le=100_000_000)
     horizon: int = Field(default=6, ge=1, le=8)
     timezone: str = "America/Edmonton"
+    automation_enabled: bool = False
+    automation_odds: bool = True
+    phone_enabled: bool = False
 
     @field_validator("timezone")
     @classmethod
@@ -36,5 +39,6 @@ class PlanRequest(BaseModel):
 
 class JobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["refresh", "recommend"]
+    kind: Literal["refresh", "recommend", "bot", "cycle", "freeze"]
     refresh_odds: bool = False
+    freeze_bot: bool = False

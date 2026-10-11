@@ -95,6 +95,9 @@ def assemble_fold_predictions(
             home_market, on=["fixture_id", "home_team_id"], how="left"
         ).join(away_market, on=["fixture_id", "away_team_id"], how="left")
 
+    # Share the simulator's fallback with baselines for partially covered fixtures.
+    defaults = {"home_team_lambda": 1.4, "away_team_lambda": 1.2,
+                "home_market_cs_prob": 0.3, "away_market_cs_prob": 0.25}
     # Cast Decimal/Numeric columns to float to avoid downstream type issues
     for c in (
         "home_team_lambda",
@@ -103,7 +106,7 @@ def assemble_fold_predictions(
         "away_market_cs_prob",
     ):
         if c in fixtures.columns:
-            fixtures = fixtures.with_columns(pl.col(c).cast(pl.Float64))
+            fixtures = fixtures.with_columns(pl.col(c).cast(pl.Float64).fill_null(defaults[c]))
 
     # Per-player frame: keep one row per (player_id, fixture_id), retain is_home
     pm = fixtures_raw.select(

@@ -88,6 +88,9 @@ def refresh(store: Store, team_id: int, refresh_odds: bool):
     previous = store.snapshot_dir(team_id)
     previous_state = read_json(previous / "state.json", {}) if previous else {}
     basis = previous_state.get("cost_basis", {})
+    basis = {
+        p: v for p, v in basis.items() if int(p) not in previous_state.get("approximate_prices", [])
+    }
     if not basis and previous:
         reconstruction = read_json(previous / "state_reconstruction.json", {})
         states = [v for k, v in reconstruction.items() if k.startswith("state_for_gw")]
@@ -120,8 +123,9 @@ def refresh(store: Store, team_id: int, refresh_odds: bool):
         )
         target = next_event(bootstrap)
         latest = max((r["event"] for r in history.get("current", [])), default=0)
-        if not latest or not target:
-            raise UserError("This entry has no current squad or upcoming deadline yet.")
+        if not latest:
+            raise UserError("This entry has no current squad yet.")
+        target = target or {"id": 39}
         # A Free Hit snapshot is temporary. Use the preceding permanent squad.
         chip = next((c["name"] for c in history.get("chips", []) if c["event"] == latest), None)
         pick_gw = latest - 1 if chip == "freehit" else latest
@@ -158,7 +162,11 @@ def refresh(store: Store, team_id: int, refresh_odds: bool):
             if not event.get("data_checked"):
                 continue
             gw = event["id"]
-            write_json(snapshot / f"live_gw{gw}.json", get(f"event/{gw}/live"))
+            old = previous / f"live_gw{gw}.json" if previous else None
+            if old and old.exists() and gw < latest - 1:
+                shutil.copy2(old, snapshot / old.name)
+            else:
+                write_json(snapshot / f"live_gw{gw}.json", get(f"event/{gw}/live"))
         write_json(
             snapshot / "meta.json",
             {
@@ -169,6 +177,8 @@ def refresh(store: Store, team_id: int, refresh_odds: bool):
         )
         write_json(folder / "current.json", {"snapshot": stamp})
     progress(45, "Saving finalized results to the model database…")
+    sync_path = store.web / f"model_sync_{store.season}.json"
+    sync = read_json(sync_path, {})
     for endpoint, filename in [("bootstrap-static", "bootstrap"), ("fixtures", "fixtures")]:
         fpl_api.parse_raw_fpl_api(endpoint, snapshot / f"{filename}.json", season_id=store.season)
     for event in bootstrap["events"]:
@@ -184,9 +194,15 @@ def refresh(store: Store, team_id: int, refresh_odds: bool):
             and all(f["finished"] for f in gw_fixtures)
             and max(counts.values()) == 1
         ):
-            fpl_api.parse_raw_fpl_event_live_matches(
-                snapshot / f"live_gw{gw}.json", season_id=store.season, gameweek=gw
-            )
+            import hashlib
+
+            signature = hashlib.sha256((snapshot / f"live_gw{gw}.json").read_bytes()).hexdigest()
+            if sync.get(str(gw)) != signature:
+                fpl_api.parse_raw_fpl_event_live_matches(
+                    snapshot / f"live_gw{gw}.json", season_id=store.season, gameweek=gw
+                )
+                sync[str(gw)] = signature
+                write_json(sync_path, sync)
     enriched = {
         "picks": state["picks"],
         "transfers": {"bank": state["bank_tenths"], "free_transfers": state["free_transfers"]},
@@ -196,6 +212,9 @@ def refresh(store: Store, team_id: int, refresh_odds: bool):
     fpl_api.parse_my_team(
         snapshot / "model_team.json", season_id=store.season, gameweek=target["id"], team_id=team_id
     )
+    from fpl_bot.live.ledger import Ledger
+
+    Ledger(store, team_id).reconcile(bootstrap, snapshot, dt.datetime.now(dt.UTC))
     if refresh_odds:
         from fpl_bot.derive.dixon_coles import derive_market_xg_for_season
         from fpl_bot.ingest import oddsapi
@@ -267,20 +286,103 @@ def recommend(store: Store, team_id: int, horizon: int):
             shutil.copy2(file, destination / file.name)
 
 
+def bot(store: Store, team_id: int, horizon: int, freeze: bool = False):
+    from fpl_bot.live.ledger import Ledger, decode_state
+    from fpl_bot.live.recommend import generate_recommendation
+    from fpl_bot.optim.state import BacktestState
+
+    folder = store.snapshot_dir(team_id)
+    bootstrap = store.bootstrap(folder)
+    target = next_event(bootstrap) if bootstrap else None
+    if not folder or not target:
+        raise UserError("Refresh a current squad before starting the bot.")
+    ledger = Ledger(store, team_id)
+    if not ledger.read():
+        snapshot = read_json(folder / "state.json", {})
+        if snapshot.get("gameweek") != target["id"] or snapshot.get("approximate_prices"):
+            raise UserError("The bot needs a refreshed current squad and exact purchase prices.")
+        elements = {e["id"]: e["code"] for e in bootstrap["elements"]}
+        state = BacktestState(
+            season_id=store.season,
+            gameweek=target["id"],
+            squad=frozenset(elements[p["element"]] for p in snapshot["picks"]),
+            bank=snapshot["bank_tenths"],
+            free_transfers=snapshot["free_transfers"],
+            chips_used=frozenset(snapshot["chips_used"]),
+            cost_basis={int(p): v for p, v in snapshot["cost_basis"].items()},
+        )
+        ledger.seed(state, dt.datetime.now(dt.UTC), target["deadline_time"])
+    ledger.reconcile(bootstrap, folder, dt.datetime.now(dt.UTC))
+    state = decode_state(ledger.read()["state"])
+    if state.gameweek != target["id"]:
+        progress(95, "The current bot decision is frozen. Its next squad is carried independently.")
+        return
+    progress(20, "Generating the independent bot plan from its own bank, squad and chips…")
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S%f")
+    output = store.team_dir(team_id) / "bot" / "forecasts" / f"gw_{state.gameweek}" / stamp
+    generate_recommendation(
+        season_id=store.season,
+        gameweek=state.gameweek,
+        team_id=team_id,
+        train_seasons=settings.train_season_ids,
+        horizon=horizon,
+        n_iterations=1000,
+        output_dir=output,
+        state_override=state,
+    )
+    rec = read_json(output / "recommendation.json")
+    ledger.propose(rec, bootstrap, dt.datetime.now(dt.UTC))
+    if freeze:
+        ledger.freeze(dt.datetime.now(dt.UTC))
+    progress(
+        95,
+        "Independent bot plan saved"
+        + (
+            " and frozen before the deadline."
+            if freeze
+            else "; the final scheduled run freezes it before the deadline."
+        ),
+    )
+
+
+def freeze_bot(store: Store, team_id: int):
+    from fpl_bot.live.ledger import Ledger
+
+    folder = store.snapshot_dir(team_id)
+    if not folder:
+        raise UserError("Refresh the team before settling the bot.")
+    ledger = Ledger(store, team_id)
+    now = dt.datetime.now(dt.UTC)
+    ledger.reconcile(store.bootstrap(folder), folder, now)
+    if ledger.freeze(now):
+        progress(95, "The bot's saved decision is now frozen before its deadline.")
+    else:
+        progress(95, "Bot results and deadline state checked.")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("kind", choices=["refresh", "recommend"])
+    parser.add_argument("kind", choices=["refresh", "recommend", "bot", "cycle", "freeze"])
     parser.add_argument("--team-id", type=int, required=True)
     parser.add_argument("--season", type=int, required=True)
     parser.add_argument("--horizon", type=int, default=6)
     parser.add_argument("--refresh-odds", action="store_true")
+    parser.add_argument("--freeze-bot", action="store_true")
     args = parser.parse_args()
     store = Store(season=args.season)
     try:
         if args.kind == "refresh":
             refresh(store, args.team_id, args.refresh_odds)
-        else:
+        elif args.kind == "recommend":
             recommend(store, args.team_id, args.horizon)
+        elif args.kind == "bot":
+            bot(store, args.team_id, args.horizon, args.freeze_bot)
+        elif args.kind == "freeze":
+            freeze_bot(store, args.team_id)
+        else:
+            refresh(store, args.team_id, args.refresh_odds)
+            recommend(store, args.team_id, args.horizon)
+            bot(store, args.team_id, args.horizon, args.freeze_bot)
     except UserError as exc:
         progress(-1, str(exc))
         return 1

@@ -55,7 +55,7 @@ def serve(
         import webbrowser
         threading.Timer(1.5, webbrowser.open, args=(f"http://127.0.0.1:{port}",)).start()
     console.print(f"[green]Gaffe → http://127.0.0.1:{port}[/green]")
-    uvicorn.run(create_app(), host="127.0.0.1", port=port)
+    uvicorn.run(create_app(desktop_port=port), host="127.0.0.1", port=port)
 
 _SUPPORTED_SOURCES = {
     "fpl",
@@ -66,6 +66,20 @@ _SUPPORTED_SOURCES = {
     "oddsapi-props",
     "livefpl",
 }
+
+
+@app.command("install-service")
+def install_app_service() -> None:
+    """Keep the app and enabled schedules running after the terminal closes."""
+    from pathlib import Path
+
+    from fpl_bot.web.service_install import install
+    try:
+        path=install(Path.cwd())
+    except (ValueError,subprocess.CalledProcessError) as exc:
+        console.print(f"[red]Could not install the user service: {exc}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"[green]Gaffe user service installed: {path}[/green]")
 
 
 @app.command()
