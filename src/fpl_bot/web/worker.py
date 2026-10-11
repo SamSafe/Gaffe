@@ -1,0 +1,313 @@
+"""Public refresh and model workers, isolated from the interactive server."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import shutil
+import sys
+
+import httpx
+import yaml
+from sqlalchemy.exc import OperationalError
+
+from fpl_bot.config import settings
+from fpl_bot.web.store import Store, read_json, timestamp, write_json
+
+FPL = "https://fantasy.premierleague.com/api"
+
+
+class UserError(ValueError):
+    """Only fixed, explicitly safe worker messages can reach the browser."""
+
+
+def progress(value: int, message: str):
+    print("GAFFE_PROGRESS " + json.dumps({"progress": value, "message": message}), flush=True)
+
+
+def next_event(bootstrap):
+    now = dt.datetime.now(dt.UTC)
+    return next((e for e in bootstrap["events"] if timestamp(e["deadline_time"]) > now), None)
+
+
+def reconstruct_state(bootstrap, history, transfers, picks, previous_basis, opening_prices):
+    """Public endpoints omit cost basis and FT. Reconstruct and flag unknown costs."""
+    from fpl_bot.live.market_state import selling_price
+
+    ft = 1
+    chips = {c["event"]: c["name"] for c in history.get("chips", [])}
+    for row in sorted(history.get("current", []), key=lambda r: r["event"]):
+        if row["event"] == 1:
+            ft = 1
+        else:
+            exempt = chips.get(row["event"]) in {"wildcard", "freehit"}
+            ft = min(5, ft + 1 - (0 if exempt else min(ft, row.get("event_transfers", 0))))
+    chip_names = {"wildcard": "WC", "freehit": "FH", "bboost": "BB", "3xc": "TC"}
+    used = [
+        chip_names[c["name"]] + ("1" if c["event"] <= 19 else "2")
+        for c in history.get("chips", [])
+        if c["name"] in chip_names
+    ]
+    elements = {e["id"]: e for e in bootstrap["elements"]}
+    # Transfers in a Free Hit week are temporary and cannot set permanent cost basis.
+    latest_buy = {}
+    last_gw = max((row["event"] for row in history.get("current", [])), default=0)
+    for transfer in sorted(transfers, key=lambda t: t.get("time", "")):
+        if transfer["event"] > last_gw:
+            continue
+        if chips.get(transfer["event"]) != "freehit":
+            latest_buy[transfer["element_in"]] = transfer["element_in_cost"]
+    result, basis, approximate = [], {}, []
+    for pick in picks:
+        element = elements[pick["element"]]
+        pid = str(element["code"])
+        purchase = latest_buy.get(
+            element["id"], previous_basis.get(pid, opening_prices.get(element["id"]))
+        )
+        if purchase is None:
+            purchase = element["now_cost"]
+            approximate.append(element["code"])
+        sale = selling_price(element["now_cost"], purchase)
+        result.append({**pick, "purchase_price": purchase, "selling_price": sale})
+        basis[pid] = purchase
+    return {
+        "picks": result,
+        "free_transfers": ft,
+        "chips_used": used,
+        "cost_basis": basis,
+        "approximate_prices": approximate,
+        "source": "Public FPL history",
+    }
+
+
+def refresh(store: Store, team_id: int, refresh_odds: bool):
+    from fpl_bot.ingest import fpl_api
+
+    folder = store.team_dir(team_id)
+    previous = store.snapshot_dir(team_id)
+    previous_state = read_json(previous / "state.json", {}) if previous else {}
+    basis = previous_state.get("cost_basis", {})
+    if not basis and previous:
+        reconstruction = read_json(previous / "state_reconstruction.json", {})
+        states = [v for k, v in reconstruction.items() if k.startswith("state_for_gw")]
+        basis = states[-1].get("cost_basis", {}) if states else {}
+    progress(5, "Fetching current players and fixtures…")
+    with httpx.Client(
+        timeout=settings.request_timeout_seconds,
+        headers={"User-Agent": settings.user_agent},
+        follow_redirects=True,
+    ) as client:
+
+        def get(endpoint):
+            response = client.get(f"{FPL}/{endpoint}/")
+            response.raise_for_status()
+            return response.json()
+
+        bootstrap = get("bootstrap-static")
+        fixtures = get("fixtures")
+        if (
+            not bootstrap.get("events")
+            or timestamp(bootstrap["events"][0]["deadline_time"]).year != 2000 + store.season
+        ):
+            raise UserError(
+                "The public feed belongs to another season. Update the configured season before refreshing."
+            )
+        entry, history, transfers = (
+            get(f"entry/{team_id}"),
+            get(f"entry/{team_id}/history"),
+            get(f"entry/{team_id}/transfers"),
+        )
+        target = next_event(bootstrap)
+        latest = max((r["event"] for r in history.get("current", [])), default=0)
+        if not latest or not target:
+            raise UserError("This entry has no current squad or upcoming deadline yet.")
+        # A Free Hit snapshot is temporary. Use the preceding permanent squad.
+        chip = next((c["name"] for c in history.get("chips", []) if c["event"] == latest), None)
+        pick_gw = latest - 1 if chip == "freehit" else latest
+        payload = get(f"entry/{team_id}/event/{pick_gw}/picks")
+        opening = {}
+        progress(15, "Reconstructing bank, free transfers and purchase prices…")
+        for pick in payload["picks"]:
+            element = next(e for e in bootstrap["elements"] if e["id"] == pick["element"])
+            if str(element["code"]) not in basis and not any(
+                t["element_in"] == pick["element"] for t in transfers
+            ):
+                summary = get(f"element-summary/{pick['element']}")
+                rows = summary.get("history", [])
+                if rows:
+                    opening[pick["element"]] = rows[0]["value"]
+        state = reconstruct_state(bootstrap, history, transfers, payload["picks"], basis, opening)
+        bank_row = next(r for r in history["current"] if r["event"] == pick_gw)
+        state.update(gameweek=target["id"], bank_tenths=bank_row["bank"])
+        # Publish an entire completed snapshot atomically by pointer after all HTTP requests.
+        stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S%f")
+        snapshot = folder / "snapshots" / stamp
+        for name, data in [
+            ("bootstrap", bootstrap),
+            ("fixtures", fixtures),
+            ("entry", entry),
+            ("history", history),
+            ("transfers", transfers),
+            ("state", state),
+        ]:
+            write_json(snapshot / f"{name}.json", data)
+        if previous and (previous / "bot_vs_team.json").exists():
+            shutil.copy2(previous / "bot_vs_team.json", snapshot / "bot_vs_team.json")
+        for event in bootstrap["events"]:
+            if not event.get("data_checked"):
+                continue
+            gw = event["id"]
+            write_json(snapshot / f"live_gw{gw}.json", get(f"event/{gw}/live"))
+        write_json(
+            snapshot / "meta.json",
+            {
+                "refreshed_at": dt.datetime.now(dt.UTC).isoformat(),
+                "source": "Public FPL API",
+                "season_id": store.season,
+            },
+        )
+        write_json(folder / "current.json", {"snapshot": stamp})
+    progress(45, "Saving finalized results to the model database…")
+    for endpoint, filename in [("bootstrap-static", "bootstrap"), ("fixtures", "fixtures")]:
+        fpl_api.parse_raw_fpl_api(endpoint, snapshot / f"{filename}.json", season_id=store.season)
+    for event in bootstrap["events"]:
+        gw = event["id"]
+        gw_fixtures = [f for f in fixtures if f.get("event") == gw]
+        counts = {}
+        for fixture in gw_fixtures:
+            for club in (fixture["team_h"], fixture["team_a"]):
+                counts[club] = counts.get(club, 0) + 1
+        if (
+            event.get("data_checked")
+            and gw_fixtures
+            and all(f["finished"] for f in gw_fixtures)
+            and max(counts.values()) == 1
+        ):
+            fpl_api.parse_raw_fpl_event_live_matches(
+                snapshot / f"live_gw{gw}.json", season_id=store.season, gameweek=gw
+            )
+    enriched = {
+        "picks": state["picks"],
+        "transfers": {"bank": state["bank_tenths"], "free_transfers": state["free_transfers"]},
+        "chips": history.get("chips", []),
+    }
+    write_json(snapshot / "model_team.json", enriched)
+    fpl_api.parse_my_team(
+        snapshot / "model_team.json", season_id=store.season, gameweek=target["id"], team_id=team_id
+    )
+    if refresh_odds:
+        from fpl_bot.derive.dixon_coles import derive_market_xg_for_season
+        from fpl_bot.ingest import oddsapi
+
+        progress(80, "Refreshing bookmaker odds…")
+        oddsapi.parse_raw_oddsapi(oddsapi.fetch_raw_oddsapi(), season_id=store.season)
+        derive_market_xg_for_season(store.season)
+    progress(
+        95,
+        "Public snapshot ready. New transfers made after the last deadline may not be visible yet.",
+    )
+
+
+def recommend(store: Store, team_id: int, horizon: int):
+    from fpl_bot.live.recommend import generate_recommendation
+
+    folder = store.snapshot_dir(team_id)
+    bootstrap = store.bootstrap(folder)
+    target = next_event(bootstrap) if bootstrap else None
+    if not target:
+        raise UserError("Refresh public data before generating a recommendation.")
+    state = read_json(folder / "state.json", {}) if folder else {}
+    if state.get("approximate_prices"):
+        raise UserError(
+            "Some purchase prices are unknown. Add your exact cost basis using the live runbook before generating a budget-safe recommendation."
+        )
+    if state.get("gameweek") == target["id"]:
+        overrides = (
+            yaml.safe_load(settings.live_state_overrides_path.read_text())
+            if settings.live_state_overrides_path.exists()
+            else {}
+        )
+        overrides = overrides or {}
+        overrides.setdefault(store.season, {}).setdefault(target["id"], {})[team_id] = {
+            k: state[k] for k in ("bank_tenths", "free_transfers", "cost_basis", "chips_used")
+        }
+        overrides_path = store.team_dir(team_id) / "overrides.yaml"
+        overrides_path.parent.mkdir(parents=True, exist_ok=True)
+        overrides_path.write_text(yaml.safe_dump(overrides))
+        settings.live_state_overrides_path = overrides_path
+    progress(15, "Training on finalized matches and simulating upcoming fixtures…")
+    destination = (
+        store.root
+        / f"data/live/recommendations/season_{store.season}/team_{team_id}/gw_{target['id']}"
+    )
+    # Build off to the side; a failed solve must never replace a usable forecast.
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S%f")
+    staging = destination / "archive" / stamp
+    generate_recommendation(
+        season_id=store.season,
+        gameweek=target["id"],
+        team_id=team_id,
+        train_seasons=settings.train_season_ids,
+        horizon=horizon,
+        n_iterations=1000,
+        output_dir=staging,
+    )
+    write_json(staging / "complete.json", {"completed": True})
+    progress(95, "Saving the optimized squad and forecast…")
+    # Archive existing artifacts before replacement. Historical primary remains intact.
+    if (destination / "recommendation.json").exists():
+        old = destination / "archive" / (stamp + "-previous")
+        old.mkdir(parents=True, exist_ok=True)
+        for file in destination.iterdir():
+            if file.is_file():
+                shutil.copy2(file, old / file.name)
+    for file in staging.iterdir():
+        if file.is_file():
+            shutil.copy2(file, destination / file.name)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("kind", choices=["refresh", "recommend"])
+    parser.add_argument("--team-id", type=int, required=True)
+    parser.add_argument("--season", type=int, required=True)
+    parser.add_argument("--horizon", type=int, default=6)
+    parser.add_argument("--refresh-odds", action="store_true")
+    args = parser.parse_args()
+    store = Store(season=args.season)
+    try:
+        if args.kind == "refresh":
+            refresh(store, args.team_id, args.refresh_odds)
+        else:
+            recommend(store, args.team_id, args.horizon)
+    except UserError as exc:
+        progress(-1, str(exc))
+        return 1
+    except OperationalError:
+        message = (
+            "Public data saved, but the model database is unavailable. Check PostgreSQL and database migrations, then refresh again."
+            if args.kind == "refresh"
+            else "The model database is unavailable. Check PostgreSQL and database migrations, then retry."
+        )
+        progress(-1, message)
+        return 1
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
+        progress(-1, f"FPL returned HTTP {code}. Check the team ID and try again later.")
+        return 1
+    except httpx.HTTPError:
+        progress(-1, "Could not reach FPL. Check the connection and retry.")
+        return 1
+    except Exception:
+        # No exception text: upstream errors can contain connection URLs and API keys.
+        progress(
+            -1,
+            "The model job could not finish. Check database migrations, historical data and solver installation in the runbook, then retry.",
+        )
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

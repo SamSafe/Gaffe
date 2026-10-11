@@ -36,6 +36,27 @@ from fpl_bot.ingest import (
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 console = Console()
 
+
+@app.command()
+def serve(
+    port: Annotated[int, typer.Option(min=1024, max=65535, help="Local browser port")] = 8080,
+    open_browser: Annotated[bool, typer.Option("--open/--no-open", help="Open your browser")] = True,
+) -> None:
+    """Open the desktop and mobile-ready local Gaffe app."""
+    try:
+        import uvicorn
+
+        from fpl_bot.web.app import create_app
+    except ImportError:
+        console.print("[red]Install the app dependencies first: uv sync --all-extras[/red]")
+        raise typer.Exit(1) from None
+    if open_browser:
+        import threading
+        import webbrowser
+        threading.Timer(1.5, webbrowser.open, args=(f"http://127.0.0.1:{port}",)).start()
+    console.print(f"[green]Gaffe → http://127.0.0.1:{port}[/green]")
+    uvicorn.run(create_app(), host="127.0.0.1", port=port)
+
 _SUPPORTED_SOURCES = {
     "fpl",
     "vaastav",

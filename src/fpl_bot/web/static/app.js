@@ -1,0 +1,163 @@
+const $ = (s, root = document) => root.querySelector(s);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const number = v => v == null ? '—' : Number(v).toLocaleString('en-CA');
+const money = v => v == null ? '—' : `£${(v / 10).toFixed(1)}m`;
+const points = v => v == null ? '—' : Number(v).toFixed(1);
+const signed = v => `${v >= 0 ? '+' : ''}${points(v)}`;
+const paths = {
+  overview:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+  squad:'<path d="m8 4 4 2 4-2 6 5-4 4-2-2v10H8V11l-2 2-4-4z"/>',
+  planner:'<path d="M4 7h16m-4-4 4 4-4 4M20 17H4m4-4-4 4 4 4"/>',
+  performance:'<path d="M3 3v18h18M7 16l5-7 4 4 5-8"/>',
+  settings:'<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="8" cy="18" r="2"/>'
+};
+const labels = {overview:'Overview',squad:'My squad',planner:'Transfer planner',performance:'Performance',settings:'Settings'};
+let data, players = {}, view = 'overview', pitchMode = 'recommended', draft = [], planResult = null, planError = '', busy = false, lastJobState = '', toastTimer;
+$('#navigation').innerHTML = Object.entries(labels).map(([id,label]) => `<a class="nav-link" href="#${id}" data-nav="${id}"><svg viewBox="0 0 24 24" aria-hidden="true">${paths[id]}</svg><span>${label}</span></a>`).join('');
+$('#settings-shortcut').onclick = () => location.hash = 'settings';
+$('#close-dialog').onclick = () => $('#player-dialog').close();
+function toast(message) { const el=$('#toast'); el.textContent=message; el.hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.hidden=true,6500); }
+async function api(path, method='GET', body) {
+  const response = await fetch(`/api/${path}`, {method, headers: {'Content-Type':'application/json','X-Gaffe-Token':data?.csrf_token || ''}, ...(body === undefined ? {} : {body:JSON.stringify(body)})});
+  const result = await response.json();
+  if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Check the values and try again.');
+  return result;
+}
+function localDate(value, withTime = true) {
+  if (!value) return 'Not available';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('en-CA',{timeZone:data.preferences.timezone,month:'short',day:'numeric',...(withTime?{hour:'numeric',minute:'2-digit',timeZoneName:'short'}:{})}).format(date);
+}
+function jersey(p) {
+  const colors=['#f4e8ae','#e5edef','#cf5451','#83aed1','#d7d5f0','#edc163','#dbe9ca','#dbdce0'];
+  const color=colors[(p?.club_id || 0)%colors.length];
+  return `<svg class="jersey" viewBox="0 0 50 46" aria-hidden="true"><path d="m15 3 10 4 10-4 13 9-7 10-6-3v25H15V19l-6 3-7-10z" fill="${color}" stroke="#13382b44" stroke-width="1.3"/><path d="m19 4 6 5 6-5M15 19v-7m20 7v-7" fill="none" stroke="#13382b44" stroke-width="1.2"/><path d="M23 13h4v25h-4z" fill="#ffffff33"/></svg>`;
+}
+function footballer(pid, lineup) {
+  const p=players[pid]; if(!p) return '';
+  const mark=lineup.captain===pid?'C':lineup.vice===pid?'V':'';
+  return `<button class="footballer" data-player="${pid}" aria-label="${esc(p.name)}, ${esc(p.position)}, ${points(p.xpts)} expected points">${jersey(p)}${mark?`<span class="captain-mark ${mark==='V'?'vice':''}">${mark}</span>`:''}<span class="player-name">${esc(p.name)}</span><span class="player-points">${p.forecast_available?points(p.xpts):'—'} xPts</span></button>`;
+}
+function pitch(lineup) {
+  if(!lineup?.starting_xi?.length) return '<div class="empty"><h2>Your squad belongs here.</h2><p>Refresh public data to bring in your team.<br>Then generate a forecast for the next deadline.</p><a class="button" href="#settings">Set up your team →</a></div>';
+  return `<div class="pitch-wrap"><div class="pitch">${['GKP','DEF','MID','FWD'].map(pos=>`<div class="pitch-row">${lineup.starting_xi.filter(id=>players[id]?.position===pos).map(id=>footballer(id,lineup)).join('')}</div>`).join('')}</div><div class="bench-label">BENCH · OUTFIELD PRIORITY SHOWN</div><div class="bench">${(lineup.bench_order||[]).map(id=>footballer(id,lineup)).join('')}</div></div>`;
+}
+function actions() {return '<div class="heading-actions"><button class="button secondary" data-job="refresh"><span aria-hidden="true">↻</span> Refresh data</button><button class="button" data-job="recommend">Generate forecast <span aria-hidden="true">↗</span></button></div>';}
+function heading(eyebrow,title,subtitle,buttons='') {return `<div class="page-heading"><div><div class="eyebrow">${esc(eyebrow)}</div><h1>${esc(title)}</h1><p class="subheading">${esc(subtitle)}</p></div>${buttons}</div><div id="job-slot"></div>`;}
+function stat(label,value,detail,featured=false,icon='') {return `<div class="stat ${featured?'featured':''}"><div class="label">${label}</div><span class="stat-corner" aria-hidden="true">${icon}</span><div class="value">${value}</div><small>${detail}</small></div>`;}
+function warnings() {return data.warnings.map(w=>`<div class="notice warning">${esc(w)}</div>`).join('');}
+function transfersHtml() {
+  const d=data.recommendation.decisions;
+  if(!d) return '<p class="explanation">Generate a forecast to see the model’s next move.</p>';
+  const outs=d.transferred_out||[], ins=d.transferred_in||[];
+  if(!ins.length) return '<div class="explanation"><strong>Hold your transfers.</strong><p>The model recommends keeping your squad for this deadline.</p></div>';
+  return outs.map((id,i)=>{const out=players[id], incoming=players[ins[i]];return `<div class="transfer"><div class="transfer-person"><div class="transfer-label">OUT</div><strong>${esc(out?.name||id)}</strong><small>${esc(out?.club)} · ${money(out?.selling_price)}</small></div><span class="transfer-direction" aria-hidden="true">→</span><div class="transfer-person in"><div class="transfer-label">IN</div><strong>${esc(incoming?.name||ins[i])}</strong><small>${esc(incoming?.club)} · ${money(incoming?.price)}</small></div></div>`;}).join('');
+}
+function qualityCard() {
+  const q=data.recommendation.quality, train=q.completed_results_through_gw;
+  return `<section class="card quality-card"><div class="card-head"><h2>Behind the forecast</h2><span class="badge">MODEL STATUS</span></div><div class="card-body"><ul class="quality-list"><li>Completed training results <strong>${train?`Through GW${train}`:'No forecast yet'}</strong></li><li>Simulations <strong>${number(q.simulation_iterations)}</strong></li><li>Validation <strong>${q.training_policy==='chronological_v1'?'Chronological':'—'}</strong></li><li>Forecast updated <strong>${esc(localDate(data.recommendation.generated_at,false))}</strong></li></ul><div class="notice">Expectations guide the decision; they don’t guarantee the result. Later deadlines may use fallback market estimates.</div></div></section>`;
+}
+function overview() {
+  const d=data.recommendation.decisions, cap=players[d?.captain], vice=players[d?.vice], perf=data.performance, latest=data.performance.rows.at(-1);
+  const lineup=pitchMode==='recommended'?d:data.current;
+  return heading(`YOUR DUGOUT · TEAM ${data.team.id||'NOT SET'}`,`Ready for the next move.`,`${data.team.name}${data.team.manager?' · '+data.team.manager:''}`,actions())+
+    `<div class="deadline"><span class="badge amber">${data.next_event.gameweek?`GW${data.next_event.gameweek} DEADLINE`:'SEASON STATUS'}</span><span>${esc(localDate(data.next_event.deadline))}</span><span>•</span><span>${esc(data.preferences.timezone)}</span></div>
+    <div class="stats">${stat('Your total points',number(data.team.points),latest?.provisional?'Includes provisional results':'Season to date',false,'◷')}${stat('Overall rank',number(data.team.rank),'Public FPL standing',false,'↗')}${stat('Bank / free transfers',`${money(data.team.bank)} <span class="subheading">/ ${number(data.team.free_transfers)} FT</span>`,'Current public squad state',false,'⇄')}${stat(`GW${data.next_event.gameweek||'—'} forecast`,d?`${points(d.expected_gw_points)} <span class="subheading">xPts</span>`:'—','Recommended XI + captain, before hits',true,'✧')}</div>
+    <div class="grid-main"><section class="card"><div class="card-head"><div><h2>${pitchMode==='recommended'?'The model’s starting XI':'Your last saved XI'}</h2><small>GW${data.next_event.gameweek||'—'} · Tap a player for details</small></div><div class="segment" role="group" aria-label="Squad view"><button data-pitch="current" class="${pitchMode==='current'?'selected':''}">My squad</button><button data-pitch="recommended" class="${pitchMode==='recommended'?'selected':''}">Suggested</button></div></div>${pitch(lineup)}<div class="card-foot"><span><strong>C</strong> Captain &nbsp; <strong>V</strong> Vice captain &nbsp; · &nbsp; Forecast points</span><a href="#squad">Explore squad →</a></div></section>
+    <div class="stack"><section class="card"><div class="card-head"><h2>Your next transfers</h2><span class="badge">${d?(d.hits?`${d.hits*4} PT HIT`:'NO HITS'):'WAITING'}</span></div><div class="card-body">${transfersHtml()}<div class="advice-total"><span>${number(data.team.free_transfers)} free transfers available</span><strong>${d?.transferred_in?.length||0} proposed</strong></div><a class="button full" href="#planner">Open transfer planner <span class="arrow">→</span></a></div></section>
+    <section class="card"><div class="card-body"><div class="captain-card"><div class="captain-icon">${jersey(cap)}</div><div><div class="eyebrow">THE ARMBAND</div><strong>${esc(cap?.name||'Awaiting forecast')}</strong><small>${esc(cap?.club_name||'')} ${cap?'· Captain':''}</small></div></div><div class="metric-pair"><div><strong>${cap?points(cap.xpts*2):'—'}</strong><small>CAPTAIN xPts · DOUBLED</small></div><div><strong>${esc(vice?.name||'—')}</strong><small>VICE CAPTAIN</small></div></div></div></section>${qualityCard()}</div></div>
+    <div class="notice">${perf.covered_weeks?`<strong>You’re ${perf.lead>=0?'ahead':'behind'} by ${number(Math.abs(perf.lead))} points</strong> across ${perf.covered_weeks} comparable weeks. Saved bot plans are independent weekly decisions; this is a partial season comparison. <a href="#performance">See the breakdown →</a>`:'No completed, saved pre-deadline comparisons yet. They’ll appear in Performance.'}</div>${warnings()}`;
+}
+function playerTable(ids) {
+  return `<div class="table-scroll"><table><thead><tr><th>PLAYER</th><th>PRICE / SALE</th><th>GW${data.next_event.gameweek||'—'} xPTS</th><th>STATUS</th></tr></thead><tbody>${ids.map(id=>{const p=players[id];if(!p)return '';return `<tr><td><div class="player-cell">${jersey(p)}<button class="player-link" data-player="${id}"><strong>${esc(p.name)}</strong><small>${esc(p.club)} · ${esc(p.position)}</small></button></div></td><td>${money(p.price)}<small> / ${money(p.selling_price)}</small></td><td><strong>${p.forecast_available?points(p.xpts):'—'}</strong></td><td><span class="badge ${p.status!=='a'?'amber':''}">${p.status==='a'?'Available':p.availability!=null?`${p.availability}%`:'Check news'}</span></td></tr>`;}).join('')}</tbody></table></div>`;
+}
+function squad() {
+  return heading('THE SQUAD',data.team.name,'Your latest saved selection, with fresh forecast points.',actions())+
+    `<div class="squad-grid"><section class="card"><div class="card-head"><h2>Last saved lineup</h2><span class="badge">${data.current.squad.length} PLAYERS</span></div>${pitch(data.current)}<div class="card-foot"><span>${esc(data.team.source)} · ${esc(localDate(data.freshness.refreshed_at))}</span><span>Pending transfers may not be public yet</span></div></section><section class="card"><div class="card-head"><h2>Squad detail</h2><span class="badge">GW${data.next_event.gameweek||'—'}</span></div>${playerTable(data.current.squad)}<div class="table-caption">Sale prices follow FPL’s half-profit rule. Tap a player to read their news and horizon forecast.</div></section></div>${warnings()}`;
+}
+function seedDraft() {
+  const d=data.recommendation.decisions;
+  const outs=d?.transferred_out||[], remaining=[...(d?.transferred_in||[])];
+  draft=outs.map(id=>{const match=remaining.find(p=>players[p]?.position===players[id]?.position) ?? remaining[0];remaining.splice(remaining.indexOf(match),1);return {out:id,incoming:match};});
+}
+function options(list,selected,empty='Choose a player') {return `<option value="">${empty}</option>`+list.map(p=>`<option value="${p.id}" ${p.id===Number(selected)?'selected':''}>${esc(p.name)} · ${esc(p.club)} · ${money(p.price)}${p.forecast_available?' · '+points(p.xpts)+' xPts':''}</option>`).join('');}
+function planner() {
+  if(!data.hold) return heading('TRANSFER PLANNER','Make your next move.','Compare a plan with holding your squad.',actions())+`<section class="card"><div class="empty"><h2>A fresh forecast comes first.</h2><p>Refresh your public team, then generate a forecast to compare transfers.</p></div></section>${warnings()}`;
+  const held=data.current.squad.map(id=>players[id]), pool=data.players.filter(p=>!data.current.squad.includes(p.id)&&p.forecast_available).sort((a,b)=>b.xpts-a.xpts);
+  const result=planResult?.plan, planned=[...data.current.squad.filter(p=>!draft.some(t=>t.out===p)),...draft.map(t=>t.incoming).filter(Boolean)];
+  return heading('TRANSFER PLANNER','A better move starts here.','Test the budget. Compare the points. Keep the final call.')+
+    `<div class="grid-main"><div class="stack"><section class="card"><div class="card-head"><h2>Your what-if plan</h2><span class="badge">${number(data.team.free_transfers)} FREE TRANSFERS</span></div><div class="card-body"><form id="plan-form"><div class="eyebrow">SELL &nbsp; → &nbsp; BUY</div><p class="field-help">Players are ordered by next-week forecast. Incoming lists match the outgoing position.</p><div id="transfer-rows">${draft.map((t,i)=>`<div class="plan-row"><select aria-label="Sell player ${i+1}" data-out="${i}">${options(held,t.out,'Sell…')}</select><span aria-hidden="true">→</span><select aria-label="Buy player ${i+1}" data-in="${i}">${options(pool.filter(p=>!t.out||p.position===players[t.out]?.position),t.incoming,'Buy…')}</select><button type="button" class="remove-transfer" data-remove="${i}" aria-label="Remove transfer ${i+1}">×</button></div>`).join('')}</div><button type="button" class="button text" id="add-transfer">＋ Add a transfer</button><div class="field"><label for="plan-captain">Captain</label><select id="plan-captain">${options(planned.map(id=>players[id]).filter(Boolean),result?.captain,'Let the model choose')}</select></div><div class="form-buttons"><button class="button" type="submit">Compare this plan →</button><button class="button secondary" type="button" id="reset-plan">Use recommendation</button><button class="button secondary" type="button" id="hold-plan">Hold squad</button></div>${planError?`<div class="form-error" role="alert">${esc(planError)}</div>`:''}</form><div class="notice">Budget: ${money(data.team.bank)} · 15 players · Up to 3 per club. Extra transfers cost 4 points each. This local planner models regular transfers.</div></div></section><section class="card"><div class="card-head"><h2>Model recommendation</h2><span class="badge">MULTI-WEEK PLAN</span></div><div class="card-body">${transfersHtml()}<p class="field-help">The saved recommendation considers the full horizon. The instant comparison below scores one week and can favor a different choice.</p></div></section></div>
+    <section class="card"><div class="card-head"><h2>${result?'Your planned XI':'Plan comparison'}</h2><span class="badge">GW${data.next_event.gameweek}</span></div><div class="card-body"><div class="plan-metrics"><div class="plan-metric"><small>HOLD SQUAD</small><strong>${points(data.hold.expected_points)}</strong></div><div class="plan-metric"><small>PLAN · AFTER HITS</small><strong>${result?points(result.net_points):'—'}</strong></div><div class="plan-metric"><small>EXPECTED GAIN</small><strong class="${result?.gain<0?'negative':'positive'}">${result?signed(result.gain):'—'}</strong></div></div>${result?`<div class="legend"><span>${money(result.bank)} bank left</span><span>${result.hits} hit points</span><span>${draft.length} transfer${draft.length===1?'':'s'}</span></div>`:'<p class="explanation">Compare your plan to see its best legal XI and budget.</p>'}</div>${result?pitch(result):''}<div class="card-foot">${esc(planResult?.note||'One-week estimate. Transfer plans stay local; apply your chosen moves on FPL.')}</div></section></div>${warnings()}`;
+}
+function chart(rows) {
+  if(!rows.length) return '<div class="empty">Your results will appear after a data refresh.</div>';
+  const width=700,height=245,left=42,top=15,bottom=36,plot=height-top-bottom, max=Math.ceil(Math.max(...rows.map(r=>Math.max(r.team_points,r.bot_points||0)),20)/20)*20, step=(width-left-15)/rows.length;
+  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Weekly actual team points and saved bot recommendation points. Missing bot weeks have no bar.">${Array.from({length:5},(_,i)=>{const val=max*i/4,y=height-bottom-val/max*plot;return `<line class="gridline" x1="${left}" x2="${width-10}" y1="${y}" y2="${y}"/><text x="${left-10}" y="${y+4}" text-anchor="end">${val}</text>`;}).join('')}${rows.map((r,i)=>{const x=left+step*i+step*.22,w=Math.min(step*.23,30),y=height-bottom;return `<rect x="${x}" y="${y-r.team_points/max*plot}" width="${w}" height="${Math.max(0,r.team_points/max*plot)}" rx="3" fill="#123b32"/>${r.bot_points!==null?`<rect x="${x+w+5}" y="${y-r.bot_points/max*plot}" width="${w}" height="${Math.max(0,r.bot_points/max*plot)}" rx="3" fill="#b8d95d"/>`:`<text x="${x+w+13}" y="${y-10}" text-anchor="middle">—</text>`}<text x="${left+step*i+step*.5}" y="${height-11}" text-anchor="middle">GW${r.gameweek}${r.provisional?'*':''}</text>`;}).join('')}</svg>`;
+}
+function performance() {
+  const perf=data.performance;
+  return heading('THE SCOREBOARD','How are we doing?','Actual points against recommendations saved before the deadline.')+
+    `<div class="stats">${stat('Your comparable points',number(perf.team_compared),`${perf.covered_weeks} completed gameweeks`)}${stat('Bot comparable points',number(perf.bot_compared),'Original saved plans, after hits')}${stat(`You’re ${perf.lead>=0?'ahead':'behind'} by`,number(Math.abs(perf.lead)),'Points in comparable weeks',true)}${stat('Comparison coverage',`${perf.covered_weeks} / ${perf.rows.length}`,'Missing weeks stay unscored')}</div><div class="performance-grid"><section class="card"><div class="card-head"><h2>Week by week</h2><div class="legend"><span><i></i>Your team</span><span><i class="bot"></i>Bot plan</span></div></div><div class="card-body table-scroll">${chart(perf.rows)}</div><div class="card-foot">* Provisional result · — No eligible saved recommendation</div></section><section class="card"><div class="card-head"><h2>A fair comparison</h2></div><div class="card-body explanation"><strong>Only recorded decisions count.</strong><p>We compare completed weeks with a recommendation saved before that week’s deadline. Missing weeks stay missing.</p><p>Each bot plan starts from your real squad that week. This is a partial comparison, rather than a continuous simulated bot season.</p><p>Chips and transfers affect the gap. Your chip history is shown below.</p></div></section></div><section class="card"><div class="card-head"><h2>Gameweek breakdown</h2><span class="badge">NET POINTS</span></div><div class="table-scroll"><table><thead><tr><th>GAMEWEEK</th><th>YOUR TEAM</th><th>BOT PLAN</th><th>YOUR LEAD</th><th>AVERAGE</th><th>TOTAL POINTS</th><th>STATUS</th></tr></thead><tbody>${perf.rows.map(r=>`<tr><td><strong>GW${r.gameweek}</strong></td><td>${r.team_points}</td><td>${r.bot_points??'—'}</td><td class="${r.lead<0?'negative':'positive'}">${r.lead===null?'—':(r.lead>=0?'+':'')+r.lead}</td><td>${r.average??'—'}</td><td>${number(r.total_points)}</td><td><span class="badge ${r.provisional?'amber':''}">${r.provisional?'Provisional':r.bot_points===null?'No saved plan':'Compared'}</span></td></tr>`).join('')}</tbody></table></div><div class="card-body"><div class="eyebrow">CHIPS USED</div><div class="chip-list">${data.team.chips_used.map(c=>`<span class="chip used">${esc(c)}</span>`).join('')||'<span class="field-help">No recorded chips</span>'}</div></div></section>${warnings()}`;
+}
+function settings() {
+  return heading('YOUR DUGOUT, YOUR SETTINGS','Set up your next decision.','Team details and model controls. Credentials stay on the server.')+
+    `<div class="settings-grid"><section class="card"><div class="card-head"><h2>Team & preferences</h2><span class="badge">LOCAL SETTINGS</span></div><div class="card-body"><form id="settings-form"><div class="field"><label for="team-id">FPL team ID</label><input id="team-id" type="number" min="1" max="100000000" required value="${data.preferences.team_id||''}"><span class="field-help">The number in your FPL team URL. Team changes load their own snapshots and recommendations.</span></div><div class="field"><label for="horizon">Forecast horizon</label><select id="horizon">${Array.from({length:8},(_,i)=>`<option value="${i+1}" ${data.preferences.horizon===i+1?'selected':''}>${i+1} gameweek${i?'s':''}</option>`).join('')}</select><span class="field-help">Applies the next time you generate a forecast. Longer horizons can take more time.</span></div><div class="field"><label for="timezone">Deadline timezone</label><input id="timezone" required value="${esc(data.preferences.timezone)}" list="timezones"><datalist id="timezones"><option value="America/Edmonton"><option value="Europe/London"><option value="America/New_York"><option value="UTC"></datalist></div><button class="button" type="submit">Save preferences →</button></form><div class="notice">Public FPL data reflects the last deadline’s team. Transfers you’ve made since then may not be visible until the next deadline.</div></div></section><div class="stack"><section class="card"><div class="card-head"><h2>Data connections</h2></div><div class="card-body">${[['Public team snapshot',data.connections.snapshot,'Your squad and points'],['Player forecast',data.connections.forecast,'Current deadline predictions'],['Bookmaker API',data.connections.odds,'Optional odds refresh'],['Private FPL token',data.connections.private_fpl,'Optional server configuration']].map(([name,on,note])=>`<div class="connection"><div>${name}<small>${note}</small></div><span class="badge ${on?'':'amber'}">${on?'Ready':'Not loaded'}</span></div>`).join('')}<div class="notice">Freshness: ${esc(localDate(data.freshness.refreshed_at))}. The model needs the configured PostgreSQL database, historical training data and solver.</div></div></section><section class="card"><div class="card-head"><h2>Refresh & forecast</h2></div><div class="card-body"><p class="explanation">Refresh the public squad and finalized results, then generate a new recommendation.</p><div class="field"><label><input id="refresh-odds" type="checkbox" ${data.connections.odds?'':'disabled'}> Also refresh bookmaker odds</label><span class="field-help">Uses your configured API’s request allowance.</span></div>${actions()}<p class="field-help">Training can take several minutes. You can browse while it runs.</p></div></section></div></div>`;
+}
+function renderJob() {
+  const slot=$('#job-slot'); if(!slot)return;
+  const jobs=data.jobs||[], job=jobs[0]; busy=jobs.some(j=>['queued','running'].includes(j.status));
+  document.querySelectorAll('[data-job],#settings-form button').forEach(b=>b.disabled=busy);
+  if(!job){slot.innerHTML='';return;}
+  const active=['queued','running'].includes(job.status);
+  slot.innerHTML=`<div class="job-banner ${job.status==='failed'?'failed':''}">${active?'<span class="spinner"></span>':'<span aria-hidden="true">'+(job.status==='failed'?'!':'✓')+'</span>'}<div class="job-info">${esc(job.message)}<small>${job.kind==='recommend'?'Model forecast':'Data refresh'} · Team ${job.team_id} · ${esc(localDate(job.updated_at))}</small></div>${active?`<progress value="${Math.max(0,job.progress)}" max="100" aria-label="Job progress"></progress>`:''}</div>`;
+}
+function render() {
+  if(!data)return;
+  view=location.hash.slice(1);if(!labels[view])view='overview';
+  Object.keys(labels).forEach(id=>{const link=$(`[data-nav="${id}"]`);link.classList.toggle('active',id===view);if(id===view)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');});
+  document.title=`${labels[view]} · Gaffe`;
+  $('#season-label').textContent=`FANTASY PREMIER LEAGUE · ${2000+data.season}/${String(data.season+1).padStart(2,'0')}`;
+  const initials=data.team.name.split(' ').slice(0,2).map(s=>s[0]).join('');
+  $('#manager').innerHTML=`<div class="avatar">${esc(initials)}</div><div>${esc(data.team.name)}<small>TEAM ${data.team.id||'NOT SET'}</small></div>`;
+  $('#main').innerHTML=({overview,squad,planner,performance,settings}[view])();
+  renderJob();bind();
+}
+function bind() {
+  document.querySelectorAll('[data-player]').forEach(b=>b.onclick=()=>showPlayer(Number(b.dataset.player)));
+  document.querySelectorAll('[data-job]').forEach(b=>b.onclick=()=>startJob(b.dataset.job));
+  document.querySelectorAll('[data-pitch]').forEach(b=>b.onclick=()=>{pitchMode=b.dataset.pitch;render();});
+  if($('#settings-form'))$('#settings-form').onsubmit=async e=>{e.preventDefault();try{await api('preferences','PUT',{team_id:Number($('#team-id').value),horizon:Number($('#horizon').value),timezone:$('#timezone').value.trim()});draft=[];planResult=null;await load();toast('Preferences saved. Refresh to load a changed team.');}catch(err){toast(err.message);}};
+  document.querySelectorAll('[data-out]').forEach(s=>s.onchange=()=>{draft[Number(s.dataset.out)]={out:Number(s.value)||null,incoming:null};planResult=null;planError='';render();});
+  document.querySelectorAll('[data-in]').forEach(s=>s.onchange=()=>{draft[Number(s.dataset.in)].incoming=Number(s.value)||null;planResult=null;planError='';render();});
+  document.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{draft.splice(Number(b.dataset.remove),1);planResult=null;render();});
+  if($('#add-transfer'))$('#add-transfer').onclick=()=>{if(draft.length>=15)return;draft.push({out:null,incoming:null});planResult=null;render();};
+  if($('#reset-plan'))$('#reset-plan').onclick=()=>{seedDraft();comparePlan();};
+  if($('#hold-plan'))$('#hold-plan').onclick=()=>{draft=[];comparePlan();};
+  if($('#plan-form'))$('#plan-form').onsubmit=e=>{e.preventDefault();comparePlan(Number($('#plan-captain').value)||null);};
+}
+async function comparePlan(captain=null) {
+  if(draft.some(t=>!t.out||!t.incoming)){planError='Choose both players for each transfer.';render();return;}
+  try{planResult=await api('plan','POST',{transfers:draft,captain});planError='';}catch(err){planResult=null;planError=err.message;}render();
+}
+function showPlayer(id) {
+  const p=players[id];if(!p)return;
+  $('#player-detail').innerHTML=`<div class="detail-head">${jersey(p)}<div><div class="eyebrow">${esc(p.club_name)} · ${esc(p.position)}</div><h2 id="player-detail-title">${esc(p.name)}</h2><span class="badge ${p.status==='a'?'':'amber'}">${p.status==='a'?'Available':p.availability!=null?`${p.availability}% chance to play`:'Check news'}</span></div></div><div class="metric-pair"><div><strong>${money(p.price)}</strong><small>BUY PRICE</small></div><div><strong>${money(p.selling_price)}</strong><small>YOUR SALE PRICE</small></div><div><strong>${number(p.total_points)}</strong><small>SEASON POINTS</small></div></div><div class="forecast-strip">${Object.entries(p.forecast).map(([gw,value])=>`<div class="forecast-week"><small>GW${gw}</small><strong>${points(value)}</strong></div>`).join('')}</div><p class="detail-news">${esc(p.news||'No injury or availability news in the latest snapshot.')}</p><p class="field-help">Forecast figures are expected points before captain multipliers.</p>`;
+  $('#player-dialog').showModal();
+}
+async function startJob(kind) {
+  if(busy)return;
+  try{const job=await api('jobs','POST',{kind,refresh_odds:kind==='refresh'&&Boolean($('#refresh-odds')?.checked)});data.jobs=[job,...data.jobs];lastJobState=`${job.id}:${job.status}`;renderJob();toast(kind==='recommend'?'Forecast started. You can keep browsing.':'Refreshing your public FPL data.');}catch(err){toast(err.message);}
+}
+async function load() {
+  const before=data?.preferences.team_id, previousGw=data?.next_event.gameweek;
+  data=await api('dashboard');players=Object.fromEntries(data.players.map(p=>[p.id,p]));
+  if(before!==data.preferences.team_id||previousGw!==data.next_event.gameweek){seedDraft();planResult=null;}
+  render();
+}
+async function poll() {
+  try{if(!data)return;const jobs=await api('jobs');const state=jobs[0]?`${jobs[0].id}:${jobs[0].status}`:'';data.jobs=jobs;if(state!==lastJobState&&['completed','failed'].includes(jobs[0]?.status)){lastJobState=state;await load();}else{lastJobState=state;renderJob();}}catch{ /* The next poll reconnects after a temporary server interruption. */ }
+}
+window.addEventListener('hashchange',()=>{planError='';render();$('#main').focus({preventScroll:true});window.scrollTo(0,0);});
+try{await load();}catch(err){$('#main').innerHTML=`<div class="empty"><h2>Couldn’t load your dugout.</h2><p>${esc(err.message)}</p><button class="button" id="retry">Try again</button></div>`;$('#retry').onclick=()=>location.reload();}
+setInterval(poll,2500);

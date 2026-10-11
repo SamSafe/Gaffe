@@ -2,6 +2,16 @@
 
 ## Audit update — 2026-10-11
 
+The browser app now handles the routine weekly cycle: `uv run gaffe serve`,
+then **Refresh data** and **Generate forecast**. See [the app guide](APP.md).
+The 17:33 UTC public refresh reported **385 total points**, including provisional
+GW6 points. GW6 remained unfinished, so model training still stopped at GW5.
+The app reconciles live entry summaries with lagging history responses. The
+latest app forecast, saved at 17:37 UTC, predicts **54.7 GW7 points**: Rogers and
+Schade out, Anderson and Palmer in, no hit, £0.6m remaining; Haaland captain
+and Groß vice. It supersedes the earlier 55.1-point snapshot for current usage.
+No transfers or chips were submitted to FPL.
+
 The local database has now been refreshed through finalized GW5. GW6 is still
 in progress. The default training seasons now include 26; only finalized
 matches should be ingested into that training set. For team 718959, the audited

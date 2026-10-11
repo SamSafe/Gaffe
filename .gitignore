@@ -39,6 +39,8 @@ Thumbs.db
 data/models/
 data/live/
 data/audits/
+data/web/
+dist/
 
 # Local Claude Code workflow config (machine-specific; may contain team_id)
 .claude/settings.json

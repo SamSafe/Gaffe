@@ -149,6 +149,32 @@ uv run pytest tests/ -q               # full unit + leakage suite (DB-backed
 
 Running it for a real gameweek: follow [`docs/RUNBOOK_live.md`](docs/RUNBOOK_live.md).
 
+### Browser app
+
+After the one-time dependency/database setup above:
+
+```bash
+uv run gaffe serve
+# Opens http://127.0.0.1:8080. Use --no-open or --port 8081 if preferred.
+```
+
+The desktop-first dashboard also adapts to phone screen sizes. Overview, squad,
+transfer planning, performance and settings replace routine terminal work:
+set your team ID, **Refresh data**, then **Generate forecast**. Model runs happen
+in the background. The planner checks budgets, half-profit selling prices,
+positions, club limits and transfer hits, and compares a plan with holding.
+Performance only scores completed weeks with saved pre-deadline recommendations;
+missing weeks stay missing. Apply your final decisions on FPL.
+
+The app uses the existing PostgreSQL database, historical training data and CBC
+solver; it does not download the historical seasons automatically. It can display
+saved artifacts before training. Credentials stay server-side in `.env`; local
+preferences, public snapshots and forecast archives are gitignored. The server
+binds to localhost. See [the app guide](docs/APP.md) and
+[the implementation plan](docs/APP_PLAN.md).
+
+![Gaffe desktop dashboard](docs/images/app-desktop.png)
+
 Secrets/config go in a gitignored `.env` (env-prefix `FPL_BOT_`): e.g.
 `FPL_BOT_ODDS_API_KEY` (The Odds API free tier), optionally
 `FPL_BOT_FPL_ACCESS_TOKEN` for exact bank/transfer/price state. The access

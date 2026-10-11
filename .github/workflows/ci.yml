@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'season26/**']
   pull_request:
 
 concurrency:
@@ -32,7 +32,7 @@ jobs:
       - name: Ruff lint
         run: uv run ruff check src tests
 
-      # Full suite: 194 unit + leakage tests. None require a live PostgreSQL
+      # Unit, leakage and browser API tests. None require a live PostgreSQL
       # (DB-touching code is exercised via fixtures/mocks), so no service is
       # needed here. The `integration` marker covers tests that do.
       - name: Pytest

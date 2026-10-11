@@ -240,3 +240,25 @@ No real-account transfers or chip actions were submitted.
 For why separate chronological validation is necessary, see the primary
 [LightGBM early-stopping documentation](https://lightgbm.readthedocs.io/en/stable/pythonapi/lightgbm.early_stopping.html)
 and [scikit-learn time-series validation documentation](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html).
+
+## Browser app follow-up, 17:37 UTC
+
+The new app completed a real public-data refresh and forecast run for 718959.
+The entry summary now reports **385 points** and **62 provisional GW6 points**;
+the gameweek history endpoint still reports the older 370 / 47 snapshot. The
+dashboard prefers the live entry summary for that unfinished week and labels
+it provisional. Bootstrap and fixtures confirm GW6 is unfinished. Training
+therefore correctly remains through **GW5**, rather than ingesting partial
+labels. The earlier 370-point comparison describes the earlier audit snapshot.
+
+The latest forecast is **54.7 GW7 points**, replacing the earlier 55.1 for
+current usage: **Rogers + Schade → Anderson + Palmer**, zero hits, **£0.6m bank**,
+**Haaland captain / Groß vice**. Its instant one-week comparison is **+2.5 xPts**
+against the best XI from holding the squad (52.2). This rerun is current advice,
+not evidence of better model accuracy. Near-equal MILP plans can differ within
+the solver's tolerance. GW9–12 still lack bookmaker coverage and use fallback.
+
+The original team-versus-bot lead remains **+90 across GW1, GW2 and GW4**.
+The app preserves the primary legacy recommendations and stores new runs under
+`data/live/recommendations/season_26/team_718959/gw_7/`, with dated archives.
+No real-account moves were submitted. See [the app guide](APP.md) for usage.

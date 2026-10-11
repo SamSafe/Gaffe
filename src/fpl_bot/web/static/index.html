@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#123b32">
+  <meta name="description" content="Your FPL squad, forecasts and next move. Gaffe's local decision dashboard.">
+  <title>Gaffe · Your next move</title>
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/style.css">
+  <script type="module" src="/assets/app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <aside class="sidebar">
+    <a class="brand" href="#overview" aria-label="Gaffe overview"><img src="/assets/icon.svg" alt="" width="36" height="36">gaffe<span class="brand-dot">.</span></a>
+    <div class="nav-label">THE DUGOUT</div>
+    <nav aria-label="Main navigation" id="navigation"></nav>
+    <div class="sidebar-note"><span class="live-dot"></span> A little less guesswork.<p>Your squad. A clearer next move.</p></div>
+    <div class="manager" id="manager">Loading your team…</div>
+  </aside>
+  <div class="workspace">
+    <header class="topbar"><span id="season-label">FANTASY PREMIER LEAGUE</span><div class="top-actions"><span class="local-badge">LOCAL APP</span><button class="icon-button" id="settings-shortcut" aria-label="Open settings">⚙</button></div></header>
+    <main id="main" tabindex="-1"><div class="loading"><span class="spinner"></span>Getting your dugout ready…</div></main>
+    <footer>Gaffe · Built for the next decision <span>Forecasts are estimates. Apply your choices on FPL.</span></footer>
+  </div>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <dialog id="player-dialog" aria-labelledby="player-detail-title"><div id="player-detail"></div><button class="button secondary" id="close-dialog">Close</button></dialog>
+</body>
+</html>
