@@ -246,10 +246,27 @@ def refresh(store: Store, team_id: int, refresh_odds: bool):
         progress(80, "Refreshing bookmaker odds…")
         oddsapi.parse_raw_oddsapi(oddsapi.fetch_raw_oddsapi(), season_id=store.season)
         derive_market_xg_for_season(store.season)
+        collect_player_props(store)
     progress(
         95,
         "Public snapshot ready. New transfers made after the last deadline may not be visible yet.",
     )
+
+
+def collect_player_props(store: Store):
+    """Record anytime-goalscorer odds (~10 API credits per gameweek).
+
+    They carry zero weight in forecasts. The history is collected so that
+    market-implied availability can later be validated against actual minutes.
+    """
+    from fpl_bot.ingest import oddsapi_props
+
+    progress(88, "Recording goalscorer odds…")
+    try:
+        raw = oddsapi_props.fetch_raw_player_props()
+        oddsapi_props.parse_raw_player_props(raw, season_id=store.season)
+    except Exception:
+        progress(90, "Goalscorer odds were unavailable. Match odds are saved.")
 
 
 def recommend(store: Store, team_id: int, horizon: int):
@@ -369,6 +386,21 @@ def bot(store: Store, team_id: int, horizon: int, freeze: bool = False):
     )
 
 
+def draft_bot_plan(store: Store, team_id: int, horizon: int):
+    """A manual forecast also drafts the independent bot's plan.
+
+    Without the always-on scheduler, this keeps the bot deciding whenever the
+    app is opened before a deadline. Its failure never fails your forecast.
+    """
+    from fpl_bot.live.ledger import Ledger
+
+    try:
+        if Ledger(store, team_id).read():
+            bot(store, team_id, horizon)
+    except Exception:
+        progress(95, "Your forecast is ready. The independent bot plan was not updated this time.")
+
+
 def freeze_bot(store: Store, team_id: int):
     from fpl_bot.live.ledger import Ledger
 
@@ -399,6 +431,7 @@ def main():
             refresh(store, args.team_id, args.refresh_odds)
         elif args.kind == "recommend":
             recommend(store, args.team_id, args.horizon)
+            draft_bot_plan(store, args.team_id, args.horizon)
         elif args.kind == "bot":
             bot(store, args.team_id, args.horizon, args.freeze_bot)
         elif args.kind == "freeze":

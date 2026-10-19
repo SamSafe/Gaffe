@@ -219,6 +219,74 @@ def split_p_full_by_position(
     return alphas
 
 
+# Per-player split of the 60+ bucket (research switch, off by default). It cuts
+# the split's log loss 7-11% but left joint xPts accuracy flat on 24/25-26/27;
+# see docs/MODEL_IMPROVEMENT_2026-10-11.md.
+SUB_RATE_WINDOW = 20
+SUB_RATE_PRIOR_WEIGHT = 10
+
+
+def _utc_kickoff(df: pl.DataFrame) -> pl.DataFrame:
+    # Postgres reads arrive in the session zone; naive values are already UTC.
+    dtype = df.schema["kickoff_utc"]
+    col = pl.col("kickoff_utc").cast(pl.Datetime("us", dtype.time_zone))
+    col = col.dt.convert_time_zone("UTC") if dtype.time_zone else col.dt.replace_time_zone("UTC")
+    return df.with_columns(col)
+
+
+def player_sub_rates(
+    history: pl.DataFrame,
+    targets: pl.DataFrame,
+    alphas_by_position: dict[str, float],
+    *,
+    window: int = SUB_RATE_WINDOW,
+    prior_weight: float = SUB_RATE_PRIOR_WEIGHT,
+) -> pl.DataFrame:
+    """Add `alpha_60_89` = P(60-89 minutes | 60+) for each target row.
+
+    Uses the player's last `window` 60+ appearances strictly before the target
+    kickoff, shrunk toward the position rate by `prior_weight` pseudo-games, so
+    a centre-back who always plays 90 and a winger withdrawn at 70 are no
+    longer simulated alike. history needs player_id, kickoff_utc, minutes;
+    targets need player_id, kickoff_utc, position_code.
+    """
+    full = (
+        history.filter(pl.col("minutes") >= 60)
+        .sort("player_id", "kickoff_utc")
+        .with_columns((pl.col("minutes") < 90).cast(pl.Float64).alias("_early"))
+        .with_columns(
+            pl.col("_early").rolling_sum(window, min_samples=1).over("player_id").alias("_k"),
+            (pl.int_range(pl.len()).over("player_id") + 1)
+            .clip(upper_bound=window)
+            .cast(pl.Float64)
+            .alias("_n"),
+        )
+        .select("player_id", "kickoff_utc", "_k", "_n")
+        .sort("kickoff_utc")
+    )
+    joined = _utc_kickoff(targets.with_row_index("_row")).sort("kickoff_utc").join_asof(
+        _utc_kickoff(full),
+        on="kickoff_utc",
+        by="player_id",
+        strategy="backward",
+        allow_exact_matches=False,
+        check_sortedness=False,  # Both sides are sorted on kickoff above.
+    )
+    prior = pl.col("position_code").replace_strict(
+        alphas_by_position, default=0.4, return_dtype=pl.Float64
+    )
+    return (
+        joined.with_columns(
+            (
+                (pl.col("_k").fill_null(0.0) + prior_weight * prior)
+                / (pl.col("_n").fill_null(0.0) + prior_weight)
+            ).alias("alpha_60_89")
+        )
+        .sort("_row")
+        .drop("_row", "_k", "_n")
+    )
+
+
 def sample_minutes_bucket(
     p_zero: float,
     p_short: float,
@@ -392,6 +460,10 @@ class BPSSimulator:
         p_zeros = players["p_minutes_zero"].to_numpy()
         p_shorts = players["p_minutes_short"].to_numpy()
         p_fulls = players["p_minutes_full"].to_numpy()
+        # Per-player 60+ split when assembled; otherwise the position rate.
+        player_alphas = (
+            players["alpha_60_89"].to_numpy() if "alpha_60_89" in players.columns else None
+        )
         lambda_g = players["lambda_goals_per_90"].to_numpy()
         lambda_a = players["lambda_assists_per_90"].to_numpy()
         saves_rate = players["saves_rate_per_90"].to_numpy()
@@ -439,7 +511,9 @@ class BPSSimulator:
                     p_zeros[i],
                     p_shorts[i],
                     p_fulls[i],
-                    inputs.alphas_by_position.get(positions[i], 0.4),
+                    player_alphas[i]
+                    if player_alphas is not None
+                    else inputs.alphas_by_position.get(positions[i], 0.4),
                     rng,
                 )
                 minutes_buf[i] = minutes

@@ -34,8 +34,10 @@ in [the live runbook](RUNBOOK_live.md).
    per club, exact half-profit sale prices, bank and four-point transfer hits.
 5. **Performance:** inspect the independent bot separately from earlier weekly
    recommendations. Start the bot once from your exact current squad and it
-   carries its own bank, holdings, transfers and chips. Its decisions freeze
-   before deadlines and score only finalized results. Earlier recommendations
+   carries its own bank, holdings, transfers and chips. Every forecast you
+   generate also drafts the bot's plan, and the last draft saved before a
+   deadline becomes its decision, even if the app is closed at the deadline.
+   It scores only finalized results. Earlier recommendations
    are a partial comparison that starts from your actual squad each week.
 6. Apply the chosen moves on FPL. Refresh near the next deadline.
 

@@ -288,6 +288,34 @@ gain inside that tolerance is labelled as not separating the plans. This is
 decision support only and changes no choice. A per-transfer penalty was already
 measured and rejected (−41 points across folds; `docs/design/phase6_live_run.md`).
 
+**Measured and not shipped: per-player 60+ split.** The simulator splits the
+60+ minutes bucket into 70 or 90 minutes with one rate per position (DEF 0.13,
+MID 0.38, FWD 0.45 subbed before 90). A per-player rate, using the player's
+last 20 games of 60+ minutes shrunk toward the position rate with 10
+pseudo-games, predicts the split much better (log loss, lower is better):
+
+| Test season | Position rate | Player rate |
+|---|---:|---:|
+| 2024/25 | 0.552 | 0.495 |
+| 2025/26 | 0.542 | 0.488 |
+| 2026/27 GW1-6 | 0.582 | 0.542 |
+
+Joint xPts accuracy did not follow. With paired simulations (same seeds and
+draw streams), overall squared error went 4.1616 → 4.1666 (24/25), 3.6000 →
+3.5962 (25/26) and 4.6185 → 4.6187 (26/27 GW1-7), each 90% week-block interval
+spanning zero. Defenders were significantly worse in 24/25 (+0.007 to +0.044).
+The top-20-per-week slice improved in 24/25 and 25/26 and worsened in 26/27,
+none significant. Minutes inside 60+ mostly move goal credit between
+teammates, not points, so under the accuracy rule it stays off
+(`minutes_split="player"` is a research mode). Scripts and logs:
+`data/audits/2026-10-19/sub_rate_{component,xpts}.py`.
+
+**Goalscorer odds are now collected (priority 4).** Every odds refresh also
+records anytime-goalscorer prices (~10 of the 500 monthly API credits per
+gameweek). Collection had stopped after GW4 once the weekly manual routine
+gave way to the scheduler. Their forecast weight stays 0.0. The history is
+for testing market-implied availability against actual minutes.
+
 **Not done: minutes (priority 1).** Learning minutes conditional on a start
 and adding timestamped team news needs its own component benchmark and joint
 xPts check. It remains the top modelling item.

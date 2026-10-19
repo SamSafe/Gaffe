@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import polars as pl
@@ -33,6 +34,7 @@ from fpl_bot.eval.bps_eval import (
     _train_minutes_predictor,
 )
 from fpl_bot.features.bps import (
+    FoldPredictionInputs,
     assemble_fold_predictions,
     fixture_inputs_iter,
 )
@@ -42,6 +44,7 @@ from fpl_bot.models.bps import (
     BPSRulesMode,
     BPSSimulator,
     fit_residual_dataset,
+    player_sub_rates,
     split_p_full_by_position,
 )
 from fpl_bot.models.minutes import (
@@ -269,6 +272,41 @@ def _calibration_decile_pass_count(
 
 # ── Per-fold orchestration ───────────────────────────────────────────────────
 
+# How the simulator splits the 60+ minutes bucket into 70 and 90: one rate per
+# position (shipped), or each player's own recent rate shrunk toward it. The
+# player split did not improve joint xPts accuracy, so it stays a research mode.
+MinutesSplitMode = Literal["position", "player"]
+MINUTES_SPLIT_DEFAULT: MinutesSplitMode = "position"
+
+
+def _with_player_sub_rates(
+    prepared: FoldPredictionInputs, history: pl.DataFrame
+) -> FoldPredictionInputs:
+    """Attach per-player 60+ splits from matches strictly before each kickoff."""
+    from sqlalchemy import select as sa_select
+
+    from fpl_bot.db.models import DimFixture
+    from fpl_bot.db.session import session_scope
+
+    pm = prepared.player_predictions
+    ids = pm["fixture_id"].unique().to_list()
+    with session_scope() as s:
+        rows = s.execute(
+            sa_select(DimFixture.fixture_id, DimFixture.kickoff_utc).where(
+                DimFixture.fixture_id.in_(ids)
+            )
+        ).all()
+    kickoffs = pl.DataFrame(
+        {"fixture_id": [r.fixture_id for r in rows], "kickoff_utc": [r.kickoff_utc for r in rows]}
+    ).with_columns(pl.col("fixture_id").cast(pm.schema["fixture_id"]))
+    targets = pm.drop("kickoff_utc", strict=False).join(kickoffs, on="fixture_id", how="left")
+    rated = player_sub_rates(history, targets, prepared.alphas_by_position).drop("kickoff_utc")
+    return FoldPredictionInputs(
+        fixtures=prepared.fixtures,
+        player_predictions=pm.with_columns(rated["alpha_60_89"]),
+        alphas_by_position=prepared.alphas_by_position,
+    )
+
 
 def _run_one_fold(
     train_seasons: list[int],
@@ -281,6 +319,7 @@ def _run_one_fold(
     bps_rules_mode: BPSRulesMode = "official",
     assist_sampling_mode: AssistSamplingMode = "independent",
     minutes_feature_mode: MinutesFeatureMode = "baseline",
+    minutes_split: MinutesSplitMode = MINUTES_SPLIT_DEFAULT,
 ) -> tuple[XPtsFoldResult, pl.DataFrame, np.ndarray | None] | None:
     """Returns (fold_result, eval_df, raw_samples_or_None). raw_samples is a
     long-form polars DataFrame (player_id, fixture_id, iteration, xpts) when
@@ -342,6 +381,11 @@ def _run_one_fold(
     )
     if prepared.fixtures.is_empty() or prepared.player_predictions.is_empty():
         return None
+    if minutes_split == "player":
+        history = pit.all_player_match_with_kickoff(
+            season_ids=[*train_seasons, test_season]
+        )
+        prepared = _with_player_sub_rates(prepared, history)
 
     simulator = BPSSimulator(
         event_source=event_source,
@@ -707,6 +751,7 @@ def run_predict_only(
     market_weight: float | None = None,
     prop_odds_as_of: dt.datetime | None = None,
     prop_shadow_out: Path | None = None,
+    minutes_split: MinutesSplitMode = MINUTES_SPLIT_DEFAULT,
 ) -> pl.DataFrame:
     """Phase 6 v2: produce per-(player, fixture) xPts predictions for the
     specified UPCOMING fixtures.
@@ -897,6 +942,8 @@ def run_predict_only(
     prepared = FoldPredictionInputs(
         fixtures=fixtures_df, player_predictions=pm, alphas_by_position=alphas
     )
+    if minutes_split == "player":
+        prepared = _with_player_sub_rates(prepared, train_pm)
 
     simulator = BPSSimulator(
         event_source=event_source, n_iterations=n_iterations, seed=seed

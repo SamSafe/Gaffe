@@ -18,6 +18,7 @@ from fpl_bot.models.bps import (
     BPS_SHORT_APPEARANCE,
     _bps_from_saves,
     assign_bonus_within_fixture,
+    player_sub_rates,
     score_bps_known_events,
     split_p_full_by_position,
 )
@@ -239,6 +240,47 @@ def test_split_p_full_handles_empty_position() -> None:
     alphas = split_p_full_by_position(df)
     assert "GKP" in alphas
     assert alphas["GKP"] == 0.4  # fallback
+
+
+def test_player_sub_rates_use_only_earlier_full_appearances() -> None:
+    """P(60-89 | 60+) from the player's own earlier 60+ games, shrunk to position."""
+    import datetime as dt
+
+    day = lambda d: dt.datetime(2026, 9, d, 15, tzinfo=dt.UTC)  # noqa: E731
+    history = pl.DataFrame({
+        "player_id": [1, 1, 1, 1, 2],
+        "kickoff_utc": [day(1), day(8), day(15), day(22), day(1)],
+        "minutes": [90, 90, 45, 70, 90],  # The 45 is not a 60+ game and is ignored.
+    })
+    targets = pl.DataFrame({
+        "player_id": [1, 1, 2, 3],
+        "fixture_id": [10, 11, 12, 13],
+        "kickoff_utc": [day(15), day(29), day(29), day(29)],
+        "position_code": ["MID", "MID", "DEF", "FWD"],
+    })
+    alphas = {"MID": 0.4, "DEF": 0.1, "FWD": 0.5}
+    out = player_sub_rates(history, targets, alphas, window=20, prior_weight=2)
+    rate = dict(zip(out["fixture_id"], out["alpha_60_89"], strict=True))
+    # Fixture 10 sees GW 1 and 8 (two full 90s; the day-15 game is its own kickoff).
+    assert abs(rate[10] - (0 + 2 * 0.4) / (2 + 2)) < 1e-9
+    # Fixture 11 sees 90, 90, 70: one early substitution in three.
+    assert abs(rate[11] - (1 + 2 * 0.4) / (3 + 2)) < 1e-9
+    assert abs(rate[12] - (0 + 2 * 0.1) / (1 + 2)) < 1e-9
+    assert abs(rate[13] - 0.5) < 1e-9  # No history: the position rate.
+    assert out.height == targets.height
+
+
+def test_player_sub_rates_window_keeps_recent_games() -> None:
+    import datetime as dt
+
+    kicks = [dt.datetime(2026, 1, 1, tzinfo=dt.UTC) + dt.timedelta(days=7 * i) for i in range(6)]
+    history = pl.DataFrame({"player_id": [1] * 6, "kickoff_utc": kicks, "minutes": [70, 70, 70, 90, 90, 90]})
+    targets = pl.DataFrame({
+        "player_id": [1], "fixture_id": [1],
+        "kickoff_utc": [kicks[-1] + dt.timedelta(days=7)], "position_code": ["MID"],
+    })
+    out = player_sub_rates(history, targets, {"MID": 0.5}, window=3, prior_weight=1)
+    assert abs(out["alpha_60_89"][0] - (0 + 0.5) / (3 + 1)) < 1e-9
 
 
 # ── EmpiricalResidualEventSource ─────────────────────────────────────────────

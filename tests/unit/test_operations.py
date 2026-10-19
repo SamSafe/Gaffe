@@ -446,3 +446,44 @@ def test_snapshot_retention_keeps_recent_and_pre_deadline(tmp_path):
     source = tmp_path / "snapshots" / stamps[-1] / "meta.json"
     link_or_copy(source, tmp_path / "linked.json")
     assert (tmp_path / "linked.json").stat().st_ino == source.stat().st_ino
+
+
+def test_manual_forecast_drafts_the_bot_plan_without_failing(scenario, monkeypatch):
+    from fpl_bot.web import worker
+
+    store, *_ = scenario
+    calls, messages = [], []
+    monkeypatch.setattr(worker, "progress", lambda value, message: messages.append(message))
+    monkeypatch.setattr(worker, "bot", lambda *args: calls.append(args))
+    worker.draft_bot_plan(store, 718959, 6)
+    assert calls == [(store, 718959, 6)]
+
+    def broken(*args):
+        raise RuntimeError("solver missing")
+
+    monkeypatch.setattr(worker, "bot", broken)
+    worker.draft_bot_plan(store, 718959, 6)
+    assert "not updated" in messages[-1]
+    worker.draft_bot_plan(store, 999, 6)  # No ledger for this team: nothing to draft.
+    assert len(calls) == 1
+
+
+def test_goalscorer_odds_failure_never_fails_the_refresh(tmp_path, monkeypatch):
+    from fpl_bot.ingest import oddsapi_props
+    from fpl_bot.web import worker
+
+    parsed, messages = [], []
+    monkeypatch.setattr(worker, "progress", lambda value, message: messages.append(message))
+    monkeypatch.setattr(oddsapi_props, "fetch_raw_player_props", lambda: tmp_path / "raw.json")
+    monkeypatch.setattr(
+        oddsapi_props, "parse_raw_player_props", lambda raw, season_id: parsed.append(season_id)
+    )
+    worker.collect_player_props(Store(tmp_path, season=26))
+    assert parsed == [26]
+
+    def offline():
+        raise httpx.ConnectError("offline")
+
+    monkeypatch.setattr(oddsapi_props, "fetch_raw_player_props", offline)
+    worker.collect_player_props(Store(tmp_path, season=26))
+    assert "unavailable" in messages[-1]
