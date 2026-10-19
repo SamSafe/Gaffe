@@ -338,3 +338,17 @@ def test_empty_candidate_list_returns_empty_overrides():
         excluded_player_ids=frozenset(),
         xpts_attenuator={},
     )
+
+
+def test_market_priced_week_skips_the_doubtful_multiplier() -> None:
+    """Market minutes already price the flag; later weeks keep the multiplier."""
+    from fpl_bot.live.recommend import _attenuate_predictions
+    from fpl_bot.live.state_builder import LiveStatusOverrides
+
+    overrides = LiveStatusOverrides(excluded_player_ids=frozenset({9}), xpts_attenuator={1: 0.75})
+    preds = {(1, 8): 4.0, (1, 9): 4.0, (9, 8): 5.0}
+    news = {(1, 9): 0.0}
+    out = _attenuate_predictions(preds, overrides, news_attenuator=news, doubt_priced_gws=frozenset({8}))
+    assert out == {(1, 8): 4.0, (1, 9): 0.0}  # Excluded players and news zeros still apply.
+    legacy = _attenuate_predictions(preds, overrides)
+    assert legacy[(1, 8)] == 3.0 and legacy[(1, 9)] == 3.0

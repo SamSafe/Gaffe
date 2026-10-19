@@ -227,6 +227,15 @@ def refresh(store: Store, team_id: int, refresh_odds: bool):
                 )
                 sync[str(gw)] = signature
                 write_json(sync_path, sync)
+    # The live feed omits transfers and ownership; the minutes model trains on them.
+    from fpl_bot.ingest.fpl_market import backfill_market_history, missing_market_gameweeks
+
+    if missing_market_gameweeks(store.season):
+        progress(55, "Recording last gameweek's transfers and ownership…")
+        try:
+            backfill_market_history(store.season, [e["id"] for e in bootstrap["elements"]])
+        except httpx.HTTPError:
+            progress(58, "Transfer history was unavailable. It will be retried next refresh.")
     enriched = {
         "picks": state["picks"],
         "transfers": {"bank": state["bank_tenths"], "free_transfers": state["free_transfers"]},
@@ -381,7 +390,7 @@ def bot(store: Store, team_id: int, horizon: int, freeze: bool = False):
         + (
             " and frozen before the deadline."
             if freeze
-            else "; the final scheduled run freezes it before the deadline."
+            else ". The last plan saved before the deadline becomes its decision."
         ),
     )
 

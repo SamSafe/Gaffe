@@ -11,10 +11,12 @@ import polars as pl
 import pytest
 
 from fpl_bot.features.minutes import (
+    MARKET_FEATURE_COLUMNS,
     ROTATION_FEATURE_COLUMNS,
     _label_bucket,
     _rotation_feature_frames,
     feature_columns_for_mode,
+    market_features,
 )
 
 
@@ -97,6 +99,31 @@ def test_rotation_feature_mode_is_explicit() -> None:
 
     assert all(column not in baseline for column in ROTATION_FEATURE_COLUMNS)
     assert rotation == [*baseline, *ROTATION_FEATURE_COLUMNS]
+
+
+def test_market_features_use_owners_before_the_window() -> None:
+    df = pl.DataFrame({
+        "selected": [110_000, 500, None],
+        "transfers_in": [20_000, 600, None],
+        "transfers_out": [10_000, 100, None],
+        "transfers_balance": [10_000, 500, None],
+        "price_tenths": [55, 45, None],
+    })
+    out = market_features(df)
+    # 100k owners before the window; the 1,000-owner floor keeps tiny rates finite.
+    assert out["out_rate"].to_list()[:2] == [0.1, 0.1]
+    assert out["net_rate"].to_list()[:2] == [0.1, 0.5]
+    assert out["in_rate"][0] == 0.2
+    # Weeks without transfer data stay null, never a fabricated zero.
+    assert all(out[c][2] is None for c in MARKET_FEATURE_COLUMNS)
+    assert feature_columns_for_mode("market") == [
+        *feature_columns_for_mode("baseline"), *MARKET_FEATURE_COLUMNS
+    ]
+
+
+def test_market_features_without_source_columns_are_null() -> None:
+    out = market_features(pl.DataFrame({"player_id": [1]}))
+    assert all(out[c].null_count() == 1 for c in MARKET_FEATURE_COLUMNS)
 
 
 def test_no_raw_db_imports_in_minutes_features() -> None:

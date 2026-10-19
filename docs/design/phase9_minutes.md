@@ -1,8 +1,8 @@
 # Phase 9 — Expected minutes
 
-**Status:** 📏 measured, not yet built. Step A (baseline) is complete and is
-recorded below; it reshaped the plan substantially, killing the step everyone
-would reach for first.
+**Status:** step A measured; **step B′ (crowd transfers as a news proxy)
+shipped 2026-10-19** for next-gameweek forecasts. Step B (FPL status fields)
+remains blocked for lack of history.
 
 ## Motivation
 
@@ -94,6 +94,73 @@ correct option given the data. Do not "fix" it by training on these fields.
 Worth noting: the weekly `ingest fpl` writes `fact_player_status` rows, so
 availability history is accumulating now. By 2027/28 there should be a full
 season of it, at which point step B becomes genuinely testable.
+
+## Step B′ — this week's transfers as a news proxy (SHIPPED, 2026-10-19)
+
+Step B is blocked because status history does not exist. Managers' reactions
+to the same news do: `fact_player_match` carries each gameweek's
+`transfers_in/out/balance`, `selected` and price back to 2019/20. FPL
+attributes a gameweek's transfers to the window **before** its deadline:
+`selected[N] - selected[N-1]` matches `transfers_balance[N]` to a median of
+~5k against ~60k typical balances (2023/24-2025/26), while the post-deadline
+alignment misses by ~57k. So they are known before kickoff.
+
+Features (`MARKET_FEATURE_COLUMNS`): log owners, out/in/net transfers as a
+share of owners going into the window, and price.
+
+Minutes log loss (train 19..N-1):
+
+| Slice | 2024/25 | 2025/26 |
+|---|---:|---:|
+| All rows | 0.507 → 0.466 | 0.461 → 0.418 |
+| Regular starters (start60_rate_5 ≥ 0.8) | 0.565 → 0.518 | 0.556 → 0.512 |
+| Regulars after a DNP | 0.858 → 0.712 | 0.863 → 0.724 |
+| Season openers | 0.854 → 0.743 | 0.793 → 0.655 |
+
+Expected-minutes error for regulars after a DNP fell by ~7 minutes. Longer
+history features (20-game rates, DNP streaks) added little and inconsistently.
+
+Joint xPts, paired simulations (same seeds), each fixture scored one week
+ahead; squared error with 90% week-block interval of the change:
+
+| Season | Baseline | Market | Change CI | Spearman |
+|---|---:|---:|---|---|
+| 2024/25 | 4.162 | 4.085 | −0.103 … −0.053 | 0.689 → 0.720 |
+| 2025/26 | 3.600 | 3.503 | −0.123 … −0.074 | 0.733 → 0.755 |
+| 2026/27 GW1-6 | 4.619 | 4.497 | −0.220 … −0.047 | 0.697 → 0.723 |
+
+Every position improved in 24/25 and 25/26; the top-20-per-week slice
+improved in all three. Scripts and logs: `data/audits/2026-10-19/
+minutes_features.py`, `market_xpts.py`.
+
+**Live use and limits.**
+- Only the coming gameweek has transfers. The live trainer fits a second
+  minutes model on these features for those rows; later weeks keep the
+  baseline. Multi-week MILP backtests must never use "market" mode (it would
+  read future weeks' transfers), so backtest points cannot show this gain.
+- Live counts come from bootstrap-static's `transfers_in_event/out_event`,
+  stored on each status snapshot (migration 0011) and used only when the
+  snapshot falls between the previous gameweek's first kickoff and this
+  gameweek's. Six hours before the GW7 deadline they held **82%** of the
+  week's final transfers (in and out alike, 82.5% for the 30 most-sold), so
+  live rates run low and more so earlier in the week. Uncorrected for now:
+  one calibration point, and the bias leans toward "no news". Forecasts made
+  close to the deadline use the signal best. Snapshots now record the
+  counters every refresh, so the completion curve can be fitted later.
+- The live event feed omits these fields; `ingest/fpl_market` refills them
+  from each player's element-summary once per finished gameweek.
+- The doubtful-flag multiplier (xPts × chance_of_playing/100) is skipped for
+  the market-priced week. Managers react to the same flag, so it double
+  counted: on the 37 doubtful player-weeks of 2026/27 GW2/GW4 (the weeks with
+  a snapshot inside their own window), actual P(plays) was 0.405; market
+  minutes alone predicted 0.378 (Brier 0.187), market × chance 0.270 (Brier
+  0.202). The multiplier did help the baseline model (Brier 0.244 → 0.228),
+  so later weeks keep it. Small sample; direction and mechanism agree.
+  Checked live-faithfully for the week after a flag (pre-flag features scored
+  against the next week's minutes, 37 rows), the multiplier still edged Brier
+  (0.278 → 0.261) while over-shrinking the mean (0.296 vs actual 0.432):
+  inconclusive, so the horizon rule is unchanged
+  (`data/audits/2026-10-19/doubtful_{check,horizon}.py`).
 
 ## Remaining candidates, in value order
 

@@ -738,6 +738,77 @@ def season_player_status_snapshot(season_id: int) -> pl.DataFrame:
     )
 
 
+def gameweek_market_snapshot(season_id: int, gameweek: int) -> pl.DataFrame:
+    """This gameweek's pre-deadline transfers and ownership, or empty if unknown.
+
+    bootstrap-static's event counters cover the window into the NEXT deadline,
+    so the latest snapshot counts for `gameweek` only if it was recorded after
+    the previous gameweek's first kickoff (that deadline had passed) and before
+    this gameweek's first kickoff. Anything else describes another week.
+
+    Returns player_id, selected, transfers_in, transfers_out,
+    transfers_balance, price_tenths: the fact_player_match field names.
+    """
+    from sqlalchemy import func as _func
+
+    from fpl_bot.db.models import DimFixture as _DF
+    from fpl_bot.db.models import FactPlayerStatus as _FPS
+
+    with session_scope() as s:
+        first = dict(
+            s.execute(
+                select(_DF.gameweek, _func.min(_DF.kickoff_utc))
+                .where(_DF.season_id == season_id, _DF.gameweek.in_([gameweek - 1, gameweek]))
+                .group_by(_DF.gameweek)
+            ).all()
+        )
+        start = first.get(gameweek)
+        if start is None:
+            return pl.DataFrame()
+        after = first.get(gameweek - 1)
+        latest = (
+            select(_FPS.player_id, _func.max(_FPS.recorded_at).label("max_rec"))
+            .where(_FPS.season_id == season_id)
+            .group_by(_FPS.player_id)
+            .subquery("ps_latest")
+        )
+        rows = s.execute(
+            select(
+                _FPS.player_id,
+                _FPS.recorded_at,
+                _FPS.selected,
+                _FPS.transfers_in_event,
+                _FPS.transfers_out_event,
+                _FPS.price_tenths,
+            ).join(
+                latest,
+                (latest.c.player_id == _FPS.player_id) & (latest.c.max_rec == _FPS.recorded_at),
+            )
+        ).all()
+    usable = [
+        r
+        for r in rows
+        if r.transfers_in_event is not None
+        and r.selected is not None
+        and r.recorded_at < start
+        and (after is None or r.recorded_at > after)
+    ]
+    if not usable:
+        return pl.DataFrame()
+    return pl.DataFrame(
+        {
+            "player_id": [int(r.player_id) for r in usable],
+            "selected": [int(r.selected) for r in usable],
+            "transfers_in": [int(r.transfers_in_event) for r in usable],
+            "transfers_out": [int(r.transfers_out_event) for r in usable],
+            "transfers_balance": [
+                int(r.transfers_in_event) - int(r.transfers_out_event) for r in usable
+            ],
+            "price_tenths": [int(r.price_tenths) for r in usable],
+        }
+    )
+
+
 def latest_team_and_price_per_player(season_id: int) -> dict[int, tuple[int, int]]:
     """{player_id: (team_id, price_tenths)} from the newest status snapshot.
 

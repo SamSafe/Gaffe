@@ -176,6 +176,11 @@ def _train_goals_or_assists_predictor(
 
 # ─── Phase 6 v2: predict-only variants ────────────────────────────────────
 
+# Next-gameweek minutes use this week's pre-deadline transfers and ownership.
+# Joint xPts squared error fell 1.8%, 2.7% and 2.6% on 24/25, 25/26 and 26/27
+# GW1-6 (docs/design/phase9_minutes.md, step B').
+LIVE_MINUTES_MARKET = True
+
 
 def _train_minutes_predict_only(
     train_seasons: list[int],
@@ -198,6 +203,14 @@ def _train_minutes_predict_only(
         return pl.DataFrame()
     model = train_with_chronological_validation(train_minutes_model, train_df)
     probs = model.predict_proba(test_df)
+    # The coming gameweek's rows carry this week's transfer activity; only a
+    # model trained on those features may use it. Later weeks keep the baseline.
+    has_market = test_df["out_rate"].is_not_null().to_numpy()
+    if LIVE_MINUTES_MARKET and has_market.any():
+        market_model = train_with_chronological_validation(
+            train_minutes_model, train_df, feature_mode="market"
+        )
+        probs[has_market] = market_model.predict_proba(test_df.filter(pl.Series(has_market)))
     return test_df.select("player_id", "fixture_id").with_columns(
         pl.Series("p_minutes_zero", probs[:, 0]),
         pl.Series("p_minutes_short", probs[:, 1]),

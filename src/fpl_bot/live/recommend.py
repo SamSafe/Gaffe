@@ -75,6 +75,7 @@ def _attenuate_predictions(
     *,
     news_attenuator: dict[tuple[int, int], float] | None = None,
     unexclude_returning: set[int] | None = None,
+    doubt_priced_gws: frozenset[int] = frozenset(),
 ) -> dict[tuple[int, int], float]:
     """Multiply pred by attenuator for doubtful players; drop excluded.
 
@@ -84,13 +85,18 @@ def _attenuate_predictions(
     are currently in excluded_player_ids but have a return-date inside the
     horizon — we KEEP them as candidates so the MILP can pick them for
     post-return GWs.
+
+    `doubt_priced_gws` are gameweeks whose minutes already price the doubt:
+    the market minutes model reads managers' reaction to the same flag, and
+    multiplying by chance_of_playing again under-predicted flagged players
+    (2026/27 GW2/GW4, data/audits/2026-10-19/doubtful_check.py).
     """
     out: dict[tuple[int, int], float] = {}
     unexcl = unexclude_returning or set()
     for (pid, gw), v in pred_by_pgw.items():
         if pid in overrides.excluded_player_ids and pid not in unexcl:
             continue
-        mult = overrides.xpts_attenuator.get(pid, 1.0)
+        mult = 1.0 if gw in doubt_priced_gws else overrides.xpts_attenuator.get(pid, 1.0)
         if news_attenuator is not None:
             mult *= news_attenuator.get((pid, gw), 1.0)
         out[(pid, gw)] = v * mult
@@ -251,11 +257,17 @@ def generate_recommendation(
             continue
         if ex.player_id in overrides.excluded_player_ids:
             unexclude_returning.add(ex.player_id)
+    from fpl_bot.eval.bps_eval import LIVE_MINUTES_MARKET
+
+    market_priced = LIVE_MINUTES_MARKET and not pit.gameweek_market_snapshot(
+        season_id, gameweek
+    ).is_empty()
     pred_by_pgw_filtered = _attenuate_predictions(
         pred_by_pgw,
         overrides,
         news_attenuator=news_attenuator,
         unexclude_returning=unexclude_returning,
+        doubt_priced_gws=frozenset({gameweek}) if market_priced else frozenset(),
     )
 
     # Current bootstrap is authoritative for live clubs and purchase prices,

@@ -316,6 +316,10 @@ gameweek). Collection had stopped after GW4 once the weekly manual routine
 gave way to the scheduler. Their forecast weight stays 0.0. The history is
 for testing market-implied availability against actual minutes.
 
-**Not done: minutes (priority 1).** Learning minutes conditional on a start
-and adding timestamped team news needs its own component benchmark and joint
-xPts check. It remains the top modelling item.
+**Shipped: crowd transfers in next-week minutes (priority 1).** Each
+gameweek's pre-deadline transfers and ownership act as timestamped team news.
+Minutes log loss fell 8-9% overall and 16-17% for regulars after a missed
+game; joint xPts squared error fell 1.8% (24/25), 2.7% (25/26) and 2.6%
+(26/27 GW1-6, out of sample), every interval excluding zero. Details and live
+limits (82% of a week's transfers are visible six hours out) are in
+`docs/design/phase9_minutes.md`, step B′.

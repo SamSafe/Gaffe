@@ -21,8 +21,32 @@ from fpl_bot.db import pit
 from fpl_bot.features.prediction_history import append_prediction_history_rows
 
 POSITION_CODES = ("GKP", "DEF", "MID", "FWD")
-MinutesFeatureMode = Literal["baseline", "rotation"]
+MinutesFeatureMode = Literal["baseline", "rotation", "market"]
 ROTATION_FEATURE_COLUMNS = ["team_core_churn_3", "team_core_churn_5"]
+# This gameweek's pre-deadline crowd activity. FPL attributes a gameweek's
+# transfers to the window before its deadline (selected[N] - selected[N-1]
+# matches transfers_balance[N]), so they are known before kickoff: managers
+# selling a regular is a timestamped proxy for injury news the model lacks.
+# One week ahead only: a gameweek's transfers do not exist at earlier
+# deadlines, so a multi-week (MILP) backtest must never use "market" mode.
+MARKET_FEATURE_COLUMNS = ["log_selected", "out_rate", "in_rate", "net_rate", "price_tenths"]
+
+
+def market_features(df: pl.DataFrame) -> pl.DataFrame:
+    """Add MARKET_FEATURE_COLUMNS from selected, transfers_in/out/balance and price."""
+    if not {"selected", "transfers_in", "transfers_out", "transfers_balance"} <= set(df.columns):
+        return df.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias(c) for c in MARKET_FEATURE_COLUMNS
+        )
+    # Owners going into the window; a floor keeps tiny-ownership rates finite.
+    before = (pl.col("selected") - pl.col("transfers_balance")).clip(lower_bound=1000)
+    return df.with_columns(
+        pl.col("selected").cast(pl.Float64).log1p().alias("log_selected"),
+        (pl.col("transfers_out") / before).alias("out_rate"),
+        (pl.col("transfers_in") / before).alias("in_rate"),
+        (pl.col("transfers_balance") / before).alias("net_rate"),
+        pl.col("price_tenths").cast(pl.Float64),
+    )
 
 
 def _rotation_feature_frames(
@@ -164,6 +188,7 @@ def build_feature_table(
 
     # Label
     df = df.with_columns(_label_bucket(pl.col("minutes")).alias("minutes_bucket"))
+    df = market_features(df)
 
     # Per-player history features. shift(1) excludes the current row.
     df = df.with_columns(
@@ -284,6 +309,8 @@ def feature_columns_for_mode(mode: MinutesFeatureMode) -> list[str]:
         return list(FEATURE_COLUMNS)
     if mode == "rotation":
         return [*FEATURE_COLUMNS, *ROTATION_FEATURE_COLUMNS]
+    if mode == "market":
+        return [*FEATURE_COLUMNS, *MARKET_FEATURE_COLUMNS]
     raise ValueError(f"unknown minutes feature mode: {mode}")
 
 
@@ -458,6 +485,18 @@ def build_prediction_feature_table(
         )
     else:
         cross = cross.with_columns(pl.lit(0.0).alias("days_into_season"))
+
+    # Only the coming gameweek has transfer activity; later weeks stay null and
+    # the live trainer predicts them with the baseline model.
+    target_gw = cross["gameweek"].min()
+    market = pit.gameweek_market_snapshot(test_season, target_gw)
+    if not market.is_empty():
+        cross = cross.join(
+            market.with_columns(pl.lit(target_gw, dtype=cross.schema["gameweek"]).alias("gameweek")),
+            on=["player_id", "gameweek"],
+            how="left",
+        )
+    cross = market_features(cross)
 
     cross = cross.with_columns(
         pl.lit(None, dtype=pl.Int16).alias("minutes"),

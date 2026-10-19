@@ -116,6 +116,10 @@ class FactPlayerStatus(Base):
     chance_of_playing_next_round: Mapped[int | None] = mapped_column(SmallInteger)
     selected_by_percent: Mapped[float | None] = mapped_column(Numeric(5, 2))
     event_time: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Pre-deadline counters for the coming gameweek, and the owner count.
+    transfers_in_event: Mapped[int | None] = mapped_column(Integer)
+    transfers_out_event: Mapped[int | None] = mapped_column(Integer)
+    selected: Mapped[int | None] = mapped_column(Integer)
 
     __table_args__ = (
         Index("ix_player_status_pit", "player_id", "recorded_at"),

@@ -329,6 +329,7 @@ def _parse_bootstrap_static(payload: dict, season_id: int) -> dict[str, int]:
     teams_raw = payload["teams"]
     elements_raw = payload["elements"]
     element_types = {et["id"]: et["singular_name_short"] for et in payload["element_types"]}
+    total_players = payload.get("total_players")
 
     # Snapshot timestamp: FPL doesn't expose payload generation time; use ingest time.
     # event_time = recorded_at for this source; consumer treats as "we observed this at T".
@@ -398,6 +399,11 @@ def _parse_bootstrap_static(payload: dict, season_id: int) -> dict[str, int]:
                     if e.get("selected_by_percent")
                     else None,
                     event_time=now_ts,
+                    transfers_in_event=e.get("transfers_in_event"),
+                    transfers_out_event=e.get("transfers_out_event"),
+                    selected=round(float(e["selected_by_percent"]) * total_players / 100)
+                    if e.get("selected_by_percent") is not None and total_players
+                    else None,
                 )
             )
             counts["fact_player_status"] += 1
