@@ -305,6 +305,9 @@ def dashboard(store: Store) -> dict:
             "error": "Bot decision integrity check failed. Inspect the local ledger before running it again.",
         }
         warnings.append(bot["error"])
+    last = next((r for r in reversed(bot["rows"]) if gw is None or r["gameweek"] < gw), None)
+    if last and last["status"] == "missed":
+        warnings.append(f"The independent bot missed GW{last['gameweek']}. {last['reason'] or ''}")
     return {
         "preferences": prefs.model_dump(),
         "season": store.season,
@@ -332,6 +335,7 @@ def dashboard(store: Store) -> dict:
             "generated_at": rec.get("generated_at"),
             "decisions": decisions,
             "quality": quality,
+            "hold_comparison": rec.get("solve_meta", {}).get("hold_comparison"),
             "horizon": rec.get("context", {}).get("horizon_gws", []),
         },
         "performance": {

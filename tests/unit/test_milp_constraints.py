@@ -235,3 +235,40 @@ def test_gw2_still_charges_hits_beyond_free_transfers() -> None:
     )
     decisions, _ = solve_rolling_horizon(inputs, time_limit_s=60)
     assert decisions.hits > 0, "beyond GW1, extra transfers must still cost hits"
+
+
+def test_hold_first_week_forbids_buys_now_but_not_later() -> None:
+    """The hold baseline rolls this week's transfer and may still use it next week."""
+    candidates, positions, teams, prices = _make_balanced_pool()
+    owned: list[int] = []
+    for pos, count in {"GKP": 2, "DEF": 5, "MID": 5, "FWD": 3}.items():
+        for p in (p for p in candidates if positions[p] == pos):
+            if count and sum(teams[q] == teams[p] for q in owned) < 3:
+                owned.append(p)
+                count -= 1
+    state = BacktestState(
+        season_id=26,
+        gameweek=8,
+        squad=frozenset(owned),
+        bank=0,
+        free_transfers=1,
+        cost_basis={p: prices[p] for p in owned},
+    )
+    star = next(p for p in candidates if p not in owned and positions[p] == "MID" and teams[p] > 5)
+    prices[star] = min(prices[p] for p in owned if positions[p] == "MID")
+    inputs = _toy_inputs(
+        candidates=candidates,
+        positions=positions,
+        teams=teams,
+        prices=prices,
+        horizon=[8, 9],
+        state=state,
+    )
+    inputs.predictions.update({(star, 8): 30.0, (star, 9): 30.0})
+    plan, plan_meta = solve_rolling_horizon(inputs, time_limit_s=60)
+    assert star in plan.transferred_in
+    inputs.hold_first_week = True
+    hold, hold_meta = solve_rolling_horizon(inputs, time_limit_s=60)
+    assert not hold.transferred_in and hold.squad == frozenset(owned)
+    # Holding forfeits the star's week-8 haul only; week 9 can still buy him.
+    assert plan_meta["objective"] > hold_meta["objective"]

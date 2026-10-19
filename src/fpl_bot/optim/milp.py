@@ -108,6 +108,9 @@ class MilpInputs:
     # blank avoidance, or haul-adjusted xPts for upside chasing. None falls
     # back to `predictions` (regular mean-xPts behavior).
     captain_predictions: dict[tuple[int, int], float] | None = None
+    # Baseline for "is this week's move worth it": forbid buys in the first
+    # week only. Later weeks stay free, so the rolled free transfer keeps its value.
+    hold_first_week: bool = False
 
 
 def _gw_in_first_half(gw: int) -> bool:
@@ -338,6 +341,9 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
         return m.bin[p, w] + m.bout[p, w] <= 1
 
     m.con_bin_bout = Constraint(m.P, m.W, rule=_bin_bout_disjoint)
+
+    if inputs.hold_first_week:
+        m.con_hold_first = Constraint(m.P, rule=lambda m, p: m.bin[p, first_w] == 0)
 
     # ── Free transfers and hits ─────────────────────────────────────────────
     def _ft_initial(m):

@@ -1,5 +1,6 @@
 """Validated browser inputs; credentials never belong in these payloads."""
 
+import datetime as dt
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -14,6 +15,27 @@ class Preferences(BaseModel):
     automation_enabled: bool = False
     automation_odds: bool = True
     phone_enabled: bool = False
+    # Local "HH:MM" hours when the computer is usually asleep; None disables the shift.
+    quiet_start: str | None = None
+    quiet_end: str | None = None
+    # Private ntfy.sh topic for phone alerts; None sends nothing.
+    notify_topic: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{12,64}$")
+
+    @field_validator("quiet_start", "quiet_end")
+    @classmethod
+    def valid_clock(cls, value: str | None) -> str | None:
+        if value in (None, ""):
+            return None
+        try:
+            dt.time.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("Use a 24-hour time, such as 23:00") from exc
+        return value[:5]
+
+    @field_validator("notify_topic", mode="before")
+    @classmethod
+    def blank_topic(cls, value):
+        return value or None
 
     @field_validator("timezone")
     @classmethod

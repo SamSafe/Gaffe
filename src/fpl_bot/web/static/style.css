@@ -8,3 +8,4 @@
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 
 .field input[type=checkbox]{width:auto;accent-color:var(--green);margin-right:7px}.bot-card{margin-bottom:24px}.section-label{font-size:10px;letter-spacing:1.5px;color:var(--muted);margin:28px 0 15px}.pairing-qr{background:#fff;width:220px;max-width:100%;margin:20px auto 12px;padding:8px}.pairing-qr svg{width:100%;height:auto;display:block}.pairing-link{overflow-wrap:anywhere;display:block;margin:12px 0;font-size:11px}
+.time-range{display:flex;gap:8px;align-items:center}.time-range input{flex:1;min-width:0}.time-range .button{flex:none;padding:10px 12px}.time-range span{font-size:11px;color:var(--muted)}td small{display:block;font-size:10px;color:var(--muted);margin-top:3px;max-width:260px;white-space:normal}.hold-note{margin-top:10px}

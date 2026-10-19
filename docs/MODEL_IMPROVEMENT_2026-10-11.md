@@ -262,3 +262,32 @@ The original team-versus-bot lead remains **+90 across GW1, GW2 and GW4**.
 The app preserves the primary legacy recommendations and stores new runs under
 `data/live/recommendations/season_26/team_718959/gw_7/`, with dated archives.
 No real-account moves were submitted. See [the app guide](APP.md) for usage.
+
+## Follow-up, 19 October 2026
+
+**DefCon midfielder weight 1.0 → 0.82.** The weights fitted on 25/26 were
+scored forward on 26/27 GW1–6 (fresh fold, train 19–25, finalized GW6), which
+that fit never saw. Squared error, lower is better:
+
+| Position | Off | Shipped (DEF 0.4, MID 1.0) | 25/26 fit (DEF 0.76, MID 0.82) | Fit − shipped, 90% GW-block CI |
+|---|---:|---:|---:|---|
+| DEF | 5.8774 | 5.8432 | 5.8476 | +0.0044 (−0.049, +0.051) |
+| MID | 4.5561 | 4.5598 | 4.5517 | −0.0081 (−0.014, −0.003) |
+
+MID improves forward, matching 25/26's direction, so it ships. DEF does not:
+0.4 stays. The gain is about 0.2% of MID squared error and six gameweek blocks
+make a crude bootstrap, so expect no visible change in points. Script and log:
+`data/audits/2026-10-19/defcon_oos.{py,log}`.
+
+**Plan vs rolling the transfer (priority 3).** When a forecast proposes
+transfers, the optimizer now solves again with no buys in the first week
+(later weeks stay free, so the rolled transfer keeps its value). The
+recommendation records both horizon objectives in `solve_meta.hold_comparison`,
+and the app and alerts show the gain. Both solves stop within CBC's 1% gap, so a
+gain inside that tolerance is labelled as not separating the plans. This is
+decision support only and changes no choice. A per-transfer penalty was already
+measured and rejected (−41 points across folds; `docs/design/phase6_live_run.md`).
+
+**Not done: minutes (priority 1).** Learning minutes conditional on a start
+and adding timestamped team news needs its own component benchmark and joint
+xPts check. It remains the top modelling item.

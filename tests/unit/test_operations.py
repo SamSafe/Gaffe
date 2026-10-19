@@ -103,7 +103,19 @@ def test_chain_rejects_modified_frozen_decision(scenario):
         ledger.read()
 
 
-def test_late_decision_is_missing_and_never_scored(scenario):
+def test_no_draft_before_deadline_is_missing_and_never_scored(scenario):
+    _, ledger, bootstrap, _, now, folder = scenario
+    after = now + dt.timedelta(days=1, seconds=1)
+    ledger.reconcile(bootstrap, folder, after)
+    data = ledger.read()
+    assert data["records"][0]["status"] == "missed"
+    assert "No forecast" in data["records"][0]["reason"]
+    assert data["state"]["free_transfers"] == 3
+    assert ledger.summary([])["covered_weeks"] == 0
+
+
+def test_pre_deadline_draft_freezes_at_catch_up(scenario):
+    # The PC slept through the final run: the last draft saved before the deadline counts.
     _, ledger, bootstrap, rec, now, folder = scenario
     ledger.propose(rec, bootstrap, now)
     after = now + dt.timedelta(days=1, seconds=1)
@@ -111,9 +123,37 @@ def test_late_decision_is_missing_and_never_scored(scenario):
         ledger.freeze(after)
     ledger.reconcile(bootstrap, folder, after)
     data = ledger.read()
-    assert data["records"][0]["status"] == "missed"
-    assert data["state"]["free_transfers"] == 3
-    assert ledger.summary([])["covered_weeks"] == 0
+    record = data["records"][0]
+    assert record["status"] == "frozen"
+    assert record["frozen"]["late_freeze"] is True
+    assert record["frozen"]["saved_at"] < record["frozen"]["deadline"]
+    assert data["state"]["gameweek"] == 8 and data["state"]["free_transfers"] == 3
+    bootstrap["events"][0]["data_checked"] = True
+    live = {"elements": [dict(id=i, stats=dict(total_points=2, minutes=90)) for i in range(1, 16)]}
+    write_json(folder / "live_gw7.json", live)
+    ledger.reconcile(bootstrap, folder, after)
+    assert ledger.read()["records"][0]["result"]["points"] == 24
+
+
+def test_edited_draft_is_missed_not_frozen(scenario):
+    _, ledger, bootstrap, rec, now, folder = scenario
+    ledger.propose(rec, bootstrap, now)
+    payload = read_json(ledger.path)
+    payload["records"][0]["draft"]["decisions"]["captain"] = 14
+    write_json(ledger.path, payload)
+    ledger.reconcile(bootstrap, folder, now + dt.timedelta(days=1, seconds=1))
+    record = ledger.read()["records"][0]
+    assert record["status"] == "missed" and "verified" in record["reason"]
+
+
+def test_legacy_unhashed_draft_is_missed(scenario):
+    _, ledger, bootstrap, rec, now, folder = scenario
+    ledger.propose(rec, bootstrap, now)
+    payload = read_json(ledger.path)
+    del payload["records"][0]["draft_hash"]
+    write_json(ledger.path, payload)
+    ledger.reconcile(bootstrap, folder, now + dt.timedelta(days=1, seconds=1))
+    assert ledger.read()["records"][0]["status"] == "missed"
 
 
 @pytest.mark.parametrize("chip,expected", [(None, 24), ("TC1", 26), ("BB1", 32), ("FH1", 24)])
@@ -245,6 +285,29 @@ def test_scheduler_final_forecast_then_freeze(scenario):
     assert jobs.requests[1].kind == "freeze"
 
 
+@pytest.mark.parametrize("quiet,expected", [(None, []), (("23:00", "08:00"), ["cycle"])])
+def test_quiet_hours_move_the_forecast_to_the_evening(scenario, quiet, expected):
+    # A 09:00 deadline puts the 07:30 final run inside 23:00-08:00 quiet hours, so the
+    # pre-deadline cycle runs from 22:15 the evening before instead of only 6h ahead.
+    store, ledger, bootstrap, rec, now, folder = scenario
+    ledger.propose(rec, bootstrap, now)
+    zone = dt.timezone(dt.timedelta(hours=-6))
+    deadline = (
+        (now + dt.timedelta(days=2))
+        .astimezone(zone)
+        .replace(hour=9, minute=0, second=0, microsecond=0)
+    )
+    bootstrap["events"][0]["deadline_time"] = deadline.isoformat()
+    write_json(folder / "bootstrap.json", bootstrap)
+    update = {"automation_enabled": True, "automation_odds": False, "timezone": "Etc/GMT+6"}
+    if quiet:
+        update.update(quiet_start=quiet[0], quiet_end=quiet[1])
+    store.save_preferences(store.preferences().model_copy(update=update))
+    jobs = Jobs()
+    Automation(store, jobs).tick(deadline - dt.timedelta(hours=10))
+    assert [r.kind for r in jobs.requests if r.kind == "cycle"] == expected
+
+
 def test_scheduler_failed_initialization_backs_off(scenario):
     store, _, _, _, now, _ = scenario
     store.save_preferences(store.preferences().model_copy(update={"automation_enabled": True}))
@@ -327,3 +390,59 @@ def test_partial_markets_use_finite_shared_defaults(monkeypatch):
     assert all(
         baseline[c].is_finite().all() for c in ["p_bonus_0", "p_bonus_1", "p_bonus_2", "p_bonus_3"]
     )
+
+
+def test_preferences_validate_quiet_hours_and_topic():
+    assert Preferences(quiet_start="23:00", quiet_end="07:00", notify_topic="").notify_topic is None
+    for bad in ({"quiet_start": "25:00"}, {"notify_topic": "short"}, {"notify_topic": "a/b" * 6}):
+        with pytest.raises(ValueError):
+            Preferences(**bad)
+
+
+def test_alerts_send_forecast_once_and_each_missed_week(scenario, monkeypatch):
+    from fpl_bot.web import notify
+
+    store, ledger, bootstrap, rec, now, folder = scenario
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda topic, title, body, tags=None: sent.append(title))
+    rec["context"].update(team_id=718959, season_id=26)
+    rec["decisions"].update(expected_gw_points=55.2)
+    path = store.root / "data/live/recommendations/season_26/team_718959/gw_7/recommendation.json"
+    write_json(path, rec)
+    notify.after_job(store, {"status": "completed"}, "cycle")
+    assert sent == []  # No topic, no traffic.
+    store.save_preferences(
+        store.preferences().model_copy(update={"notify_topic": "gaffe-0123456789ab"})
+    )
+    notify.after_job(store, {"status": "completed"}, "cycle")
+    notify.after_job(store, {"status": "completed"}, "cycle")
+    assert sent == ["GW7 forecast ready"]
+    ledger.reconcile(bootstrap, folder, now + dt.timedelta(days=1, seconds=1))
+    notify.after_job(store, {"status": "completed"}, "refresh")
+    notify.after_job(store, {"status": "completed"}, "refresh")
+    assert sent == ["GW7 forecast ready", "Bot missed GW7"]
+    notify.after_job(store, {"status": "failed"}, "cycle")
+    assert sent[-1] == "Scheduled forecast failed"
+
+
+def test_hold_sentence_flags_gains_inside_solver_tolerance():
+    from fpl_bot.web.notify import hold_sentence
+
+    assert "fair call" in hold_sentence({"gain": 2.0, "tolerance": 4.4, "weeks": 6})
+    assert "fair call" not in hold_sentence({"gain": 9.0, "tolerance": 4.4, "weeks": 6})
+
+
+def test_snapshot_retention_keeps_recent_and_pre_deadline(tmp_path):
+    from fpl_bot.web.worker import link_or_copy, prune_snapshots
+
+    base = dt.datetime(2026, 10, 1, tzinfo=dt.UTC)
+    stamps = [(base + dt.timedelta(hours=h)).strftime("%Y%m%dT%H%M%S%f") for h in range(40)]
+    for stamp in stamps:
+        write_json(tmp_path / "snapshots" / stamp / "meta.json", {})
+    deadline = (base + dt.timedelta(hours=10, minutes=30)).isoformat()
+    prune_snapshots(tmp_path, {"events": [{"deadline_time": deadline}]}, keep=5)
+    left = sorted(p.name for p in (tmp_path / "snapshots").iterdir())
+    assert left == [stamps[10], *stamps[-5:]]
+    source = tmp_path / "snapshots" / stamps[-1] / "meta.json"
+    link_or_copy(source, tmp_path / "linked.json")
+    assert (tmp_path / "linked.json").stat().st_ino == source.stat().st_ino

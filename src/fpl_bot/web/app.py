@@ -151,6 +151,21 @@ def create_app(store: Store | None = None, desktop_port: int = 8080) -> FastAPI:
         phone.revoke()
         return phone.status()
 
+    @app.post("/api/notify/test")
+    def test_notification():
+        from fpl_bot.web.notify import send
+
+        topic = store.preferences().notify_topic
+        if not topic:
+            raise HTTPException(409, "Save a notification topic in Settings first.")
+        try:
+            send(topic, "Gaffe is connected", "Forecast and missed-deadline alerts arrive here.")
+        except Exception:
+            raise HTTPException(
+                502, "ntfy.sh could not be reached. Check the connection and retry."
+            ) from None
+        return {"sent": True}
+
     @app.post("/api/plan")
     def plan(request: PlanRequest):
         try:

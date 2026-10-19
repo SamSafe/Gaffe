@@ -81,6 +81,29 @@ def reconstruct_state(bootstrap, history, transfers, picks, previous_basis, open
     }
 
 
+def link_or_copy(source, destination):
+    # Snapshot files are only ever replaced atomically, so sharing an inode is safe.
+    try:
+        destination.hardlink_to(source)
+    except OSError:
+        shutil.copy2(source, destination)
+
+
+def prune_snapshots(folder, bootstrap, keep: int = 12):
+    """Keep the newest snapshots plus the last one before each deadline, for audits."""
+    stamps = sorted(p.name for p in (folder / "snapshots").iterdir() if p.is_dir())
+    taken = {s: dt.datetime.strptime(s, "%Y%m%dT%H%M%S%f").replace(tzinfo=dt.UTC) for s in stamps}
+    retained = set(stamps[-keep:])
+    for event in bootstrap.get("events", []):
+        deadline = timestamp(event.get("deadline_time"))
+        before = [s for s in stamps if taken[s] < deadline]
+        if before:
+            retained.add(before[-1])
+    for stamp in stamps:
+        if stamp not in retained:
+            shutil.rmtree(folder / "snapshots" / stamp, ignore_errors=True)
+
+
 def refresh(store: Store, team_id: int, refresh_odds: bool):
     from fpl_bot.ingest import fpl_api
 
@@ -164,7 +187,7 @@ def refresh(store: Store, team_id: int, refresh_odds: bool):
             gw = event["id"]
             old = previous / f"live_gw{gw}.json" if previous else None
             if old and old.exists() and gw < latest - 1:
-                shutil.copy2(old, snapshot / old.name)
+                link_or_copy(old, snapshot / old.name)
             else:
                 write_json(snapshot / f"live_gw{gw}.json", get(f"event/{gw}/live"))
         write_json(
@@ -176,6 +199,7 @@ def refresh(store: Store, team_id: int, refresh_odds: bool):
             },
         )
         write_json(folder / "current.json", {"snapshot": stamp})
+        prune_snapshots(folder, bootstrap)
     progress(45, "Saving finalized results to the model database…")
     sync_path = store.web / f"model_sync_{store.season}.json"
     sync = read_json(sync_path, {})

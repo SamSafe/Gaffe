@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import polars as pl
@@ -384,6 +384,8 @@ def generate_recommendation(
     )
 
     decisions, meta = solve_rolling_horizon(inputs, time_limit_s=180)
+    if decisions.transferred_in and decisions.chip_played not in {"WC1", "WC2", "FH1", "FH2"}:
+        meta["hold_comparison"] = _hold_comparison(inputs, meta)
 
     meta["rho"] = rho
     meta["alpha"] = alpha
@@ -483,6 +485,28 @@ def generate_recommendation(
     )
 
     return md_path, json_path
+
+
+def _hold_comparison(inputs: MilpInputs, meta: dict) -> dict | None:
+    """Modelled horizon value of this week's moves over rolling the transfer.
+
+    Both solves stop within CBC's 1% relative gap, so differences inside that
+    tolerance do not separate the two plans.
+    """
+    try:
+        _, hold_meta = solve_rolling_horizon(
+            replace(inputs, hold_first_week=True), time_limit_s=120
+        )
+    except RuntimeError:
+        return None
+    plan, hold = float(meta["objective"]), float(hold_meta["objective"])
+    return {
+        "plan_objective": round(plan, 2),
+        "hold_objective": round(hold, 2),
+        "gain": round(plan - hold, 2),
+        "tolerance": round(0.01 * max(abs(plan), abs(hold)), 2),
+        "weeks": len(inputs.horizon_weeks),
+    }
 
 
 def _write_json_sidecar(

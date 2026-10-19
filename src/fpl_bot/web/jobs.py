@@ -128,6 +128,11 @@ class JobManager:
         finally:
             self.process = None
             self._save(job)
+            if not self.stopping:
+                from fpl_bot.web.notify import after_job
+
+                with suppress(Exception):
+                    after_job(self.store, job, request.kind)
 
     def close(self):
         self.stopping = True

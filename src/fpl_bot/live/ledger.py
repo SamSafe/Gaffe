@@ -145,7 +145,8 @@ class Ledger:
         if not record:
             record = {"gameweek": gw, "status": "draft"}
             data["records"].append(record)
-        record["draft"] = proposed
+        # Hashed at save time so a catch-up freeze can prove the draft is unchanged.
+        record.update(draft=proposed, draft_hash=digest(proposed))
         self.save(data)
 
     @staticmethod
@@ -184,9 +185,30 @@ class Ledger:
         record = next((r for r in data["records"] if r["gameweek"] == gw), None)
         if not record or not record.get("draft"):
             return False
-        draft = record["draft"]
-        if now >= timestamp(draft["deadline"]):
+        if now >= timestamp(record["draft"]["deadline"]):
             raise ValueError("A bot decision cannot be frozen after its deadline.")
+        self._freeze(data, record, now, late=False)
+        self.save(data)
+        return True
+
+    @staticmethod
+    def _late_freeze_problem(record: dict) -> str | None:
+        """Why the last saved draft cannot stand in for a missed final freeze, if anything."""
+        draft = record.get("draft")
+        if not draft:
+            return "No forecast was saved before the deadline (the computer may have been off)."
+        if record.get("draft_hash") != digest(draft):
+            return "The saved draft could not be verified, so it was not used."
+        deadline = timestamp(draft["deadline"])
+        if not (
+            timestamp(draft["generated_at"]) < deadline and timestamp(draft["saved_at"]) < deadline
+        ):
+            return "The saved draft was not completed before the deadline."
+        return None
+
+    def _freeze(self, data: dict, record: dict, now: dt.datetime, late: bool):
+        draft = record["draft"]
+        gw = record["gameweek"]
         state = decode_state(data["state"])
         d = decision(draft["decisions"], gw)
         bench = draft["decisions"].get("bench_order", [])
@@ -197,6 +219,8 @@ class Ledger:
             digest(data["initial_state"]),
         )
         frozen = {**draft, "frozen_at": now.isoformat(), "previous_hash": previous}
+        if late:
+            frozen["late_freeze"] = True
         prices = {
             int(p): {"buy": v, "sell": selling_price(v, state.cost_basis.get(int(p), v))}
             for p, v in draft["prices"].items()
@@ -208,15 +232,14 @@ class Ledger:
             frozen=frozen, hash=digest(frozen), status="frozen", state_after=encode_state(after)
         )
         data["state"] = encode_state(after)
-        self.save(data)
-        return True
 
     def reconcile(self, bootstrap: dict, folder, now: dt.datetime):
         data = self.read()
         if not data:
             return
         events = {e["id"]: e for e in bootstrap["events"]}
-        # Missed deadlines carry the last squad and accrue FT, but never gain a fabricated score.
+        # A verified draft saved before the deadline is frozen late. Without one, a missed
+        # deadline carries the last squad and accrues FT, but never gains a fabricated score.
         while (event := events.get(data["state"]["gameweek"])) and timestamp(
             event["deadline_time"]
         ) <= now:
@@ -225,9 +248,14 @@ class Ledger:
             if record is None:
                 record = {"gameweek": gw}
                 data["records"].append(record)
-            record.update(
-                status="missed", reason="No immutable decision was saved before the deadline."
-            )
+            reason = self._late_freeze_problem(record)
+            if reason is None:
+                try:
+                    self._freeze(data, record, now, late=True)
+                    continue
+                except ValueError as exc:
+                    reason = f"The saved draft could not be frozen: {exc}"
+            record.update(status="missed", reason=reason)
             data["state"]["gameweek"] += 1
             data["state"]["free_transfers"] = min(5, data["state"]["free_transfers"] + 1)
         for record in data["records"]:
@@ -288,6 +316,8 @@ class Ledger:
                     if user_points is not None and bot is not None
                     else None,
                     "frozen_at": record.get("frozen", {}).get("frozen_at"),
+                    "late_freeze": record.get("frozen", {}).get("late_freeze", False),
+                    "reason": record.get("reason"),
                     "hash": record.get("hash"),
                 }
             )

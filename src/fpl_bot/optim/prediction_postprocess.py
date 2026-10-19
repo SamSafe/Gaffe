@@ -16,7 +16,10 @@ from pathlib import Path
 
 from fpl_bot.db import pit
 
-DEFCON_PER_POSITION_SHRINKAGE = {"DEF": 0.4, "MID": 1.0, "FWD": 1.0}
+# MID 0.82 = least squares on 25/26, confirmed forward on 26/27 GW1-6 (MID squared
+# error -0.008, 90% GW-block CI -0.014..-0.003). The 25/26 DEF fit (0.76) did not beat
+# 0.4 forward, so DEF stays. See docs/MODEL_IMPROVEMENT_2026-10-11.md.
+DEFCON_PER_POSITION_SHRINKAGE = {"DEF": 0.4, "MID": 0.82, "FWD": 1.0}
 EARLY_GW_PRIOR_BLEND = {1: 0.7, 2: 0.5, 3: 0.3}
 
 

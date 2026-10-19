@@ -62,8 +62,19 @@ hours, or hourly while results are provisional or a frozen bot week awaits
 settlement. It runs a complete refresh, your forecast and the independent bot
 six hours before deadlines, then again 90 minutes before deadlines. The final
 cycle freezes the bot; a lightweight fallback freezes the latest saved draft
-15 minutes before the deadline. Failed slots retry after 15 minutes. Missed
-deadlines remain unscored and carry the bot's squad and free transfers forward.
+15 minutes before the deadline. Failed slots retry after 15 minutes.
+
+If the computer is asleep through the final run and the fallback, the catch-up
+after waking freezes the last draft saved before the deadline, marked
+"frozen late". Drafts are hashed when saved, and a draft that fails that check,
+or was not completed before the deadline, is not used. Only a deadline with no
+usable draft is missed: it stays unscored and carries the bot's squad and free
+transfers forward.
+
+**Quiet hours** (Settings → "Computer usually asleep") cover overnight
+deadlines. When the 90-minute run would fall inside them, the first forecast
+cycle starts 45 minutes before quiet hours begin, the evening before, instead
+of six hours ahead. Leave both times blank to keep the plain schedule.
 
 The independent bot uses recorded forecast prices. Its initial state matches
 the public squad, which may exclude transfers made since the previous deadline.
@@ -83,6 +94,17 @@ The unit uses this checkout's virtual environment and starts at port 8080.
 It restarts after process failure and starts with the user's session. It does
 not keep the computer awake or guarantee operation after logout. Reinstall the
 unit if you move the checkout. Do not run a second server over the same store.
+
+## Phone alerts
+
+Settings → "Phone alerts" takes a private [ntfy](https://ntfy.sh) topic. Press
+**Create** for a random one, save, subscribe to it in the free ntfy app, then
+press **Test**. Alerts go out when a scheduled forecast cycle finishes (repeated
+only when the advice changes), when it fails, and when the bot misses a
+deadline. They contain player names, captain, expected points, the plan's gain
+over rolling the transfer and the deadline: no team ID, bank or credentials.
+Anyone who knows the topic can read it, so treat the topic as a password.
+Blank topic, no traffic.
 
 ## Pair a phone
 

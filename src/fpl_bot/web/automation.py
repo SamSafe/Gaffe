@@ -4,11 +4,35 @@ from __future__ import annotations
 
 import datetime as dt
 import threading
+from zoneinfo import ZoneInfo
 
 from fpl_bot.live.ledger import Ledger
 from fpl_bot.web.jobs import ACTIVE, BusyError
 from fpl_bot.web.schemas import JobRequest
 from fpl_bot.web.store import Store, read_json, timestamp, write_json
+
+LEAD = dt.timedelta(hours=6)
+FINAL_LEAD = dt.timedelta(minutes=90)
+
+
+def early_lead(deadline: dt.datetime, prefs) -> dt.timedelta:
+    """How far ahead of a deadline the first forecast cycle may run.
+
+    When the final run would land in the user's quiet hours (computer asleep),
+    start from 45 minutes before quiet hours begin, the evening before.
+    """
+    if not (prefs.quiet_start and prefs.quiet_end):
+        return LEAD
+    final = (deadline - FINAL_LEAD).astimezone(ZoneInfo(prefs.timezone))
+    start, end = dt.time.fromisoformat(prefs.quiet_start), dt.time.fromisoformat(prefs.quiet_end)
+    t = final.time()
+    asleep = start <= t < end if start < end else (t >= start or t < end)
+    if not asleep:
+        return LEAD
+    begin = final.replace(hour=start.hour, minute=start.minute, second=0, microsecond=0)
+    if begin > final:
+        begin -= dt.timedelta(days=1)
+    return max(LEAD, deadline - (begin - dt.timedelta(minutes=45)))
 
 
 class Automation:
@@ -20,14 +44,16 @@ class Automation:
 
     def status(self):
         data = read_json(self.path, {})
+        prefs = self.store.preferences()
         return {
-            "enabled": self.store.preferences().automation_enabled,
+            "enabled": prefs.automation_enabled,
             "message": data.get(
                 "message", "Enable scheduled updates to run the weekly cycle automatically."
             ),
             "last_check": data.get("last_check"),
             "next_run": data.get("next_run"),
             "lead_hours": 6,
+            "quiet_hours": [prefs.quiet_start, prefs.quiet_end],
             "final_lead_minutes": 90,
             "fallback_freeze_minutes": 15,
             "refresh_hours": 6,
@@ -109,6 +135,7 @@ class Automation:
         if target:
             deadline = timestamp(target["deadline_time"])
             seconds = (deadline - now).total_seconds()
+            lead = early_lead(deadline, prefs)
             if 20 * 60 < seconds <= 90 * 60:
                 candidates.append(
                     (
@@ -118,7 +145,7 @@ class Automation:
                         ),
                     )
                 )
-            elif 90 * 60 < seconds <= 6 * 3600:
+            elif 90 * 60 < seconds <= lead.total_seconds():
                 candidates.append(
                     (
                         f"early:{keybase}:{target['id']}",
@@ -126,8 +153,8 @@ class Automation:
                     )
                 )
             state["next_run"] = (
-                deadline - dt.timedelta(hours=6)
-                if seconds > 6 * 3600
+                deadline - lead
+                if seconds > lead.total_seconds()
                 else deadline - dt.timedelta(minutes=90)
             ).isoformat()
         # Hourly while results are provisional or a frozen bot week awaits settlement.
