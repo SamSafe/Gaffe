@@ -44,6 +44,9 @@ from fpl_bot.models.bps import (
     BPSRulesMode,
     BPSSimulator,
     fit_residual_dataset,
+    fit_saves_model,
+    opponent_saves_rates,
+    player_card_rates,
     player_sub_rates,
     split_p_full_by_position,
 )
@@ -277,6 +280,57 @@ def _calibration_decile_pass_count(
 # player split did not improve joint xPts accuracy, so it stays a research mode.
 MinutesSplitMode = Literal["position", "player"]
 MINUTES_SPLIT_DEFAULT: MinutesSplitMode = "position"
+# Goalkeeper saves: a flat 3.0 per 90 (shipped), or scaled by the opponent's
+# market lambda (research: better saves, flat joint xPts; see MODEL_IMPROVEMENT).
+SavesMode = Literal["constant", "opponent"]
+SAVES_MODE_DEFAULT: SavesMode = "constant"
+
+
+# Bookings: a flat 0.13 per 90 (shipped), or per-player shrunk rates
+# (research: better booking Brier, mixed joint xPts; see MODEL_IMPROVEMENT).
+CardsMode = Literal["constant", "player"]
+CARDS_MODE_DEFAULT: CardsMode = "constant"
+
+
+def _with_player_cards(
+    prepared: FoldPredictionInputs, history: pl.DataFrame
+) -> FoldPredictionInputs:
+    """Per-player booking rates from matches strictly before each kickoff."""
+    from sqlalchemy import select as sa_select
+
+    from fpl_bot.db.models import DimFixture
+    from fpl_bot.db.session import session_scope
+
+    pm = prepared.player_predictions
+    with session_scope() as s:
+        rows = s.execute(
+            sa_select(DimFixture.fixture_id, DimFixture.kickoff_utc).where(
+                DimFixture.fixture_id.in_(pm["fixture_id"].unique().to_list())
+            )
+        ).all()
+    kickoffs = pl.DataFrame(
+        {"fixture_id": [r.fixture_id for r in rows], "kickoff_utc": [r.kickoff_utc for r in rows]}
+    ).with_columns(pl.col("fixture_id").cast(pm.schema["fixture_id"]))
+    targets = pm.drop("kickoff_utc", strict=False).join(kickoffs, on="fixture_id", how="left")
+    rated = player_card_rates(history, targets, pit.all_player_positions())
+    return FoldPredictionInputs(
+        fixtures=prepared.fixtures,
+        player_predictions=pm.with_columns(rated["yc_rate_per_90"]),
+        alphas_by_position=prepared.alphas_by_position,
+    )
+
+
+def _with_opponent_saves(
+    prepared: FoldPredictionInputs, train_pm: pl.DataFrame
+) -> FoldPredictionInputs:
+    coef = fit_saves_model(train_pm, pit.all_player_positions(), pit.market_xg_for_fixtures())
+    return FoldPredictionInputs(
+        fixtures=prepared.fixtures,
+        player_predictions=opponent_saves_rates(
+            prepared.player_predictions, prepared.fixtures, coef
+        ),
+        alphas_by_position=prepared.alphas_by_position,
+    )
 
 
 def _with_player_sub_rates(
@@ -320,6 +374,8 @@ def _run_one_fold(
     assist_sampling_mode: AssistSamplingMode = "independent",
     minutes_feature_mode: MinutesFeatureMode = "baseline",
     minutes_split: MinutesSplitMode = MINUTES_SPLIT_DEFAULT,
+    saves_mode: SavesMode = SAVES_MODE_DEFAULT,
+    cards_mode: CardsMode = CARDS_MODE_DEFAULT,
 ) -> tuple[XPtsFoldResult, pl.DataFrame, np.ndarray | None] | None:
     """Returns (fold_result, eval_df, raw_samples_or_None). raw_samples is a
     long-form polars DataFrame (player_id, fixture_id, iteration, xpts) when
@@ -386,6 +442,12 @@ def _run_one_fold(
             season_ids=[*train_seasons, test_season]
         )
         prepared = _with_player_sub_rates(prepared, history)
+    if saves_mode == "opponent":
+        prepared = _with_opponent_saves(prepared, train_pm)
+    if cards_mode == "player":
+        prepared = _with_player_cards(
+            prepared, pit.all_player_match_with_kickoff(season_ids=[*train_seasons, test_season])
+        )
 
     simulator = BPSSimulator(
         event_source=event_source,
@@ -752,6 +814,8 @@ def run_predict_only(
     prop_odds_as_of: dt.datetime | None = None,
     prop_shadow_out: Path | None = None,
     minutes_split: MinutesSplitMode = MINUTES_SPLIT_DEFAULT,
+    saves_mode: SavesMode = SAVES_MODE_DEFAULT,
+    cards_mode: CardsMode = CARDS_MODE_DEFAULT,
 ) -> pl.DataFrame:
     """Phase 6 v2: produce per-(player, fixture) xPts predictions for the
     specified UPCOMING fixtures.
@@ -946,6 +1010,10 @@ def run_predict_only(
     )
     if minutes_split == "player":
         prepared = _with_player_sub_rates(prepared, train_pm)
+    if saves_mode == "opponent":
+        prepared = _with_opponent_saves(prepared, train_pm)
+    if cards_mode == "player":
+        prepared = _with_player_cards(prepared, train_pm)
 
     simulator = BPSSimulator(
         event_source=event_source, n_iterations=n_iterations, seed=seed

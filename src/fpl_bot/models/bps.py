@@ -287,6 +287,127 @@ def player_sub_rates(
     )
 
 
+def fit_saves_model(
+    train_pm: pl.DataFrame, positions: pl.DataFrame, market: pl.DataFrame
+) -> tuple[float, float]:
+    """Goalkeeper saves per 90 = exp(a + b * log(opponent market lambda)).
+
+    Poisson maximum likelihood on goalkeepers' 60+ minute matches, so a keeper
+    facing a strong attack expects more saves. Fitted on 19-23 it gave
+    b = 0.68 and cut held-out saves deviance 7% (24/25) and 5% (25/26) against
+    a flat 3.0 (data/audits/2026-10-20/saves_component.py).
+    """
+    from scipy.optimize import minimize
+
+    gk = (
+        train_pm.join(positions.select("player_id", "position_code"), on="player_id")
+        .filter((pl.col("position_code") == "GKP") & (pl.col("minutes") >= 60))
+        .drop_nulls("saves")
+        .with_columns(
+            pl.when(pl.col("was_home"))
+            .then(pl.col("away_team_id"))
+            .otherwise(pl.col("home_team_id"))
+            .alias("_opp")
+        )
+        .join(
+            market.select("fixture_id", pl.col("team_id").alias("_opp"), "lambda_market_xg"),
+            on=["fixture_id", "_opp"],
+        )
+    )
+    if gk.height < 100:
+        return float(np.log(3.0)), 0.0  # Too little data: the flat 3.0 per 90.
+    y = gk["saves"].to_numpy().astype(float)
+    exposure = gk["minutes"].to_numpy() / 90.0
+    x = np.log(gk["lambda_market_xg"].cast(pl.Float64).to_numpy())
+
+    def nll(p):
+        eta = p[0] + p[1] * x
+        return float(np.sum(np.exp(eta) * exposure - y * eta))
+
+    a, b = minimize(nll, [1.0, 0.5]).x
+    return float(a), float(b)
+
+
+def opponent_saves_rates(
+    players: pl.DataFrame, fixtures: pl.DataFrame, coef: tuple[float, float]
+) -> pl.DataFrame:
+    """Replace goalkeepers' saves_rate_per_90 using each fixture's opponent lambda."""
+    a, b = coef
+    lam = fixtures.select("fixture_id", "home_team_lambda", "away_team_lambda")
+    out = players.join(lam, on="fixture_id", how="left").with_columns(
+        pl.when(pl.col("is_home"))
+        .then(pl.col("away_team_lambda"))
+        .otherwise(pl.col("home_team_lambda"))
+        .alias("_lam_opp")
+    )
+    rate = (a + b * pl.col("_lam_opp").clip(lower_bound=0.05).log()).exp()
+    return out.with_columns(
+        pl.when((pl.col("position_code") == "GKP") & pl.col("_lam_opp").is_not_null())
+        .then(rate)
+        .otherwise(pl.col("saves_rate_per_90"))
+        .alias("saves_rate_per_90")
+    ).drop("home_team_lambda", "away_team_lambda", "_lam_opp")
+
+
+CARD_PRIOR_NINETIES = 40.0
+
+
+def player_card_rates(
+    history: pl.DataFrame, targets: pl.DataFrame, positions: pl.DataFrame
+) -> pl.DataFrame:
+    """Add `yc_rate_per_90`: each player's bookings per 90 before the kickoff.
+
+    Shrunk toward the position rate (fitted on the same history) by
+    CARD_PRIOR_NINETIES pseudo-90s. Held out, it cut booking Brier 2-3% over a
+    flat 0.13 (data/audits/2026-10-20/cards_component.py). history needs
+    player_id, kickoff_utc, minutes, yellow_cards; targets player_id,
+    kickoff_utc, position_code.
+    """
+    played = (
+        history.filter(pl.col("minutes") > 0)
+        .join(positions.select("player_id", "position_code"), on="player_id", how="left")
+        .with_columns(
+            pl.col("yellow_cards").clip(upper_bound=1).cast(pl.Float64).alias("_yc"),
+            (pl.col("minutes") / 90.0).alias("_n90"),
+        )
+    )
+    pos_rate = dict(
+        played.drop_nulls("position_code")
+        .group_by("position_code")
+        .agg(pl.col("_yc").sum() / pl.col("_n90").sum())
+        .iter_rows()
+    )
+    cumulative = (
+        _utc_kickoff(played)
+        .sort("player_id", "kickoff_utc")
+        .with_columns(
+            pl.col("_yc").cum_sum().over("player_id").alias("_k"),
+            pl.col("_n90").cum_sum().over("player_id").alias("_e"),
+        )
+        .select("player_id", "kickoff_utc", "_k", "_e")
+        .sort("kickoff_utc")
+    )
+    joined = _utc_kickoff(targets.with_row_index("_row")).sort("kickoff_utc").join_asof(
+        cumulative,
+        on="kickoff_utc",
+        by="player_id",
+        strategy="backward",
+        allow_exact_matches=False,
+        check_sortedness=False,
+    )
+    prior = pl.col("position_code").replace_strict(pos_rate, default=0.13, return_dtype=pl.Float64)
+    m = CARD_PRIOR_NINETIES
+    return (
+        joined.with_columns(
+            ((pl.col("_k").fill_null(0.0) + m * prior) / (pl.col("_e").fill_null(0.0) + m)).alias(
+                "yc_rate_per_90"
+            )
+        )
+        .sort("_row")
+        .drop("_row", "_k", "_e")
+    )
+
+
 def sample_minutes_bucket(
     p_zero: float,
     p_short: float,

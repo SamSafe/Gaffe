@@ -351,3 +351,55 @@ def test_residual_source_samples_integer_bps() -> None:
     rng = np.random.default_rng(0)
     samples = [src.simulate_unmodeled_bps("MID", 90, rng) for _ in range(100)]
     assert all(sample.is_integer() for sample in samples)
+
+
+def test_saves_model_recovers_opponent_effect() -> None:
+    from fpl_bot.models.bps import fit_saves_model
+
+    rng = np.random.default_rng(0)
+    rows, market = [], []
+    for f in range(400):
+        lam = float(rng.uniform(0.6, 2.8))
+        market.append({"fixture_id": f, "team_id": 2, "lambda_market_xg": lam})
+        rows.append({"player_id": 1, "fixture_id": f, "minutes": 90, "was_home": True,
+                     "home_team_id": 1, "away_team_id": 2,
+                     "saves": int(rng.poisson(np.exp(0.9 + 0.65 * np.log(lam))))})
+    a, b = fit_saves_model(pl.DataFrame(rows), pl.DataFrame({"player_id": [1], "position_code": ["GKP"]}),
+                           pl.DataFrame(market))
+    assert abs(b - 0.65) < 0.15 and abs(a - 0.9) < 0.15
+
+
+def test_opponent_saves_rates_touch_only_goalkeepers() -> None:
+    from fpl_bot.models.bps import opponent_saves_rates
+
+    players = pl.DataFrame({"fixture_id": [1, 1, 1], "is_home": [True, False, True],
+                            "position_code": ["GKP", "GKP", "DEF"], "saves_rate_per_90": [3.0, 3.0, 0.0]})
+    fixtures = pl.DataFrame({"fixture_id": [1], "home_team_lambda": [2.0], "away_team_lambda": [1.0]})
+    out = opponent_saves_rates(players, fixtures, (np.log(3.0), 0.5))
+    home_gk, away_gk, defender = out["saves_rate_per_90"].to_list()
+    assert abs(home_gk - 3.0) < 1e-9          # Opponent lambda 1.0 → baseline.
+    assert abs(away_gk - 3.0 * 2 ** 0.5) < 1e-9  # Facing lambda 2.0 → more saves.
+    assert defender == 0.0
+
+
+def test_player_card_rates_use_only_earlier_matches() -> None:
+    import datetime as dt
+
+    from fpl_bot.models.bps import CARD_PRIOR_NINETIES, player_card_rates
+
+    day = lambda d: dt.datetime(2026, 9, d, 15, tzinfo=dt.UTC)  # noqa: E731
+    history = pl.DataFrame({
+        "player_id": [1, 1, 1, 2, 2],
+        "kickoff_utc": [day(1), day(8), day(15), day(1), day(8)],
+        "minutes": [90, 90, 90, 90, 90],
+        "yellow_cards": [1, 1, 0, 0, 0],
+    })
+    positions = pl.DataFrame({"player_id": [1, 2], "position_code": ["MID", "MID"]})
+    targets = pl.DataFrame({"player_id": [1, 1], "fixture_id": [10, 11],
+                            "kickoff_utc": [day(15), day(22)], "position_code": ["MID", "MID"]})
+    out = player_card_rates(history, targets, positions)
+    pos_rate = 2 / 5
+    m = CARD_PRIOR_NINETIES
+    rates = out["yc_rate_per_90"].to_list()
+    assert abs(rates[0] - (2 + m * pos_rate) / (2 + m)) < 1e-9  # Day-15 match excluded.
+    assert abs(rates[1] - (2 + m * pos_rate) / (3 + m)) < 1e-9

@@ -391,3 +391,41 @@ spanning zero). The market-minutes model did not measurably change captain
 picks either (-0.04, +0.14, +0.25). The improvement sits in rotation and
 returns from injury, not among the premiums who get captained. Scripts:
 `data/audits/2026-10-19/captain_{rules,models}.py`.
+
+## Follow-up, 20 October 2026 (afternoon)
+
+**Shipped: the Free Hit is used before it expires.** The chip scheduler only
+placed a Free Hit in a gameweek where some team blanks. 2026/27 has no
+first-half blank, so FH1 would have lapsed after GW19. With no blank it now
+takes the half's last free gameweek (a Free Hit is worth at least zero; an
+expired one is worth zero), and the weekly rerun moves it if a blank appears.
+Spent chips no longer reserve gameweeks or act as phantom Free Hits.
+
+**Measured, not shipped: opponent-based goalkeeper saves.** Saves per 90 as
+exp(a + b log opponent lambda) (b ≈ 0.65, stable across folds) cut held-out
+saves deviance 7% (24/25) and 5% (25/26) against the flat 3.0. Joint xPts did
+not follow: goalkeeper squared error 3.391 → 3.365, 2.028 → 2.027 and 2.837 →
+2.919 (26/27 worse, interval excluding zero); all players 4.162 → 4.158,
+3.600 → 3.611, 4.619 → 4.637. Save points are floor(saves / 3), a small share
+of a keeper's score. Research switch `saves_mode="opponent"`.
+
+**Measured, not shipped: per-player booking rates.** Shrunk player rates
+(40 pseudo-90s toward the position rate) cut booking Brier 2-3%. Joint xPts
+split: all players 4.162 → 4.157 (24/25, better), 3.600 → 3.609 (25/26, worse)
+and 4.619 → 4.623 (26/27, worse), each interval excluding zero. The realistic
+higher midfield and defence rates deepen an existing low bias (-0.07 to -0.11
+points per player-match), which the flat 0.13 partly offsets. Research switch
+`cards_mode="player"`.
+
+**Measured, not shipped: forward per-position calibration.** The model runs
+low in every season (-0.03 to -0.10 points per player-match). A per-position
+linear correction fitted on earlier seasons' out-of-fold predictions made
+25/26 slightly worse (baseline 3.600 → 3.602; market minutes 3.503 → 3.513,
+interval excluding zero) and 26/27 better (4.619 → 4.596; 4.497 → 4.478). The
+bias varies by season, so the correction does not carry forward reliably, the
+same lesson as the earlier FWD calibration (`calibration_forward.py`).
+
+**Checked, no change: 2026/27 penalty takers.** All 20 clubs have an entry and
+every name resolves to a current player at that club.
+
+Scripts and logs: `data/audits/2026-10-20/{saves,cards}_{component,xpts}.py`.
