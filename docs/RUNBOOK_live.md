@@ -1,5 +1,31 @@
 # Live Weekly Runbook (26/27 season)
 
+## Update — 2026-10-20 (supersedes parts of the notes below)
+
+- **Routine:** a few hours before each deadline, `uv run gaffe serve`, then
+  **Generate forecast**. The job refreshes bookmaker odds older than six hours
+  (match odds plus anytime-goalscorer props), rebuilds the forecast, and drafts
+  the independent bot's plan. The CLI cycle below still works but does none of
+  that automatically: run `ingest oddsapi`, `ingest oddsapi-props` and
+  `derive market-xg` yourself first.
+- **Current-season match data:** vaastav stopped publishing 2026/27 after
+  GW1. Finalized gameweeks come from FPL's live endpoint during each app
+  refresh, and per-gameweek transfers/ownership (which that endpoint omits)
+  are refilled from element-summary (`ingest/fpl_market.py`) once per
+  finished gameweek. Step 4 below is no longer needed this season.
+- **Next-gameweek minutes** use that week's pre-deadline transfers, but only
+  from a status snapshot taken within 72 hours of the deadline; run a refresh
+  close to the deadline (the forecast job does). See phase 9, step B′.
+- **Unpriced fixtures** (usually GW+2 onward) use team ratings fitted to the
+  market, not the 1.4/1.2 defaults mentioned below.
+- **Chips:** the scheduler plays a remaining Free Hit by the end of its half
+  even without a blank gameweek; spent chips get no slot. For team 718959,
+  FH1 is planned for GW19.
+- The always-on scheduler and phone tunnel are optional and currently off;
+  `gaffe.service` is disabled. Deadlines in the early morning (Edmonton) need
+  a forecast the evening before, and the bot then counts the last plan saved
+  before the deadline.
+
 ## Audit update — 2026-10-11
 
 The browser app now handles the routine weekly cycle: `uv run gaffe serve`,

@@ -32,8 +32,12 @@ reach top-20k. Two reasons, measured rather than asserted:
   so that caps the ceiling.
 - The flattering historical-fold backtest numbers (~2400-2560 pts/season)
   are partly inflated by an 8-chip ruleset applied to seasons that only
-  had ~5 chips, and by closing-odds look-ahead. The clean 25/26 test (with
-  the correct ruleset) is the honest one.
+  had ~5 chips, and by closing-odds look-ahead. The look-ahead is now
+  measured: a live-faithful backtest that withholds odds beyond the next two
+  gameweeks (as the live bot experiences them) scores **1.7 points per
+  gameweek lower** (90% CI 0.1-3.3), roughly 35-95 points a season. Without
+  chips, that backtest scores 2418 (24/25) and 2277 (25/26). Read the rank
+  estimate above with that discount in mind.
 
 **On backtest reproducibility (and a methodology trap).** The backtest is
 now bit-reproducible: the CBC solver runs with a pinned seed, and LightGBM
@@ -58,6 +62,23 @@ a clear mechanism (banned players score 0), so it shipped.
 
 **It has not been run live for a full season yet.** Everything here is
 validated on historical backtests. The real test is 2026/27.
+
+**October 2026 updates** (details in
+[`docs/MODEL_IMPROVEMENT_2026-10-11.md`](docs/MODEL_IMPROVEMENT_2026-10-11.md)
+and [`docs/design/phase9_minutes.md`](docs/design/phase9_minutes.md)):
+
+- *Shipped, each validated on prediction accuracy over 24/25-26/27:* the
+  coming gameweek's expected minutes now read managers' pre-deadline
+  transfers as a team-news signal (joint xPts error -1.8% to -2.7% per
+  season); fixtures without odds use team ratings fitted to the market
+  instead of flat defaults (expected-goals error halved); the defensive-
+  contribution midfield weight fell to 0.82.
+- *Operational fixes:* forecasts refresh stale odds themselves; the chip
+  planner uses a Free Hit before it expires; an independent bot keeps its own
+  squad and freezes the last plan saved before each deadline.
+- *Measured and rejected,* so not worth retrying: per-player 70-vs-90-minute
+  splits, opponent-based goalkeeper saves, per-player booking rates, forward
+  calibration, haul-chasing captaincy, shorter horizons (inside noise).
 
 **October 2026 audit:** archived prediction-fold evaluations used the test
 season for LightGBM early stopping. Core minutes, goals/assists, bonus inputs,
@@ -88,10 +109,12 @@ ingest ──► prediction models ──► joint xPts simulator ──► MILP
    historical match data, Understat xG/xA, football-data.co.uk closing
    odds, The Odds API live odds, LiveFPL top-10k effective ownership.
 2. **Prediction** (`features/`, `models/`) — LightGBM models for minutes
-   (4-bucket), goals & assists (Poisson per-90 on xG + team form +
+   (0 / 1-59 / 60+; the coming gameweek also reads pre-deadline transfers
+   and ownership), goals & assists (Poisson per-90 on xG + team form +
    set-piece roles), clean sheets (market-prob baseline), and a BPS/bonus
    simulator. Bookmaker-implied team λ (Dixon-Coles inversion) is a core
-   feature.
+   feature; unpriced fixtures use market-fitted team ratings
+   (`derive/team_ratings.py`).
 3. **Joint xPts** (`eval/xpts_eval.py`, `models/bps.py`) — a Monte-Carlo
    simulator combines per-player outcome distributions into an expected-
    points distribution per (player, gameweek).
@@ -173,7 +196,15 @@ preferences, public snapshots and forecast archives are gitignored. The server
 binds to localhost. See [the app guide](docs/APP.md) and
 [the implementation plan](docs/APP_PLAN.md).
 
-Enable scheduled updates in Settings to refresh results and run the complete
+**Weekly routine (manual).** On deadline day, a few hours before the deadline,
+run `uv run gaffe serve` and press **Generate forecast**. It refreshes odds
+older than six hours, uses that week's transfer activity once within three days
+of the deadline, and saves the independent bot's plan too. Then apply your
+choices on FPL. The dashboard shows how far the plan beats rolling the
+transfer, flags gains inside the solver's tolerance, and lists chips left this
+half with their planned gameweeks.
+
+Optionally, enable scheduled updates in Settings to refresh results and run the complete
 weekly forecast and independent bot cycle. The bot begins from your current
 squad once, then retains its own bank, holdings, transfers and chips. Linux
 users can run `uv run gaffe install-service` to keep the app running after the
@@ -202,7 +233,9 @@ timestamp, hash). Respect each source's terms if you reuse this.
 
 - **Validated** on walk-forward backtests (seasons 2019/20 → 2025/26),
   with point-in-time leakage tests guarding feature construction.
-- **Not** validated live over a full season.
+- **Not** validated live over a full season. The independent bot's
+  prospective ledger started at GW7 of 2026/27 (GW7 itself was missed); it
+  needs ten or more scored weeks before its record means anything.
 - Known gaps the bot can't see: real-time lineup leaks, press-conference
   nuance beyond the FPL `news` field, manager rotation intent. These are
   the main edge a skilled human retains over it.

@@ -34,6 +34,9 @@ in [the live runbook](RUNBOOK_live.md).
    days out, the minutes model ignores this week's transfers (too few have
    been made) and relies on its history and FPL's injury flags. It can take several
    minutes. Navigation remains usable and a job banner reports progress.
+   The overview pairs suggested transfers by position, shows the plan's gain
+   over rolling the transfer (and whether it clears the solver's tolerance),
+   and lists the chips left this half with their planned gameweeks.
 4. **Transfer planner:** begin with the model plan, edit transfers, optionally
    choose a captain, then compare. It enforces 2/5/5/3 squad positions, max three
    per club, exact half-profit sale prices, bank and four-point transfer hits.
