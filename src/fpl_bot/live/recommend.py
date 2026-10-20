@@ -621,7 +621,7 @@ def _write_markdown(
         lines.append(f"Completed results through GW{quality['completed_results_through_gw']}.")
         fallback = quality.get("gameweeks_with_market_fallback", [])
         if fallback:
-            lines.append("Bookmaker coverage is incomplete for " + ", ".join(f"GW{gw}" for gw in fallback) + "; those forecasts use market defaults.")
+            lines.append("Bookmaker coverage is incomplete for " + ", ".join(f"GW{gw}" for gw in fallback) + "; those forecasts use team ratings fitted to recent odds.")
     lines.append("")
     lines.append("## Squad (15 players)")
     for pos in ("GKP", "DEF", "MID", "FWD"):

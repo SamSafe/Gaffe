@@ -323,3 +323,44 @@ game; joint xPts squared error fell 1.8% (24/25), 2.7% (25/26) and 2.6%
 (26/27 GW1-6, out of sample), every interval excluding zero. Details and live
 limits (82% of a week's transfers are visible six hours out) are in
 `docs/design/phase9_minutes.md`, step B′.
+
+## Follow-up, 20 October 2026
+
+**Shipped: market-fitted ratings for unpriced fixtures (priority 5).** Live
+forecasts plan six weeks ahead; odds exist for one or two. Unpriced fixtures
+used constant lambdas (home 1.4, away 1.2, clean sheets 0.30/0.25) whatever
+the opponent, and the goals model read their missing market features as zero,
+deflating attackers in later weeks (Haaland ~4.8 in priced GW9 against ~3.3 in
+unpriced GW10-13, before his doubtful flag). `derive/team_ratings.py` now fits
+log(lambda) = mu + home + attack - defence to the market's own lambdas
+(recency-weighted ridge; this season plus last season's final ten weeks) and
+fills unpriced fixtures for both the simulator and the goals features.
+
+Fitted only on fixtures at least two (four) gameweeks before each target:
+
+| Metric vs constant defaults | 2024/25 | 2025/26 |
+|---|---|---|
+| Lambda error vs eventual market, 2 GWs out | 0.414 → 0.199 | 0.332 → 0.155 |
+| Same, 4 GWs out | 0.414 → 0.222 | 0.332 → 0.171 |
+| Clean-sheet error vs market, 2 GWs out | 0.091 → 0.043 | 0.081 → 0.037 |
+| Goals Poisson deviance (market ceiling) | 1.207 → 1.107 (1.057) | 1.143 → 1.079 (1.064) |
+
+The ratings close 67% and 81% of the gap between the constants and the market.
+Script: `data/audits/2026-10-19/fallback_ratings.py` (runs the production fit).
+
+**Horizon length and discounting were not tuned.** Historical backtests price
+every week with closing odds, so they cannot show how planning should change
+when later weeks are unpriced; a sweep there would tune against conditions
+the live bot never sees. Fixing the unpriced inputs addressed the cause. A
+faithful test needs a backtest that withholds odds beyond the next one or two
+weeks and substitutes these ratings.
+
+**Captaincy (priority 2): no change.** On identical random 8-player shortlists
+drawn from each week's top 30 (paired, week-block bootstrap), picking the
+highest mean beat picking the highest haul chance by 1.41 (24/25) and 2.32
+(25/26) points per captaincy, and beat mean + 5 x haul by 0.23 and 0.36;
+weighting by appearance chance was neutral (+0.03, +0.07, +0.07, intervals
+spanning zero). The market-minutes model did not measurably change captain
+picks either (-0.04, +0.14, +0.25). The improvement sits in rotation and
+returns from injury, not among the premiums who get captained. Scripts:
+`data/audits/2026-10-19/captain_{rules,models}.py`.

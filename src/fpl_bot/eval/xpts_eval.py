@@ -844,8 +844,10 @@ def run_predict_only(
             for r in fixture_rows
         ]
     )
-    # Market xG join
-    market = pit.market_xg_for_fixtures()
+    # Market xG join; unpriced fixtures get team ratings fitted to the market.
+    from fpl_bot.derive.team_ratings import market_xg_with_fallback
+
+    market = market_xg_with_fallback(test_season, upcoming_fixture_ids)
     if not market.is_empty():
         hm = market.select(
             pl.col("fixture_id"),
@@ -861,7 +863,7 @@ def run_predict_only(
         )
         fixtures_df = fixtures_df.join(hm, on=["fixture_id", "home_team_id"], how="left")
         fixtures_df = fixtures_df.join(am, on=["fixture_id", "away_team_id"], how="left")
-    # Fill missing market_xg with sensible defaults
+    # Defaults remain only if no priced fixture exists to fit ratings on.
     for column in (
         "home_team_lambda", "away_team_lambda", "home_market_cs_prob", "away_market_cs_prob"
     ):

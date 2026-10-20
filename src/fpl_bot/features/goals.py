@@ -11,6 +11,7 @@ from __future__ import annotations
 import polars as pl
 
 from fpl_bot.db import pit
+from fpl_bot.derive.team_ratings import market_xg_with_fallback
 from fpl_bot.features import manual_overrides
 
 POSITION_CODES = ("GKP", "DEF", "MID", "FWD")
@@ -493,8 +494,9 @@ def build_prediction_feature_table(
         .alias("opponent_team_id"),
     )
 
-    # 5. Join market xG
-    market = pit.market_xg_for_fixtures()
+    # 5. Join market xG. Unpriced fixtures get ratings fitted to the market:
+    # left missing, the model read them as zero and deflated attackers.
+    market = market_xg_with_fallback(test_season, upcoming_fixture_ids)
     if not market.is_empty():
         team_market = market.select(
             pl.col("fixture_id"),

@@ -292,8 +292,9 @@ def dashboard(store: Store) -> dict:
         )
     if quality.get("gameweeks_with_market_fallback"):
         warnings.append(
-            "Later weeks use market fallback: GW "
+            "No bookmaker odds yet for GW "
             + ", ".join(map(str, quality["gameweeks_with_market_fallback"]))
+            + ". Those weeks use team ratings fitted to recent odds."
         )
     if saved_state.get("approximate_prices"):
         warnings.append(
