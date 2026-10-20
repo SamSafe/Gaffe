@@ -487,3 +487,32 @@ def test_goalscorer_odds_failure_never_fails_the_refresh(tmp_path, monkeypatch):
     monkeypatch.setattr(oddsapi_props, "fetch_raw_player_props", offline)
     worker.collect_player_props(Store(tmp_path, season=26))
     assert "unavailable" in messages[-1]
+
+
+def test_forecast_refreshes_only_stale_odds(tmp_path, monkeypatch):
+    from fpl_bot.config import settings
+    from fpl_bot.web import worker
+
+    store = Store(tmp_path, season=26)
+    now = dt.datetime(2026, 10, 23, 12, tzinfo=dt.UTC)
+    calls, messages = [], []
+    monkeypatch.setattr(worker, "refresh_bookmaker_odds", lambda s: calls.append(s))
+    monkeypatch.setattr(worker, "progress", lambda value, message: messages.append(message))
+    monkeypatch.setattr(worker, "latest_odds_recorded_at", lambda: now - dt.timedelta(hours=7))
+    monkeypatch.setattr(settings, "odds_api_key", None)
+    worker.ensure_fresh_odds(store, now)
+    assert calls == []  # No key, no requests.
+    monkeypatch.setattr(settings, "odds_api_key", "key")
+    worker.ensure_fresh_odds(store, now)
+    assert calls == [store]
+    monkeypatch.setattr(worker, "latest_odds_recorded_at", lambda: now - dt.timedelta(hours=2))
+    worker.ensure_fresh_odds(store, now)
+    assert len(calls) == 1  # Fresh enough.
+
+    def offline(s):
+        raise httpx.ConnectError("offline")
+
+    monkeypatch.setattr(worker, "latest_odds_recorded_at", lambda: None)
+    monkeypatch.setattr(worker, "refresh_bookmaker_odds", offline)
+    worker.ensure_fresh_odds(store, now)
+    assert "last saved odds" in messages[-1]

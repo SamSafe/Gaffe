@@ -280,6 +280,16 @@ def dashboard(store: Store) -> dict:
         warnings.append(
             f"This forecast predates finalized GW{latest_final} results. Generate a new forecast."
         )
+    odds_at = timestamp(quality.get("odds_recorded_at"))
+    if (
+        rec
+        and odds_at.year >= 2000
+        and timestamp(rec.get("generated_at")) - odds_at > dt.timedelta(hours=12)
+    ):
+        warnings.append(
+            "This forecast used bookmaker odds saved more than 12 hours earlier. "
+            "Generate a new forecast to refresh them."
+        )
     if quality.get("gameweeks_with_market_fallback"):
         warnings.append(
             "Later weeks use market fallback: GW "

@@ -249,17 +249,55 @@ def refresh(store: Store, team_id: int, refresh_odds: bool):
 
     Ledger(store, team_id).reconcile(bootstrap, snapshot, dt.datetime.now(dt.UTC))
     if refresh_odds:
-        from fpl_bot.derive.dixon_coles import derive_market_xg_for_season
-        from fpl_bot.ingest import oddsapi
-
-        progress(80, "Refreshing bookmaker odds…")
-        oddsapi.parse_raw_oddsapi(oddsapi.fetch_raw_oddsapi(), season_id=store.season)
-        derive_market_xg_for_season(store.season)
-        collect_player_props(store)
+        refresh_bookmaker_odds(store)
     progress(
         95,
         "Public snapshot ready. New transfers made after the last deadline may not be visible yet.",
     )
+
+
+# Bookmaker odds are the model's edge; older ones miss team news and line moves.
+ODDS_MAX_AGE = dt.timedelta(hours=6)
+
+
+def refresh_bookmaker_odds(store: Store):
+    """Match odds (~3 API credits), derived team xG, then goalscorer odds."""
+    from fpl_bot.derive.dixon_coles import derive_market_xg_for_season
+    from fpl_bot.ingest import oddsapi
+
+    progress(80, "Refreshing bookmaker odds…")
+    oddsapi.parse_raw_oddsapi(oddsapi.fetch_raw_oddsapi(), season_id=store.season)
+    derive_market_xg_for_season(store.season)
+    collect_player_props(store)
+
+
+def latest_odds_recorded_at() -> dt.datetime | None:
+    from sqlalchemy import func, select
+
+    from fpl_bot.db.models import FactOdds
+    from fpl_bot.db.session import session_scope
+
+    with session_scope() as s:
+        return s.scalar(select(func.max(FactOdds.recorded_at)))
+
+
+def ensure_fresh_odds(store: Store, now: dt.datetime | None = None):
+    """Before a forecast, refresh odds older than ODDS_MAX_AGE when a key is set.
+
+    A failed refresh never blocks the forecast; it runs on the last saved odds.
+    """
+    if not settings.odds_api_key:
+        return
+    now = now or dt.datetime.now(dt.UTC)
+    latest = latest_odds_recorded_at()
+    if latest is not None and now - latest < ODDS_MAX_AGE:
+        return
+    try:
+        refresh_bookmaker_odds(store)
+    except (httpx.HTTPError, RuntimeError, ValueError):
+        progress(
+            12, "Bookmaker odds could not be refreshed. The forecast uses the last saved odds."
+        )
 
 
 def collect_player_props(store: Store):
@@ -439,6 +477,7 @@ def main():
         if args.kind == "refresh":
             refresh(store, args.team_id, args.refresh_odds)
         elif args.kind == "recommend":
+            ensure_fresh_odds(store)
             recommend(store, args.team_id, args.horizon)
             draft_bot_plan(store, args.team_id, args.horizon)
         elif args.kind == "bot":

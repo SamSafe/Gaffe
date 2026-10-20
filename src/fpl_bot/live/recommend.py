@@ -405,7 +405,7 @@ def generate_recommendation(
     from sqlalchemy import func as sa_func
     from sqlalchemy import select
 
-    from fpl_bot.db.models import DimFixture, FactMarketXg, FactPlayerMatch
+    from fpl_bot.db.models import DimFixture, FactMarketXg, FactOdds, FactPlayerMatch
     from fpl_bot.db.session import session_scope
 
     with session_scope() as s:
@@ -418,6 +418,7 @@ def generate_recommendation(
             .where(DimFixture.season_id == season_id, DimFixture.gameweek.in_(target_horizon_gws))
             .group_by(DimFixture.gameweek).order_by(DimFixture.gameweek)
         ).all()
+        odds_recorded_at = s.scalar(select(sa_func.max(FactOdds.recorded_at)))
         latest_results_gw = s.scalar(
             select(sa_func.max(DimFixture.gameweek))
             .join(FactPlayerMatch, FactPlayerMatch.fixture_id == DimFixture.fixture_id)
@@ -426,6 +427,7 @@ def generate_recommendation(
     meta["data_quality"] = {
         "training_policy": TRAINING_POLICY_VERSION,
         "completed_results_through_gw": latest_results_gw,
+        "odds_recorded_at": odds_recorded_at.isoformat() if odds_recorded_at else None,
         "simulation_iterations": n_iterations,
         "train_seasons": train_seasons,
         "bookmaker_coverage": {

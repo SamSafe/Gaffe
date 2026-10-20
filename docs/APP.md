@@ -26,8 +26,11 @@ in [the live runbook](RUNBOOK_live.md).
    finalized results. Reconstruct bank, free transfers, chips and purchase prices.
    Only finalized single-fixture results enter the per-match training table.
    Double gameweeks remain aggregate actuals until per-fixture sources arrive.
-3. **Generate forecast:** train on completed matches, simulate the upcoming
-   horizon, and solve the squad, XI, captain and transfers. It can take several
+3. **Generate forecast:** refresh bookmaker odds if the saved ones are more
+   than six hours old (about 3 credits, plus ~10 for goalscorer odds), train on
+   completed matches, simulate the upcoming horizon, and solve the squad, XI,
+   captain and transfers. Generate it within a few hours of the deadline: the
+   odds and the week's transfer activity are freshest then. It can take several
    minutes. Navigation remains usable and a job banner reports progress.
 4. **Transfer planner:** begin with the model plan, edit transfers, optionally
    choose a captain, then compare. It enforces 2/5/5/3 squad positions, max three
