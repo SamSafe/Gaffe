@@ -348,12 +348,39 @@ Fitted only on fixtures at least two (four) gameweeks before each target:
 The ratings close 67% and 81% of the gap between the constants and the market.
 Script: `data/audits/2026-10-19/fallback_ratings.py` (runs the production fit).
 
-**Horizon length and discounting were not tuned.** Historical backtests price
-every week with closing odds, so they cannot show how planning should change
-when later weeks are unpriced; a sweep there would tune against conditions
-the live bot never sees. Fixing the unpriced inputs addressed the cause. A
-faithful test needs a backtest that withholds odds beyond the next one or two
-weeks and substitutes these ratings.
+**Live-faithful horizon backtests (20 October).** `backtest_season` now
+accepts predictions simulated without odds (`unpriced_eval_df`) and uses them
+for every week beyond the next two, including the terminal lookahead, as the
+live bot must. Unpriced views were built with ratings fitted only on fixtures
+two or more gameweeks earlier, or with the old constants. Same fold, seed and
+settings otherwise (rho 0, alpha 0.8, beta 0, no chips). Season points:
+
+| Configuration | 2024/25 | 2025/26 |
+|---|---:|---:|
+| Every week priced, H=6 (old backtest) | 2513 | 2311 |
+| Live-faithful, ratings, H=6 (current live) | 2418 | 2277 |
+| Live-faithful, ratings, H=4 | 2432 | 2295 |
+| Live-faithful, ratings, H=3 | 2441 | 2295 |
+| Live-faithful, constants, H=6 (old live) | 2445 | 2308 |
+
+Paired by gameweek against the current live configuration (week bootstrap,
+90% intervals, both seasons pooled):
+
+- Every week priced: +1.70 points per gameweek (+0.12 to +3.28). Historical
+  backtests overstate live play by roughly 35-95 points a season through odds
+  look-ahead alone.
+- H=4: +0.42 (-1.51 to +2.29); H=3: +0.54 (-1.46 to +2.55). Same sign in both
+  seasons, well inside noise. The default stays at six; four is an equally
+  defensible Settings choice.
+- Old constants: +0.76 (-1.71 to +3.14), same sign in both seasons, inside
+  noise. The ratings stay: they halve lambda error, and accuracy, not
+  noisy MILP points, decides prediction changes. One plausible mechanism is
+  that fixture-aware later weeks invite moves on long-range swings that the
+  priced weeks later revise, which also fits the shorter-horizon direction.
+  Revisit with more seasons or a horizon discount once 26/27 completes.
+
+Scripts and per-gameweek results: `data/audits/2026-10-20/`
+(`unpriced_fold.py`, `horizon_backtest.py`, `horizon_*.json`).
 
 **Captaincy (priority 2): no change.** On identical random 8-player shortlists
 drawn from each week's top 30 (paired, week-block bootstrap), picking the
