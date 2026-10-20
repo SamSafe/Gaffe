@@ -66,8 +66,8 @@ def test_fh_picks_max_bgw_gw():
     assert sched.fh1 == 18, f"FH1 expected 18, got {sched.fh1}"
 
 
-def test_no_fh_chip_when_no_bgw():
-    """Synthetic season with no BGW in second half — fh2 should be None."""
+def test_fh_is_used_by_the_end_of_each_half_when_no_bgw():
+    """Per-half chips expire: with no blank GW, play FH at the half's last free GW."""
     fixture_count = {(t, gw): 1 for gw in range(1, 39) for t in (1, 2, 3, 4)}
     a = SeasonFixtureAnalytics(
         season_id=99,
@@ -80,9 +80,10 @@ def test_no_fh_chip_when_no_bgw():
     sched = make_chip_schedule(
         analytics=a, predictions_df=preds, team_id_per_player=team_id_per_player
     )
-    # No BGW anywhere → both FH1 and FH2 should be None
-    assert sched.fh1 is None
-    assert sched.fh2 is None
+    # No BGW anywhere → each Free Hit lands on its half's final gameweek.
+    assert sched.fh1 == 19
+    assert sched.fh2 == 38
+    assert sched.tc1 != 19 and sched.bb1 != 19
 
 
 def test_tc_picks_dgw_player():
@@ -278,3 +279,26 @@ def test_tc_still_claims_a_real_dgw_over_the_deferred_fallback():
         team_id_per_player=team_id_per_player,
     )
     assert sched.tc2 == 34, f"TC2 should claim DGW34, got GW{sched.tc2}"
+
+
+def test_spent_chips_get_no_slot_and_free_their_gameweeks():
+    """The live user had played WC1, BB1 and TC1; only FH1 remains this half."""
+    a = _make_analytics_with_bgw_dgw()
+    team_id_per_player = {101: 1, 102: 2, 103: 3, 104: 4}
+    sched = make_chip_schedule(
+        analytics=a,
+        predictions_df=_make_predictions(team_id_per_player),
+        team_id_per_player=team_id_per_player,
+        chips_used=frozenset({"WC1", "BB1", "TC1"}),
+    )
+    assert sched.wc1 is None and sched.bb1 is None and sched.tc1 is None
+    assert sched.fh1 == 18
+    spent_fh = make_chip_schedule(
+        analytics=a,
+        predictions_df=_make_predictions(team_id_per_player),
+        team_id_per_player=team_id_per_player,
+        chips_used=frozenset({"FH1"}),
+    )
+    # A spent Free Hit must not truncate future horizons as a phantom FH.
+    assert spent_fh.fh1 is None
+    assert 18 not in free_hit_gws(spent_fh.as_dict())

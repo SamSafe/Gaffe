@@ -37,9 +37,18 @@ def forecast_message(store: Store, team_id: int, timezone: str) -> tuple[str, st
     d, gw = rec["decisions"], rec["context"]["gameweek"]
     bootstrap = store.bootstrap(store.snapshot_dir(team_id))
     names = {e["code"]: e.get("web_name", str(e["code"])) for e in bootstrap.get("elements", [])}
+    position = {e["code"]: e.get("element_type") for e in bootstrap.get("elements", [])}
     event = next((e for e in bootstrap.get("events", []) if e["id"] == gw), {})
     name = lambda p: names.get(p, str(p))  # noqa: E731
-    pairs = list(zip(d.get("transferred_out", []), d.get("transferred_in", []), strict=False))
+    # Like-for-like swaps: pair each sale with a purchase in the same position.
+    remaining = list(d.get("transferred_in", []))
+    pairs = []
+    for out in d.get("transferred_out", []):
+        same = [p for p in remaining if position.get(p) == position.get(out)]
+        incoming = (same or remaining or [None])[0]
+        if incoming in remaining:
+            remaining.remove(incoming)
+        pairs.append((out, incoming))
     moves = "; ".join(f"{name(o)} → {name(i)}" for o, i in pairs) or "Hold (roll the transfer)"
     hits = d.get("hits", 0)
     lines = [

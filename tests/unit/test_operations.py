@@ -535,3 +535,22 @@ def test_odds_fetch_time_comes_from_match_odds_sidecars(tmp_path, monkeypatch):
         (tmp_path / "oddsapi" / day / name).write_text(json.dumps({"fetched_at": stamp}))
     # Goalscorer pulls do not count as match odds.
     assert oddsapi.latest_fetch_time() == dt.datetime(2026, 10, 19, 5, 12, tzinfo=dt.UTC)
+
+
+def test_forecast_alert_pairs_transfers_by_position(scenario):
+    from fpl_bot.web import notify
+
+    store, _, bootstrap, rec, _, folder = scenario
+    for e in bootstrap["elements"]:
+        e["web_name"] = f"P{e['code']}"
+    write_json(folder / "bootstrap.json", bootstrap)
+    # Sell a forward (15) and a midfielder (8); buy a midfielder (16) and a forward (17).
+    bootstrap["elements"][-1].update(element_type=3)
+    bootstrap["elements"].append(dict(id=17, code=17, element_type=4, team=4, now_cost=60, web_name="P17"))
+    write_json(folder / "bootstrap.json", bootstrap)
+    rec["context"].update(team_id=718959, season_id=26)
+    rec["decisions"].update(transferred_out=[8, 15], transferred_in=[16, 17], expected_gw_points=50.0)
+    path = store.root / "data/live/recommendations/season_26/team_718959/gw_7/recommendation.json"
+    write_json(path, rec)
+    _, body = notify.forecast_message(store, 718959, "UTC")
+    assert "P8 → P16; P15 → P17" in body

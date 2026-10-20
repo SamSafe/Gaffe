@@ -69,6 +69,9 @@ def create_app(store: Store | None = None, desktop_port: int = 8080) -> FastAPI:
         )
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
+        elif request.url.path == "/" or request.url.path.startswith("/assets/"):
+            # Revalidate (cheap 304s) so an updated app never runs stale scripts.
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     @app.get("/")

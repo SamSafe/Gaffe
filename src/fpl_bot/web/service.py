@@ -347,6 +347,7 @@ def dashboard(store: Store) -> dict:
             "decisions": decisions,
             "quality": quality,
             "hold_comparison": rec.get("solve_meta", {}).get("hold_comparison"),
+            "chip_schedule": rec.get("context", {}).get("chip_schedule", {}),
             "horizon": rec.get("context", {}).get("horizon_gws", []),
         },
         "performance": {

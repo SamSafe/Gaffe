@@ -440,3 +440,11 @@ def test_season_start_forecast_without_results_and_stale_odds_warning(populated)
     write_json(rec_dir / "recommendation.json", rec)
     data = dashboard(store)
     assert any("12 hours" in w for w in data["warnings"])
+
+
+def test_page_and_assets_are_revalidated(populated):
+    store, *_ = populated
+    with TestClient(create_app(store)) as client:
+        for path in ("/", "/assets/app.js"):
+            assert client.get(path).headers["cache-control"] == "no-cache"
+        assert client.get("/api/dashboard").headers["cache-control"] == "no-store"

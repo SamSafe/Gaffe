@@ -326,6 +326,7 @@ def generate_recommendation(
         analytics=fixture_analytics,
         predictions_df=pred_df,
         team_id_per_player={p: teams[p] for p in valid_players if p in teams},
+        chips_used=frozenset(state.chips_used),
     )
     chip_schedule = chip_schedule_obj.as_dict()
 

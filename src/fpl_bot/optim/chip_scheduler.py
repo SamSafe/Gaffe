@@ -5,7 +5,8 @@ rolling MILP to play chips at those GWs. Decoupled from the MILP — no
 joint optimization, just informed heuristics.
 
 The four heuristics (per phase5_chip_dp.md §2):
-- FH1 / FH2: play at GW with most TEAMS blank in each half-season.
+- FH1 / FH2: play at GW with most TEAMS blank in each half-season; with no
+  blank, at the half's last free GW (per-half chips expire unused).
 - TC: play at GW with the highest-xPts DGW-eligible captain.
 - BB: play at GW with the most teams in DGW.
 - WC1 / WC2: play 1 GW before the chosen FH (to restructure squad for FH).
@@ -182,6 +183,7 @@ def make_chip_schedule(
     analytics: SeasonFixtureAnalytics,
     predictions_df: pl.DataFrame,
     team_id_per_player: dict[int, int],
+    chips_used: frozenset[str] = frozenset(),
 ) -> ChipSchedule:
     """Compute the chip schedule for one season (FPL 2025/26 8-slot ruleset).
 
@@ -189,10 +191,23 @@ def make_chip_schedule(
     (1st half = GW1-19, 2nd half = GW20-38).
 
     Priority order for collision resolution within a half: FH > TC > BB > WC.
+    Slots in `chips_used` are already spent: they get no GW, so they neither
+    block other chips nor truncate horizons as a phantom Free Hit.
     """
     fh_gws = first_half_gws(analytics)
     sh_gws = second_half_gws(analytics)
     used: set[int] = set()
+
+    def _fh_or_hold(half_gws: list[int], excluded: set[int]) -> int | None:
+        # Per-half chips expire. With no blank gameweek to target, an unused
+        # Free Hit is worth exactly zero, while any Free Hit is worth at least
+        # zero (a one-week optimal squad). Take the half's last free GW; the
+        # scheduler reruns weekly, so a blank that appears later claims it.
+        best = _best_fh_gw(analytics, half_gws, excluded)
+        if best is not None:
+            return best
+        candidates = [g for g in half_gws if g not in excluded and g not in used]
+        return max(candidates) if candidates else None
 
     def _pick_tc_in_half(half_gws: list[int]) -> int | None:
         # Never triple-captain out of the cold-start window: the prior cannot
@@ -248,32 +263,28 @@ def make_chip_schedule(
             bb = max(candidates) if candidates else None
         return bb
 
+    def _open(slot: str, pick):
+        if slot in chips_used:
+            return None
+        gw = pick()
+        if gw is not None:
+            used.add(gw)
+        return gw
+
     # FH first (highest priority — most timing-sensitive)
-    fh1 = _best_fh_gw(analytics, fh_gws)
-    if fh1 is not None:
-        used.add(fh1)
+    fh1 = _open("FH1", lambda: _fh_or_hold(fh_gws, set()))
     # FPL does not permit Free Hits in consecutive GWs. With one FH per half,
     # the only possible cross-slot violation is FH1 in GW19 + FH2 in GW20.
     fh2_excluded = {20} if fh1 == 19 else set()
-    fh2 = _best_fh_gw(analytics, sh_gws, excluded=fh2_excluded)
-    if fh2 is not None:
-        used.add(fh2)
+    fh2 = _open("FH2", lambda: _fh_or_hold(sh_gws, fh2_excluded))
 
     # TC1, TC2: best DGW captain in each half
-    tc1 = _pick_tc_in_half(fh_gws)
-    if tc1 is not None:
-        used.add(tc1)
-    tc2 = _pick_tc_in_half(sh_gws)
-    if tc2 is not None:
-        used.add(tc2)
+    tc1 = _open("TC1", lambda: _pick_tc_in_half(fh_gws))
+    tc2 = _open("TC2", lambda: _pick_tc_in_half(sh_gws))
 
     # BB1, BB2: best DGW (most teams) in each half
-    bb1 = _pick_bb_in_half(fh_gws)
-    if bb1 is not None:
-        used.add(bb1)
-    bb2 = _pick_bb_in_half(sh_gws)
-    if bb2 is not None:
-        used.add(bb2)
+    bb1 = _open("BB1", lambda: _pick_bb_in_half(fh_gws))
+    bb2 = _open("BB2", lambda: _pick_bb_in_half(sh_gws))
 
     # WC1 / WC2: pick the latest non-colliding GW before the corresponding
     # FH (so WC restructures squad just in time for FH). min_gw guards
@@ -299,12 +310,8 @@ def make_chip_schedule(
             return default
         return None
 
-    wc1 = _pick_wc(fh_gws, fh1, default=8, min_gw=4)
-    if wc1 is not None:
-        used.add(wc1)
-    wc2 = _pick_wc(sh_gws, fh2, default=27, min_gw=21)
-    if wc2 is not None:
-        used.add(wc2)
+    wc1 = _open("WC1", lambda: _pick_wc(fh_gws, fh1, default=8, min_gw=4))
+    wc2 = _open("WC2", lambda: _pick_wc(sh_gws, fh2, default=27, min_gw=21))
 
     return ChipSchedule(
         wc1=wc1, fh1=fh1, bb1=bb1, tc1=tc1,
