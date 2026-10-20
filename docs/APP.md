@@ -30,7 +30,9 @@ in [the live runbook](RUNBOOK_live.md).
    than six hours old (about 3 credits, plus ~10 for goalscorer odds), train on
    completed matches, simulate the upcoming horizon, and solve the squad, XI,
    captain and transfers. Generate it within a few hours of the deadline: the
-   odds and the week's transfer activity are freshest then. It can take several
+   odds and the week's transfer activity are freshest then. More than three
+   days out, the minutes model ignores this week's transfers (too few have
+   been made) and relies on its history and FPL's injury flags. It can take several
    minutes. Navigation remains usable and a job banner reports progress.
 4. **Transfer planner:** begin with the model plan, edit transfers, optionally
    choose a captain, then compare. It enforces 2/5/5/3 squad positions, max three

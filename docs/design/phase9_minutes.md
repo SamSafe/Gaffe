@@ -140,17 +140,19 @@ minutes_features.py`, `market_xpts.py`.
   read future weeks' transfers), so backtest points cannot show this gain.
 - Live counts come from bootstrap-static's `transfers_in_event/out_event`,
   stored on each status snapshot (migration 0011) and used only when the
-  snapshot falls between the previous gameweek's first kickoff and this
-  gameweek's. Six hours before the GW7 deadline they held **82%** of the
-  week's final transfers (in and out alike, 82.5% for the 30 most-sold), so
-  live rates run low and more so earlier in the week. Uncorrected for now:
-  one calibration point, and the bias leans toward "no news". Forecasts made
-  close to the deadline use the signal best. Snapshots now record the
-  counters every refresh, so the completion curve can be fitted later.
+  snapshot falls after the previous gameweek's first kickoff and before this
+  gameweek's deadline (90 minutes before first kickoff, when FPL resets the
+  counters). Owners going in are the exact previous-gameweek count.
+- Counts arrive over the week. Against element-summary totals, 2026/27
+  snapshots held 14% (GW4, 151 hours out), 10% (GW7, 146h), 60% (GW2, 66h)
+  and 82% (GW7, 6h) of the final transfers, in and out alike. Snapshots more
+  than 72 hours out are not used; inside that window counts are scaled up by
+  the interpolated completion (`pit.transfer_completion`, at most 1.7x).
 - The live event feed omits these fields; `ingest/fpl_market` refills them
   from each player's element-summary once per finished gameweek.
 - The doubtful-flag multiplier (xPts × chance_of_playing/100) is skipped for
-  the market-priced week. Managers react to the same flag, so it double
+  the market-priced week when the snapshot is within 12 hours of the
+  deadline. Managers react to the same flag, so it double
   counted: on the 37 doubtful player-weeks of 2026/27 GW2/GW4 (the weeks with
   a snapshot inside their own window), actual P(plays) was 0.405; market
   minutes alone predicted 0.378 (Brier 0.187), market × chance 0.270 (Brier

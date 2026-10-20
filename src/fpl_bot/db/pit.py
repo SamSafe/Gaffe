@@ -10,6 +10,7 @@ See docs/design/phase0.md §3.3 for the full API surface.
 from __future__ import annotations
 
 import datetime as dt
+from itertools import pairwise
 from typing import Any
 
 import polars as pl
@@ -742,6 +743,24 @@ def season_player_status_snapshot(season_id: int) -> pl.DataFrame:
 # transfer counters reset there, not at kickoff.
 DEADLINE_BEFORE_FIRST_KICKOFF = dt.timedelta(minutes=90)
 
+# Share of a gameweek's final transfers already made, by hours before the
+# deadline, measured on 2026/27 snapshots against element-summary totals
+# (GW4 151h 0.14, GW7 146h 0.10, GW2 66h 0.60, GW7 6h 0.82; in and out
+# alike). Earlier than MARKET_MAX_HOURS the counts are mostly noise, so the
+# snapshot is not used; inside it they are scaled to a full week.
+TRANSFER_COMPLETION = ((0.0, 1.0), (6.0, 0.82), (66.0, 0.60), (72.0, 0.58))
+MARKET_MAX_HOURS = 72.0
+
+
+def transfer_completion(hours_to_deadline: float) -> float:
+    """Expected share of the week's transfers made `hours_to_deadline` out."""
+    points = TRANSFER_COMPLETION
+    h = min(max(hours_to_deadline, 0.0), points[-1][0])
+    for (h0, f0), (h1, f1) in pairwise(points):
+        if h <= h1:
+            return f0 + (f1 - f0) * (h - h0) / (h1 - h0)
+    return points[-1][1]
+
 
 def gameweek_market_snapshot(season_id: int, gameweek: int) -> pl.DataFrame:
     """This gameweek's pre-deadline transfers and ownership, or empty if unknown.
@@ -753,7 +772,9 @@ def gameweek_market_snapshot(season_id: int, gameweek: int) -> pl.DataFrame:
 
     Owners going into the window come from the player's exact `selected` at his
     latest played gameweek, as in training; bootstrap only gives a percentage
-    rounded to 0.1%. Returns player_id, selected, transfers_in, transfers_out,
+    rounded to 0.1%. Counts are scaled to a full week by `transfer_completion`;
+    snapshots more than MARKET_MAX_HOURS before the deadline are not used.
+    Returns player_id, selected, transfers_in, transfers_out,
     transfers_balance, price_tenths (the fact_player_match names) and
     hours_to_deadline.
     """
@@ -801,6 +822,7 @@ def gameweek_market_snapshot(season_id: int, gameweek: int) -> pl.DataFrame:
         and r.selected is not None
         and r.recorded_at < deadline
         and (after is None or r.recorded_at > after)
+        and (deadline - r.recorded_at).total_seconds() / 3600 <= MARKET_MAX_HOURS
     ]
     if not usable:
         return pl.DataFrame()
@@ -818,17 +840,20 @@ def gameweek_market_snapshot(season_id: int, gameweek: int) -> pl.DataFrame:
     )
     out = []
     for r in usable:
-        balance = int(r.transfers_in_event) - int(r.transfers_out_event)
+        hours = (deadline - r.recorded_at).total_seconds() / 3600
+        scale = 1.0 / transfer_completion(hours)
+        t_in = round(int(r.transfers_in_event) * scale)
+        t_out = round(int(r.transfers_out_event) * scale)
         before = exact_before.get(int(r.player_id))
         out.append(
             {
                 "player_id": int(r.player_id),
-                "selected": int(before) + balance if before is not None else int(r.selected),
-                "transfers_in": int(r.transfers_in_event),
-                "transfers_out": int(r.transfers_out_event),
-                "transfers_balance": balance,
+                "selected": int(before) + t_in - t_out if before is not None else int(r.selected),
+                "transfers_in": t_in,
+                "transfers_out": t_out,
+                "transfers_balance": t_in - t_out,
                 "price_tenths": int(r.price_tenths),
-                "hours_to_deadline": (deadline - r.recorded_at).total_seconds() / 3600,
+                "hours_to_deadline": hours,
             }
         )
     return pl.DataFrame(out)

@@ -728,6 +728,8 @@ def backtest_season(
     fwd_calibration: bool = False,
     apply_suspension: bool = True,
     captain_minutes_attenuation: bool = False,
+    unpriced_eval_df: pl.DataFrame | None = None,
+    priced_weeks: int = 2,
 ) -> BacktestSeasonResult:
     """Run rolling MILP backtest for one test season.
 
@@ -737,6 +739,12 @@ def backtest_season(
     chunk-specific model. Without `walk_forward_chunk`, the boosters
     train once on `train_seasons` and predict for the whole test_season
     (current default behavior).
+
+    `unpriced_eval_df` makes the backtest live-faithful about odds: live, only
+    the next `priced_weeks` gameweeks have bookmaker prices, and later weeks use
+    team ratings. Supply predictions simulated from those ratings and every
+    decision uses them for weeks at or beyond gw + priced_weeks, including the
+    terminal-value lookahead. Without it, every week is priced (look-ahead).
     """
     if captain_quantile is not None and captain_haul_weight > 0:
         raise ValueError("captain_quantile and captain_haul_weight are mutually exclusive")
@@ -781,6 +789,21 @@ def backtest_season(
         apply_suspension=apply_suspension,
         cache_dir=cache_dir,
     )
+
+    pred_unpriced: dict[tuple[int, int], float] | None = None
+    if unpriced_eval_df is not None:
+        pred_unpriced = apply_prediction_postprocessing(
+            _per_player_per_gw_predictions(unpriced_eval_df),
+            season_id=test_season,
+            train_seasons=train_seasons,
+            position_calibration=position_calibration,
+            defcon_shrinkage=defcon_shrinkage,
+            defcon_per_position_shrinkage=defcon_per_position_shrinkage,
+            appearance_exposure_by_pgw=_per_player_per_gw_appearances(unpriced_eval_df),
+            fwd_calibration=fwd_calibration,
+            apply_suspension=apply_suspension,
+            cache_dir=cache_dir,
+        )
 
     # Actual minutes per (player, gw) — needed by the auto-sub scorer to
     # detect XI blanks (minutes == 0).
@@ -875,6 +898,17 @@ def backtest_season(
         if pid in valid_players
     ]
     pred_df = pl.DataFrame(pred_records)
+    pred_df_unpriced = (
+        pl.DataFrame(
+            [
+                {"player_id": pid, "gameweek": gw, "e_xpts": v}
+                for (pid, gw), v in pred_unpriced.items()
+                if pid in valid_players
+            ]
+        )
+        if pred_unpriced is not None
+        else None
+    )
 
     # Phase 5 chip schedule (computed once at fold start). Decouples chip
     # timing from the rolling MILP — each per-GW solve sees the chip
@@ -922,8 +956,24 @@ def backtest_season(
             continue
         is_current_free_hit = gw in free_hit_gws(chip_schedule)
 
+        # Live-faithful odds: weeks from gw + priced_weeks on are unpriced.
+        view_df = pred_df
+        if pred_df_unpriced is not None:
+            cut = gw + priced_weeks
+            view_df = pl.concat(
+                [
+                    pred_df.filter(pl.col("gameweek") < cut),
+                    pred_df_unpriced.filter(pl.col("gameweek") >= cut),
+                ]
+            )
+
+        def predicted(p: int, w: int, gw: int = gw) -> float:
+            if pred_unpriced is not None and w >= gw + priced_weeks:
+                return pred_unpriced.get((p, w), 0.0)
+            return pred_by_pgw.get((p, w), 0.0)
+
         # Candidate filter using horizon predictions + current squad
-        horizon_pred = pred_df.filter(pl.col("gameweek").is_in(horizon_gws))
+        horizon_pred = view_df.filter(pl.col("gameweek").is_in(horizon_gws))
         candidates_set = select_candidates(
             season_id=test_season,
             horizon_predictions=horizon_pred,
@@ -986,11 +1036,7 @@ def backtest_season(
                 sell_prices[p] = current
 
         # Predictions dict scoped to candidates × horizon_gws
-        pred_dict = {
-            (p, w): pred_by_pgw.get((p, w), 0.0)
-            for p in candidates
-            for w in horizon_gws
-        }
+        pred_dict = {(p, w): predicted(p, w) for p in candidates for w in horizon_gws}
 
         # Scope the template to the season under test — otherwise the rho-EO
         # term penalises alignment with TODAY's ownership, which for a past
@@ -1024,7 +1070,7 @@ def backtest_season(
             alpha=alpha,
             beta=beta,
             enable_chips=enable_chips,
-            full_predictions=None if is_current_free_hit else pred_df,
+            full_predictions=None if is_current_free_hit else view_df,
             use_saa=use_saa,
             predictions_per_scenario=pts_per_scenario_dict,
             scenario_ids=scenario_ids,

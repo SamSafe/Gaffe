@@ -57,3 +57,12 @@ def test_failed_request_keeps_what_was_fetched(tmp_path, monkeypatch):
     raw = json.loads(fpl_market.fetch_raw_element_summaries([1, 2, 3, 4], pause_s=0).read_text())
     assert raw["complete"] is False
     assert sorted(raw["history"]) == ["1", "2"]
+
+
+def test_transfer_completion_curve_scales_partial_weeks():
+    from fpl_bot.db.pit import MARKET_MAX_HOURS, transfer_completion
+
+    assert transfer_completion(0) == 1.0
+    assert abs(transfer_completion(6) - 0.82) < 1e-9
+    assert abs(transfer_completion(36) - 0.71) < 1e-9  # Halfway between 6h and 66h.
+    assert transfer_completion(500) == transfer_completion(MARKET_MAX_HOURS)
