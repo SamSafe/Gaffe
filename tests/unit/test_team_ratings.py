@@ -56,6 +56,7 @@ def test_only_unpriced_fixtures_are_filled(monkeypatch) -> None:
     monkeypatch.setattr(team_ratings.pit, "upcoming_fixtures",
                         lambda ids: fixtures.filter(pl.col("fixture_id").is_in(ids)))
     monkeypatch.setattr(team_ratings, "_priced_sides", lambda seasons: sides)
+    team_ratings._fallback_rows.cache_clear()
     out = team_ratings.market_xg_with_fallback(26, [10, 11])
     assert out.filter(pl.col("fixture_id") == 10)["is_fallback"].to_list() == [False, False]
     filled = out.filter(pl.col("fixture_id") == 11)
@@ -63,3 +64,28 @@ def test_only_unpriced_fixtures_are_filled(monkeypatch) -> None:
     away_strong = filled.filter(pl.col("team_id") == 1)["lambda_market_xg"][0]
     home_weak = filled.filter(pl.col("team_id") == 3)["lambda_market_xg"][0]
     assert away_strong > home_weak  # Opponent strength now matters.
+
+
+def test_one_unpriced_fixture_still_fits_on_the_whole_league(monkeypatch) -> None:
+    """Regression: indexing only the target teams discarded almost all history."""
+    fixtures = pl.DataFrame({"fixture_id": [11], "season_id": [26], "gameweek": [10],
+                             "home_team_id": [1], "away_team_id": [3]})
+    sides = _history().with_columns(pl.lit(26).alias("season_id"), pl.lit(5).alias("gameweek"))
+    sides = sides.filter(~((pl.col("home_team_id") == 1) & (pl.col("away_team_id") == 3))
+                         & ~((pl.col("home_team_id") == 3) & (pl.col("away_team_id") == 1)))
+    monkeypatch.setattr(team_ratings.pit, "market_xg_for_fixtures", lambda ids=None: pl.DataFrame())
+    monkeypatch.setattr(team_ratings.pit, "upcoming_fixtures", lambda ids: fixtures)
+    monkeypatch.setattr(team_ratings, "_priced_sides", lambda seasons: sides)
+    team_ratings._fallback_rows.cache_clear()
+    out = team_ratings.market_xg_with_fallback(26, [11])
+    assert out.height == 2 and out["is_fallback"].all()
+
+
+def test_no_history_keeps_callers_on_defaults(monkeypatch) -> None:
+    fixtures = pl.DataFrame({"fixture_id": [11], "season_id": [26], "gameweek": [10],
+                             "home_team_id": [1], "away_team_id": [3]})
+    monkeypatch.setattr(team_ratings.pit, "market_xg_for_fixtures", lambda ids=None: pl.DataFrame())
+    monkeypatch.setattr(team_ratings.pit, "upcoming_fixtures", lambda ids: fixtures)
+    monkeypatch.setattr(team_ratings, "_priced_sides", lambda seasons: pl.DataFrame())
+    team_ratings._fallback_rows.cache_clear()
+    assert team_ratings.market_xg_with_fallback(26, [11]).is_empty()

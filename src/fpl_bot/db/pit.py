@@ -738,16 +738,24 @@ def season_player_status_snapshot(season_id: int) -> pl.DataFrame:
     )
 
 
+# FPL's deadline is 90 minutes before a gameweek's first kickoff; the event
+# transfer counters reset there, not at kickoff.
+DEADLINE_BEFORE_FIRST_KICKOFF = dt.timedelta(minutes=90)
+
+
 def gameweek_market_snapshot(season_id: int, gameweek: int) -> pl.DataFrame:
     """This gameweek's pre-deadline transfers and ownership, or empty if unknown.
 
     bootstrap-static's event counters cover the window into the NEXT deadline,
     so the latest snapshot counts for `gameweek` only if it was recorded after
-    the previous gameweek's first kickoff (that deadline had passed) and before
-    this gameweek's first kickoff. Anything else describes another week.
+    the previous gameweek's first kickoff (its deadline had passed) and before
+    this gameweek's deadline. Anything else describes another week.
 
-    Returns player_id, selected, transfers_in, transfers_out,
-    transfers_balance, price_tenths: the fact_player_match field names.
+    Owners going into the window come from the player's exact `selected` at his
+    latest played gameweek, as in training; bootstrap only gives a percentage
+    rounded to 0.1%. Returns player_id, selected, transfers_in, transfers_out,
+    transfers_balance, price_tenths (the fact_player_match names) and
+    hours_to_deadline.
     """
     from sqlalchemy import func as _func
 
@@ -765,6 +773,7 @@ def gameweek_market_snapshot(season_id: int, gameweek: int) -> pl.DataFrame:
         start = first.get(gameweek)
         if start is None:
             return pl.DataFrame()
+        deadline = start - DEADLINE_BEFORE_FIRST_KICKOFF
         after = first.get(gameweek - 1)
         latest = (
             select(_FPS.player_id, _func.max(_FPS.recorded_at).label("max_rec"))
@@ -790,23 +799,39 @@ def gameweek_market_snapshot(season_id: int, gameweek: int) -> pl.DataFrame:
         for r in rows
         if r.transfers_in_event is not None
         and r.selected is not None
-        and r.recorded_at < start
+        and r.recorded_at < deadline
         and (after is None or r.recorded_at > after)
     ]
     if not usable:
         return pl.DataFrame()
-    return pl.DataFrame(
-        {
-            "player_id": [int(r.player_id) for r in usable],
-            "selected": [int(r.selected) for r in usable],
-            "transfers_in": [int(r.transfers_in_event) for r in usable],
-            "transfers_out": [int(r.transfers_out_event) for r in usable],
-            "transfers_balance": [
-                int(r.transfers_in_event) - int(r.transfers_out_event) for r in usable
-            ],
-            "price_tenths": [int(r.price_tenths) for r in usable],
-        }
+    played = all_player_match_with_kickoff(season_ids=[season_id])
+    exact_before = (
+        dict(
+            played.filter(pl.col("selected").is_not_null() & (pl.col("gameweek") < gameweek))
+            .sort("kickoff_utc")
+            .group_by("player_id")
+            .agg(pl.col("selected").last())
+            .iter_rows()
+        )
+        if not played.is_empty()
+        else {}
     )
+    out = []
+    for r in usable:
+        balance = int(r.transfers_in_event) - int(r.transfers_out_event)
+        before = exact_before.get(int(r.player_id))
+        out.append(
+            {
+                "player_id": int(r.player_id),
+                "selected": int(before) + balance if before is not None else int(r.selected),
+                "transfers_in": int(r.transfers_in_event),
+                "transfers_out": int(r.transfers_out_event),
+                "transfers_balance": balance,
+                "price_tenths": int(r.price_tenths),
+                "hours_to_deadline": (deadline - r.recorded_at).total_seconds() / 3600,
+            }
+        )
+    return pl.DataFrame(out)
 
 
 def latest_team_and_price_per_player(season_id: int) -> dict[int, tuple[int, int]]:

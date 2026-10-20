@@ -498,21 +498,40 @@ def test_forecast_refreshes_only_stale_odds(tmp_path, monkeypatch):
     calls, messages = [], []
     monkeypatch.setattr(worker, "refresh_bookmaker_odds", lambda s: calls.append(s))
     monkeypatch.setattr(worker, "progress", lambda value, message: messages.append(message))
-    monkeypatch.setattr(worker, "latest_odds_recorded_at", lambda: now - dt.timedelta(hours=7))
+    monkeypatch.setattr(worker, "latest_odds_fetch", lambda: now - dt.timedelta(hours=7))
     monkeypatch.setattr(settings, "odds_api_key", None)
     worker.ensure_fresh_odds(store, now)
     assert calls == []  # No key, no requests.
     monkeypatch.setattr(settings, "odds_api_key", "key")
     worker.ensure_fresh_odds(store, now)
     assert calls == [store]
-    monkeypatch.setattr(worker, "latest_odds_recorded_at", lambda: now - dt.timedelta(hours=2))
+    monkeypatch.setattr(worker, "latest_odds_fetch", lambda: now - dt.timedelta(hours=2))
     worker.ensure_fresh_odds(store, now)
     assert len(calls) == 1  # Fresh enough.
 
     def offline(s):
         raise httpx.ConnectError("offline")
 
-    monkeypatch.setattr(worker, "latest_odds_recorded_at", lambda: None)
+    monkeypatch.setattr(worker, "latest_odds_fetch", lambda: None)
     monkeypatch.setattr(worker, "refresh_bookmaker_odds", offline)
     worker.ensure_fresh_odds(store, now)
     assert "last saved odds" in messages[-1]
+
+
+def test_odds_fetch_time_comes_from_match_odds_sidecars(tmp_path, monkeypatch):
+    import json
+
+    from fpl_bot.config import settings
+    from fpl_bot.ingest import oddsapi
+
+    monkeypatch.setattr(settings, "raw_data_dir", tmp_path)
+    assert oddsapi.latest_fetch_time() is None
+    for day, name, stamp in [
+        ("2026-10-17", "soccer_epl_h2h+spreads+totals.meta.json", "2026-10-17T04:01:07+00:00"),
+        ("2026-10-19", "soccer_epl_h2h+spreads+totals.meta.json", "2026-10-19T05:12:00+00:00"),
+        ("2026-10-20", "soccer_epl_player_props.meta.json", "2026-10-20T09:00:00+00:00"),
+    ]:
+        (tmp_path / "oddsapi" / day).mkdir(parents=True, exist_ok=True)
+        (tmp_path / "oddsapi" / day / name).write_text(json.dumps({"fetched_at": stamp}))
+    # Goalscorer pulls do not count as match odds.
+    assert oddsapi.latest_fetch_time() == dt.datetime(2026, 10, 19, 5, 12, tzinfo=dt.UTC)

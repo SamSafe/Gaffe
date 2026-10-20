@@ -23,6 +23,7 @@ closed 67-81% of the gap between the constants and the market itself
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 import polars as pl
@@ -83,7 +84,9 @@ def fit_team_ratings(history: pl.DataFrame, teams: list[int]) -> TeamRatings:
     return TeamRatings(beta=beta, index=index, cs_factor=float(np.mean(cs_ratio)))
 
 
-def _priced_sides(season_ids: list[int]) -> pl.DataFrame:
+@lru_cache(maxsize=4)
+def _priced_sides(season_ids: tuple[int, ...]) -> pl.DataFrame:
+    # Cached per process: one forecast asks for the same history several times.
     market = pit.market_xg_for_fixtures()
     if market.is_empty():
         return pl.DataFrame()
@@ -120,10 +123,18 @@ def market_xg_with_fallback(season_id: int, fixture_ids: list[int]) -> pl.DataFr
     )
     if not missing:
         return out
-    targets = pit.upcoming_fixtures(missing)
-    history = _priced_sides([season_id - 1, season_id])
-    if targets.is_empty() or history.is_empty():
+    fallback = _fallback_rows(season_id, tuple(sorted(missing)))
+    if fallback.is_empty():
         return out
+    return fallback if out.is_empty() else pl.concat([out, fallback], how="vertical_relaxed")
+
+
+@lru_cache(maxsize=8)
+def _fallback_rows(season_id: int, missing: tuple[int, ...]) -> pl.DataFrame:
+    targets = pit.upcoming_fixtures(list(missing))
+    history = _priced_sides((season_id - 1, season_id))
+    if targets.is_empty() or history.is_empty():
+        return pl.DataFrame()
     first_gw = int(targets["gameweek"].min())
     history = history.filter(
         (pl.col("season_id") == season_id)
@@ -134,8 +145,17 @@ def market_xg_with_fallback(season_id: int, fixture_ids: list[int]) -> pl.DataFr
         .otherwise(first_gw + 38 - pl.col("gameweek"))
         .alias("age")
     )
-    teams = sorted(set(targets["home_team_id"].to_list()) | set(targets["away_team_id"].to_list()))
-    ratings = fit_team_ratings(history, teams)
+    # Every team in the history anchors the scale, not only the target teams.
+    teams = sorted(
+        set(history["home_team_id"].to_list())
+        | set(history["away_team_id"].to_list())
+        | set(targets["home_team_id"].to_list())
+        | set(targets["away_team_id"].to_list())
+    )
+    try:
+        ratings = fit_team_ratings(history, teams)
+    except (ValueError, np.linalg.LinAlgError):
+        return pl.DataFrame()  # Callers keep their neutral defaults.
     rows = []
     for t in targets.iter_rows(named=True):
         lh = ratings.expected_goals(t["home_team_id"], t["away_team_id"], home=True)
@@ -146,5 +166,4 @@ def market_xg_with_fallback(season_id: int, fixture_ids: list[int]) -> pl.DataFr
             {"fixture_id": t["fixture_id"], "team_id": t["away_team_id"],
              "lambda_market_xg": la, "cs_prob_market": ratings.clean_sheet(lh)},
         ]
-    fallback = pl.DataFrame(rows).with_columns(pl.lit(True).alias("is_fallback"))
-    return fallback if out.is_empty() else pl.concat([out, fallback], how="vertical_relaxed")
+    return pl.DataFrame(rows).with_columns(pl.lit(True).alias("is_fallback"))

@@ -230,6 +230,27 @@ def parse_raw_fpl_event_live_matches(
         "skipped_unresolved_player": 0,
         "skipped_no_fixture": 0,
     }
+    # The live feed lacks transfers/ownership. A corrected re-ingest must carry
+    # forward any backfilled values (ingest/fpl_market), or the newer row would
+    # hide them and force another full element-summary pass.
+    with session_scope() as s:
+        market_rows = s.execute(
+            FactPlayerMatch.__table__.select()
+            .where(
+                FactPlayerMatch.fixture_id.in_(list(fixture_by_id))
+                & FactPlayerMatch.selected.is_not(None)
+            )
+            .order_by(FactPlayerMatch.recorded_at)
+        ).all()
+    carried = {
+        (int(r.player_id), int(r.fixture_id)): {
+            "transfers_in": r.transfers_in,
+            "transfers_out": r.transfers_out,
+            "transfers_balance": r.transfers_balance,
+            "selected": r.selected,
+        }
+        for r in market_rows
+    }
     with session_scope() as s:
         for element in payload.get("elements", []) or []:
             counts["elements_seen"] += 1
@@ -307,6 +328,7 @@ def parse_raw_fpl_event_live_matches(
                     stats.get("expected_goals_conceded")
                 ),
                 starts=_coerce_int(stats.get("starts")),
+                **carried.get((player_id, fixture_id), {}),
             ).on_conflict_do_nothing(
                 index_elements=["player_id", "fixture_id", "recorded_at"]
             )

@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from fpl_bot.web.app import create_app
 from fpl_bot.web.schemas import PlanRequest, Preferences
 from fpl_bot.web.service import dashboard, evaluate_plan
-from fpl_bot.web.store import Store, write_json
+from fpl_bot.web.store import Store, read_json, timestamp, write_json
 from fpl_bot.web.worker import reconstruct_state
 
 
@@ -425,3 +425,18 @@ def test_background_job_rejects_overlap_and_hides_stderr(tmp_path, monkeypatch):
     result = manager.get(job["id"])
     assert result["status"] == "completed"
     assert "SHOULD_NEVER" not in json.dumps(manager.list())
+
+
+def test_season_start_forecast_without_results_and_stale_odds_warning(populated):
+    store, _, _, _, rec_dir = populated
+    rec = read_json(rec_dir / "recommendation.json")
+    generated = timestamp(rec["generated_at"])
+    rec["solve_meta"] = {
+        "data_quality": {
+            "completed_results_through_gw": None,  # MAX over zero rows at a season opener.
+            "odds_fetched_at": (generated - dt.timedelta(hours=13)).isoformat(),
+        }
+    }
+    write_json(rec_dir / "recommendation.json", rec)
+    data = dashboard(store)
+    assert any("12 hours" in w for w in data["warnings"])

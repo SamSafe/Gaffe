@@ -267,6 +267,25 @@ def _parse_api_timestamp(value: object) -> dt.datetime | None:
     return parsed.astimezone(dt.UTC)
 
 
+def latest_fetch_time(sport: str = EPL_SPORT_KEY) -> dt.datetime | None:
+    """When match odds were last fetched, from the sidecars.
+
+    Unlike `fact_odds.recorded_at`, this advances even when every quote is
+    unchanged and the upsert only touches existing rows.
+    """
+    times = []
+    for meta_path in (settings.raw_dir / "oddsapi").glob(f"*/{sport}_*.meta.json"):
+        if "player_props" in meta_path.name:
+            continue
+        try:
+            parsed = _parse_api_timestamp(json.loads(meta_path.read_text()).get("fetched_at"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if parsed is not None:
+            times.append(parsed)
+    return max(times, default=None)
+
+
 def _raw_fetched_at(raw_path: Path) -> dt.datetime:
     """Read the audited fetch time, falling back to the raw file mtime."""
     meta_path = raw_path.with_suffix(".meta.json")

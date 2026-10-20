@@ -276,11 +276,11 @@ def dashboard(store: Store) -> dict:
     if saved_state and saved_state.get("gameweek") != gw:
         warnings.append("Squad snapshot is from an earlier deadline. Refresh before planning.")
     latest_final = max((e["id"] for e in events if e.get("data_checked")), default=0)
-    if rec and quality.get("completed_results_through_gw", 0) < latest_final:
+    if rec and (quality.get("completed_results_through_gw") or 0) < latest_final:
         warnings.append(
             f"This forecast predates finalized GW{latest_final} results. Generate a new forecast."
         )
-    odds_at = timestamp(quality.get("odds_recorded_at"))
+    odds_at = timestamp(quality.get("odds_fetched_at"))
     if (
         rec
         and odds_at.year >= 2000

@@ -45,22 +45,53 @@ def missing_market_gameweeks(season_id: int, tolerance: float = 0.2) -> list[int
 
 
 def fetch_raw_element_summaries(element_ids: list[int], pause_s: float = 0.1) -> Path:
-    """Fetch each player's FPL history into one raw file. ~800 polite requests."""
+    """Fetch each player's FPL history into one raw file, polite and resumable.
+
+    A failed request (rate limit, outage) stops the pass but keeps everything
+    already fetched, so the next pass only needs the players still missing.
+    """
     raw_path = _today_dir("fpl_api") / "element_summaries.json"
     histories: dict[str, list[dict]] = {}
+    complete = True
     with httpx.Client(
         headers={"User-Agent": settings.user_agent},
         timeout=settings.request_timeout_seconds,
     ) as client:
         for element_id in element_ids:
-            r = client.get(f"{FPL_BASE}/element-summary/{element_id}/")
-            r.raise_for_status()
+            try:
+                r = client.get(f"{FPL_BASE}/element-summary/{element_id}/")
+                r.raise_for_status()
+            except httpx.HTTPError:
+                complete = False
+                break
             histories[str(element_id)] = r.json().get("history", [])
             time.sleep(pause_s)
     raw_path.write_text(
-        json.dumps({"fetched_at": dt.datetime.now(dt.UTC).isoformat(), "history": histories})
+        json.dumps(
+            {
+                "fetched_at": dt.datetime.now(dt.UTC).isoformat(),
+                "complete": complete,
+                "history": histories,
+            }
+        )
     )
     return raw_path
+
+
+def elements_missing_market(season_id: int, element_ids: list[int]) -> list[int]:
+    """The subset of `element_ids` whose played rows still lack market fields."""
+    rows = pit.all_player_match_with_kickoff(season_ids=[season_id])
+    if rows.is_empty():
+        return []
+    missing = set(rows.filter(pl.col("selected").is_null())["player_id"].to_list())
+    with session_scope() as s:
+        pid_by_element = {
+            int(r.fpl_element_id): int(r.player_id)
+            for r in s.execute(
+                select(DimPlayerSeasonXref).where(DimPlayerSeasonXref.season_id == season_id)
+            ).scalars()
+        }
+    return [e for e in element_ids if pid_by_element.get(e) in missing]
 
 
 def parse_raw_element_summaries(raw_path: Path, season_id: int) -> dict[str, int]:
@@ -120,5 +151,6 @@ def backfill_market_history(season_id: int, element_ids: list[int]) -> dict[str,
     missing = missing_market_gameweeks(season_id)
     if not missing:
         return {"missing_gameweeks": 0, "fact_player_match": 0}
-    counts = parse_raw_element_summaries(fetch_raw_element_summaries(element_ids), season_id)
-    return {"missing_gameweeks": len(missing), **counts}
+    targets = elements_missing_market(season_id, element_ids)
+    counts = parse_raw_element_summaries(fetch_raw_element_summaries(targets), season_id)
+    return {"missing_gameweeks": len(missing), "requested": len(targets), **counts}

@@ -271,14 +271,10 @@ def refresh_bookmaker_odds(store: Store):
     collect_player_props(store)
 
 
-def latest_odds_recorded_at() -> dt.datetime | None:
-    from sqlalchemy import func, select
+def latest_odds_fetch() -> dt.datetime | None:
+    from fpl_bot.ingest.oddsapi import latest_fetch_time
 
-    from fpl_bot.db.models import FactOdds
-    from fpl_bot.db.session import session_scope
-
-    with session_scope() as s:
-        return s.scalar(select(func.max(FactOdds.recorded_at)))
+    return latest_fetch_time()
 
 
 def ensure_fresh_odds(store: Store, now: dt.datetime | None = None):
@@ -289,12 +285,13 @@ def ensure_fresh_odds(store: Store, now: dt.datetime | None = None):
     if not settings.odds_api_key:
         return
     now = now or dt.datetime.now(dt.UTC)
-    latest = latest_odds_recorded_at()
+    latest = latest_odds_fetch()
     if latest is not None and now - latest < ODDS_MAX_AGE:
         return
     try:
         refresh_bookmaker_odds(store)
-    except (httpx.HTTPError, RuntimeError, ValueError):
+    except Exception:
+        # Any refresh failure (network, payload, parse or DB) falls back to saved odds.
         progress(
             12, "Bookmaker odds could not be refreshed. The forecast uses the last saved odds."
         )
@@ -417,6 +414,7 @@ def bot(store: Store, team_id: int, horizon: int, freeze: bool = False):
         n_iterations=1000,
         output_dir=output,
         state_override=state,
+        compare_hold=False,
     )
     rec = read_json(output / "recommendation.json")
     ledger.propose(rec, bootstrap, dt.datetime.now(dt.UTC))

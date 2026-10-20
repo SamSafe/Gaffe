@@ -65,6 +65,7 @@ def _forecast_gw4(history, monkeypatch, schedule):
     }))
     monkeypatch.setattr(minutes.pit, "season_start_kickoff", lambda _: history["kickoff_utc"].min())
     monkeypatch.setattr(minutes.pit, "team_fixture_kickoffs", lambda _: schedule)
+    monkeypatch.setattr(minutes.pit, "gameweek_market_snapshot", lambda *_: pl.DataFrame())
     return minutes.build_prediction_feature_table(26, [4]).sort("player_id")
 
 

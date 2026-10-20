@@ -69,6 +69,11 @@ class RecommendationContext:
     candidates_count: int
 
 
+DOUBT_PRICED_WITHIN_HOURS = 12.0
+# Simulated predictions per process, keyed by every input that shapes them.
+_PREDICTIONS: dict[tuple, pl.DataFrame] = {}
+
+
 def _attenuate_predictions(
     pred_by_pgw: dict[tuple[int, int], float],
     overrides: LiveStatusOverrides,
@@ -118,6 +123,7 @@ def generate_recommendation(
     cache_dir: Path = Path("data/cache/xpts_predictions"),
     output_dir: Path | None = None,
     state_override: BacktestState | None = None,
+    compare_hold: bool = True,
 ) -> tuple[Path, Path]:
     """Run the full Phase 6 pipeline and write recommendation files.
 
@@ -188,16 +194,28 @@ def generate_recommendation(
                     f"applying {len(expected_minutes)} manual expected-minutes override(s)"
                 )
                 print(console_note)
-            predict_df = run_predict_only(
-                test_season=season_id,
-                train_seasons=train_seasons,
-                upcoming_fixture_ids=upcoming_ids,
-                availability_by_pgw=news_attenuator,
-                expected_minutes_by_pgw=expected_minutes,
-                n_iterations=n_iterations,
-                seed=42,
-                prop_shadow_out=shadow_dir / "player_prop_shadow.parquet",
+            # The bot's plan follows the user's forecast in the same worker
+            # process and needs identical predictions; only the squad differs.
+            key = (
+                season_id,
+                tuple(train_seasons),
+                tuple(sorted(upcoming_ids)),
+                tuple(sorted((news_attenuator or {}).items())),
+                tuple(sorted((expected_minutes or {}).items())),
+                n_iterations,
             )
+            if key not in _PREDICTIONS:
+                _PREDICTIONS[key] = run_predict_only(
+                    test_season=season_id,
+                    train_seasons=train_seasons,
+                    upcoming_fixture_ids=upcoming_ids,
+                    availability_by_pgw=news_attenuator,
+                    expected_minutes_by_pgw=expected_minutes,
+                    n_iterations=n_iterations,
+                    seed=42,
+                    prop_shadow_out=shadow_dir / "player_prop_shadow.parquet",
+                )
+            predict_df = _PREDICTIONS[key]
             if not predict_df.is_empty():
                 if eval_df is None or eval_df.is_empty():
                     eval_df = predict_df
@@ -259,9 +277,14 @@ def generate_recommendation(
             unexclude_returning.add(ex.player_id)
     from fpl_bot.eval.bps_eval import LIVE_MINUTES_MARKET
 
-    market_priced = LIVE_MINUTES_MARKET and not pit.gameweek_market_snapshot(
-        season_id, gameweek
-    ).is_empty()
+    # Within 12 hours of the deadline most of the week's transfers are in (82%
+    # at six hours for GW7), so the crowd signal can stand in for the flag.
+    snapshot = pit.gameweek_market_snapshot(season_id, gameweek) if LIVE_MINUTES_MARKET else None
+    market_priced = (
+        snapshot is not None
+        and not snapshot.is_empty()
+        and float(snapshot["hours_to_deadline"].max()) <= DOUBT_PRICED_WITHIN_HOURS
+    )
     pred_by_pgw_filtered = _attenuate_predictions(
         pred_by_pgw,
         overrides,
@@ -396,7 +419,11 @@ def generate_recommendation(
     )
 
     decisions, meta = solve_rolling_horizon(inputs, time_limit_s=180)
-    if decisions.transferred_in and decisions.chip_played not in {"WC1", "WC2", "FH1", "FH2"}:
+    if (
+        compare_hold
+        and decisions.transferred_in
+        and decisions.chip_played not in {"WC1", "WC2", "FH1", "FH2"}
+    ):
         meta["hold_comparison"] = _hold_comparison(inputs, meta)
 
     meta["rho"] = rho
@@ -405,7 +432,7 @@ def generate_recommendation(
     from sqlalchemy import func as sa_func
     from sqlalchemy import select
 
-    from fpl_bot.db.models import DimFixture, FactMarketXg, FactOdds, FactPlayerMatch
+    from fpl_bot.db.models import DimFixture, FactMarketXg, FactPlayerMatch
     from fpl_bot.db.session import session_scope
 
     with session_scope() as s:
@@ -418,16 +445,18 @@ def generate_recommendation(
             .where(DimFixture.season_id == season_id, DimFixture.gameweek.in_(target_horizon_gws))
             .group_by(DimFixture.gameweek).order_by(DimFixture.gameweek)
         ).all()
-        odds_recorded_at = s.scalar(select(sa_func.max(FactOdds.recorded_at)))
         latest_results_gw = s.scalar(
             select(sa_func.max(DimFixture.gameweek))
             .join(FactPlayerMatch, FactPlayerMatch.fixture_id == DimFixture.fixture_id)
             .where(DimFixture.season_id == season_id)
         )
+    from fpl_bot.ingest.oddsapi import latest_fetch_time
+
+    odds_fetched_at = latest_fetch_time()
     meta["data_quality"] = {
         "training_policy": TRAINING_POLICY_VERSION,
         "completed_results_through_gw": latest_results_gw,
-        "odds_recorded_at": odds_recorded_at.isoformat() if odds_recorded_at else None,
+        "odds_fetched_at": odds_fetched_at.isoformat() if odds_fetched_at else None,
         "simulation_iterations": n_iterations,
         "train_seasons": train_seasons,
         "bookmaker_coverage": {

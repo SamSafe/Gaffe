@@ -492,7 +492,9 @@ def build_prediction_feature_table(
     market = pit.gameweek_market_snapshot(test_season, target_gw)
     if not market.is_empty():
         cross = cross.join(
-            market.with_columns(pl.lit(target_gw, dtype=cross.schema["gameweek"]).alias("gameweek")),
+            market.drop("hours_to_deadline", strict=False).with_columns(
+                pl.lit(target_gw, dtype=cross.schema["gameweek"]).alias("gameweek")
+            ),
             on=["player_id", "gameweek"],
             how="left",
         )
