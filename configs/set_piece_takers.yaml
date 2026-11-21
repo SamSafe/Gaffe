@@ -1,312 +1,60 @@
-# Manually curated set-piece takers per team per season.
-#
-# Format:
-#   <season_id>:
-#     <team_short_name>:
-#       penalty: <web_name>          # primary PK taker (single)
-#       direct_fk: [<web_name>, ...] # ranked direct-FK takers
-#       corner: [<web_name>, ...]    # ranked corner takers
-#
-# Identifier is FPL web_name (e.g. "M.Salah"). Resolution is scoped by season
-# and club, so duplicate display names cannot select a player from another team.
-#
-# Coverage (v1): 2024-25 only, primary takers for the 20 PL teams. Earlier
-# seasons need manual backfill before the goals/assists model trains on them.
-# Until backfilled, players covered here have penalty/FK/corner flags only
-# from the season(s) listed below; older-season rows inherit no flag.
-#
-# Source: public knowledge / FPL community trackers as of 2024-25 mid-season.
-# Primary cross-checks: livefpl.net set-piece notes, FFScout, public match
-# reporting. Spot-correctable; flag obvious errors.
-
-# Historical backfill: penalty takers only for seasons 19-23. Direct-FK and
-# corner takers are not yet backfilled (lower modelling priority; can extend
-# later). Best-effort accuracy from public match records; spot-correctable.
-
-19:
-  Arsenal: {penalty: Aubameyang}
-  Aston Villa: {penalty: Grealish}
-  Bournemouth: {penalty: Wilson}
-  Brighton: {penalty: Maupay}
-  Burnley: {penalty: Wood}
-  Chelsea: {penalty: Jorginho}
-  Crystal Palace: {penalty: Milivojević}
-  Everton: {penalty: Sigurdsson}
-  Leicester: {penalty: Vardy}
-  Liverpool: {penalty: M.Salah}
-  Man City: {penalty: Agüero}
-  Man Utd: {penalty: Bruno Fernandes}
-  Newcastle: {penalty: Joelinton}
-  Norwich: {penalty: Pukki}
-  Sheffield Utd: {penalty: Norwood}
-  Southampton: {penalty: Ings}
-  Spurs: {penalty: Kane}
-  Watford: {penalty: Deeney}
-  West Ham: {penalty: Noble}
-  Wolves: {penalty: Jiménez}
-
-20:
-  Arsenal: {penalty: Aubameyang}
-  Aston Villa: {penalty: Watkins}
-  Brighton: {penalty: Maupay}
-  Burnley: {penalty: Wood}
-  Chelsea: {penalty: Jorginho}
-  Crystal Palace: {penalty: Milivojević}
-  Everton: {penalty: Sigurdsson}
-  Fulham: {penalty: Cavaleiro}
-  Leeds: {penalty: Bamford}
-  Leicester: {penalty: Vardy}
-  Liverpool: {penalty: M.Salah}
-  Man City: {penalty: De Bruyne}
-  Man Utd: {penalty: Bruno Fernandes}
-  Newcastle: {penalty: Wilson}
-  Sheffield Utd: {penalty: Norwood}
-  Southampton: {penalty: Ings}
-  Spurs: {penalty: Kane}
-  West Brom: {penalty: Pereira}
-  West Ham: {penalty: Antonio}
-  Wolves: {penalty: Jiménez}
-
-21:
-  Arsenal: {penalty: Lacazette}
-  Aston Villa: {penalty: Watkins}
-  Brentford: {penalty: Toney}
-  Brighton: {penalty: Maupay}
-  Burnley: {penalty: Wood}
-  Chelsea: {penalty: Jorginho}
-  Crystal Palace: {penalty: Zaha}
-  Everton: {penalty: Calvert-Lewin}
-  Leeds: {penalty: Bamford}
-  Leicester: {penalty: Vardy}
-  Liverpool: {penalty: M.Salah}
-  Man City: {penalty: Mahrez}
-  Man Utd: {penalty: Bruno Fernandes}
-  Newcastle: {penalty: Wilson}
-  Norwich: {penalty: Pukki}
-  Southampton: {penalty: Ward-Prowse}
-  Spurs: {penalty: Kane}
-  Watford: {penalty: King}
-  West Ham: {penalty: Antonio}
-  Wolves: {penalty: Jiménez}
-
-22:
-  Arsenal: {penalty: Saka}
-  Aston Villa: {penalty: Watkins}
-  Bournemouth: {penalty: Solanke}
-  Brentford: {penalty: Toney}
-  Brighton: {penalty: Mac Allister}
-  Chelsea: {penalty: Jorginho}
-  Crystal Palace: {penalty: Zaha}
-  Everton: {penalty: Calvert-Lewin}
-  Fulham: {penalty: Mitrović}
-  Leeds: {penalty: Bamford}
-  Leicester: {penalty: Maddison}
-  Liverpool: {penalty: M.Salah}
-  Man City: {penalty: Haaland}
-  Man Utd: {penalty: Bruno Fernandes}
-  Newcastle: {penalty: Wilson}
-  Nott'm Forest: {penalty: Awoniyi}
-  Southampton: {penalty: Ward-Prowse}
-  Spurs: {penalty: Kane}
-  West Ham: {penalty: Antonio}
-  Wolves: {penalty: Neves}
-
-23:
-  Arsenal: {penalty: Saka}
-  Aston Villa: {penalty: Watkins}
-  Bournemouth: {penalty: Solanke}
-  Brentford: {penalty: Toney}
-  Brighton: {penalty: João Pedro}
-  Burnley: {penalty: Cullen}
-  Chelsea: {penalty: Palmer}
-  Crystal Palace: {penalty: Eze}
-  Everton: {penalty: Calvert-Lewin}
-  Fulham: {penalty: Pereira}
-  Liverpool: {penalty: M.Salah}
-  Luton: {penalty: Adebayo}
-  Man City: {penalty: Haaland}
-  Man Utd: {penalty: Bruno Fernandes}
-  Newcastle: {penalty: Isak}
-  Nott'm Forest: {penalty: Hudson-Odoi}
-  Sheffield Utd: {penalty: McAtee}
-  Spurs: {penalty: Son}
-  West Ham: {penalty: Bowen}
-  Wolves: {penalty: Cunha}
-
-24:
-  Arsenal:
-    penalty: Saka
-    direct_fk: [Saka, Ødegaard, Rice]
-    corner: [Rice, Ødegaard, Saka]
-  Aston Villa:
-    penalty: Watkins
-    direct_fk: [McGinn, Tielemans]
-    corner: [Bailey, Rogers, Tielemans]
-  Bournemouth:
-    penalty: Solanke
-    direct_fk: [Tavernier, Cook]
-    corner: [Tavernier, Semenyo]
-  Brentford:
-    penalty: Mbeumo
-    direct_fk: [Mbeumo, Janelt]
-    corner: [Mbeumo, Damsgaard]
-  Brighton:
-    penalty: João Pedro
-    direct_fk: [Estupiñán, Mitoma]
-    corner: [Mitoma, Adingra, Estupiñán]
-  Chelsea:
-    penalty: Palmer
-    direct_fk: [Palmer, Enzo]
-    corner: [Palmer, Enzo, Sancho]
-  Crystal Palace:
-    penalty: Mateta
-    direct_fk: [Eze, Mitchell]
-    corner: [Eze, Mitchell, Sarr]
-  Everton:
-    penalty: Ndiaye
-    direct_fk: [Ndiaye, Garner]
-    corner: [Garner, Ndiaye, McNeil]
-  Fulham:
-    penalty: Muniz
-    direct_fk: [Andreas, Iwobi]
-    corner: [Iwobi, Andreas, Robinson]
-  Ipswich:
-    penalty: Delap
-    direct_fk: [Hutchinson, Davis]
-    corner: [Hutchinson, Davis, Burns]
-  Leicester:
-    penalty: Vardy
-    direct_fk: [Mavididi, Ayew]
-    corner: [Mavididi, Ayew]
-  Liverpool:
-    penalty: M.Salah
-    direct_fk: [M.Salah, Robertson]
-    corner: [Robertson, M.Salah, Mac Allister]
-  Man City:
-    penalty: Haaland
-    direct_fk: [Foden, De Bruyne]
-    corner: [De Bruyne, Foden, Bernardo]
-  Man Utd:
-    penalty: Bruno Fernandes
-    direct_fk: [Bruno Fernandes, Eriksen]
-    corner: [Bruno Fernandes, Eriksen]
-  Newcastle:
-    penalty: Isak
-    direct_fk: [Trippier, Joelinton]
-    corner: [Trippier, Gordon, Joelinton]
-  Nott'm Forest:
-    penalty: Wood
-    direct_fk: [Gibbs-White, Yates]
-    corner: [Gibbs-White, Anderson, Hudson-Odoi]
-  Southampton:
-    penalty: Aribo
-    direct_fk: [Aribo, Sugawara]
-    corner: [Sugawara, Walker-Peters, Aribo]
-  Spurs:
-    penalty: Solanke
-    direct_fk: [Maddison, Son]
-    corner: [Maddison, Son, Kulusevski]
-  West Ham:
-    penalty: Bowen
-    direct_fk: [Bowen, Ward-Prowse]
-    corner: [Ward-Prowse, Bowen, Cresswell]
-  Wolves:
-    penalty: Cunha
-    direct_fk: [Cunha, Sarabia]
-    corner: [Sarabia, Cunha, Aït-Nouri]
-
-# Deliberately empty for 2025-26: `is_corner_taker` / `is_fk_taker` were 0 for
-# every 25/26 player, so the published 25/26 backtest numbers were measured
-# with these features inert. Left empty rather than backfilled so that
-# baseline stays reproducible — backfill it only alongside a re-measurement.
-25: {}
-
-# 2026-27, generated from the FPL API's own set-piece order fields
-# (`penalties_order` / `direct_freekicks_order` /
-# `corners_and_indirect_freekicks_order`) rather than hand-curated, via
-# `uv run python scripts/gen_set_piece_takers.py --season-id 26`.
-# Re-run and re-paste when FPL updates roles (their pre-season list is a
-# guess for unsettled teams, and promoted clubs' orders shift once they play).
-# 20 of 20 teams have FPL-listed takers.
-# Refreshed from official bootstrap, 2026-10-11.
+# Generated from set_piece_observations.csv by scripts/gen_set_piece_takers.py
 26:
   Arsenal:
-    penalty: Saka
-    direct_fk: [Rice, Saka, Eze, Ødegaard]
-    corner: [Rice, Saka, Tzolis, Bruno G., Madueke]
+    corner:
+    - Ødegaard
+    - Rice
   Aston Villa:
-    penalty: Buendía
-    direct_fk: [Buendía]
-    corner: [McGinn, Buendía, Cash, Barkley]
+    penalty: McGinn
   Bournemouth:
-    penalty: Kroupi.Jr
-    direct_fk: [Tavernier, Kluivert, Brooks, Scott]
-    corner: [Tavernier, Scott, Kluivert, Brooks]
+    corner:
+    - Tavernier
   Brentford:
     penalty: Thiago
-    direct_fk: [Lewis-Potter, Jensen, Damsgaard]
-    corner: [Jensen, Damsgaard, Janelt, O.Dango, Lewis-Potter]
   Brighton:
     penalty: Groß
-    direct_fk: [Groß, Ayari, Dunk, De Cuyper, Gomez]
-    corner: [Groß, De Cuyper, F.Kadıoğlu, Ayari, Minteh]
   Chelsea:
+    corner:
+    - Estêvão
     penalty: Palmer
-    direct_fk: [James, Palmer, Rogers, Neto]
-    corner: [James, Neto, Henderson, Rogers, Estêvão, Gusto]
   Coventry City:
-    penalty: Wright
-    direct_fk: [Rudoni, Torp]
-    corner: [Grimes, Torp, Tchaouna, Hamer, Rudoni]
+    penalty: Rudoni
   Crystal Palace:
-    penalty: Mateta
-    direct_fk: [Yeremy, Devenny]
-    corner: [Yeremy, Wharton, Kamada, Hughes]
+    corner:
+    - Wharton
   Everton:
-    penalty: Barry
-    direct_fk: [Garner]
-    corner: [Garner, Dewsbury-Hall, Hackney]
+    corner:
+    - Garner
   Fulham:
-    penalty: Gonzalo
-    direct_fk: [Iwobi]
-    corner: [Iwobi, Bobb, Sessegnon, Kevin]
+    corner:
+    - Iwobi
+    - Bobb
   Hull City:
     penalty: McBurnie
-    direct_fk: [Giles, Belloumi]
-    corner: [Slater, Belloumi, Giles]
   Ipswich Town:
+    direct_fk:
+    - Enciso
     penalty: Clarke
-    direct_fk: [Núñez, Davis, Clarke]
-    corner: [Lukić, Fatawu, Núñez, Clarke, Philogene]
   Leeds:
     penalty: Calvert-Lewin
-    direct_fk: [Stach, Wilson, Longstaff, Aaronson]
-    corner: [Stach, Wilson, Longstaff, Tanaka]
   Liverpool:
-    penalty: Szoboszlai
-    direct_fk: [Szoboszlai, Wirtz]
-    corner: [Szoboszlai, Wirtz, Gakpo, Tsimikas]
+    corner:
+    - Szoboszlai
   Man City:
+    corner:
+    - Foden
     penalty: Haaland
-    direct_fk: [Cherki, Foden, Enzo]
-    corner: [Cherki, Foden, Anderson, Enzo]
   Man Utd:
+    corner:
+    - B.Fernandes
     penalty: B.Fernandes
-    direct_fk: [B.Fernandes, Mbeumo, Rashford, Mount]
-    corner: [B.Fernandes, Mbeumo, Shaw, Amad]
   Newcastle:
-    penalty: Osula
-    direct_fk: [Hall, Schär, Dedić, Osula]
-    corner: [Hall, Elanga, Barnes, J.Murphy, L.Miley]
-  'Nott''m Forest':
-    penalty: Gibbs-White
-    direct_fk: [Gibbs-White, Murillo, N.Williams, Hudson-Odoi]
-    corner: [McAtee, N.Williams, Schlager]
+    corner:
+    - Hall
+  Nott'm Forest:
+    penalty: Igor Jesus
   Spurs:
-    penalty: Solanke
-    direct_fk: [Pedro Porro, Xavi, Tel, Marmoush, Maddison, Kudus]
-    corner: [Pedro Porro, Sávio, Tel, Fernandes, Maddison, Robertson, Kudus, Marmoush]
+    direct_fk:
+    - Marmoush
   Sunderland:
-    penalty: Diarra
-    direct_fk: [N.Angulo, Xhaka, E.Le Fée]
-    corner: [E.Le Fée, Xhaka, Hume]
+    penalty: E.Le Fée

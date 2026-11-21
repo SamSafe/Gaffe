@@ -130,19 +130,23 @@ squad.
    cold-start GW1-3 prior automatically uses the most-recent NON-test
    season's last-5-GW actuals (see `eval/milp_backtest._build...prior`).
 
-5. **Regenerate set-piece takers** from the FPL API's own order fields:
+5. **Update the set-piece ranking.** Record observed penalty attempts (including
+   misses, excluding shootouts), direct free-kick shots, and corners in
+   `configs/set_piece_observations.csv`. Record the match date, player, club,
+   target season, and club match-report URL. Verify club membership when
+   carrying an observation forward. Remove transferred players from the target
+   season's candidates. Rebuild offline from the repository root.
+
    ```bash
-   uv run python scripts/gen_set_piece_takers.py --season-id 26
+   uv run python scripts/gen_set_piece_takers.py --output configs/set_piece_takers.yaml
    ```
-   Paste the emitted block into `configs/set_piece_takers.yaml` (replacing
-   any existing block for that season). This beats hand-curation: FPL
-   maintains `penalties_order` / `direct_freekicks_order` /
-   `corners_and_indirect_freekicks_order` itself. Re-run it a few times
-   during the season — the pre-season list is FPL's guess for unsettled
-   teams, and promoted clubs' orders move once they actually play. Without a
-   block, `is_corner_taker` / `is_fk_taker` are 0 (as they were all of
-   25/26 — harmless but inactive). The checked-in season-26 block was last
-   regenerated from the 2026-08-11 bootstrap and resolves all 20 clubs.
+
+   Each distinct match date counts once per player and role. More matches rank
+   first, then the latest observation, then player name. The penalty feature uses
+   the first candidate. An absent role means evidence is missing. For an earlier
+   cutoff, preview the snapshot with `--as-of YYYY-MM-DD`. The model loads a
+   single snapshot per season, so evaluating earlier weeks with the current
+   snapshot can introduce look-ahead bias.
 
 6. **Prediction caches:** live recommendations always regenerate their
    horizon. Research backtest and raw-sample caches now include the training

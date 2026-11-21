@@ -15,21 +15,13 @@ from fpl_bot.features.manual_overrides import (
 def test_set_piece_takers_loads_at_least_one_season() -> None:
     raw = set_piece_takers_raw()
     assert raw, "set_piece_takers.yaml is missing or empty"
-    assert 24 in raw, "season 24 (2024-25) should be present in v1 yaml"
+    assert 26 in raw
 
 
-def test_known_2024_25_penalty_takers() -> None:
-    """Spot-checks against the canonical primary PK takers for 2024-25.
-
-    These assertions are tight to the committed yaml; they will fail loudly
-    if someone drops one of the canonical takers from the config — which
-    is the desired tripwire.
-    """
-    assert penalty_taker(24, "Liverpool") == "M.Salah"
-    assert penalty_taker(24, "Man City") == "Haaland"
-    assert penalty_taker(24, "Man Utd") == "Bruno Fernandes"
-    assert penalty_taker(24, "Arsenal") == "Saka"
-    assert penalty_taker(24, "Chelsea") == "Palmer"
+def test_observed_penalty_takers() -> None:
+    assert penalty_taker(26, "Ipswich Town") == "Clarke"
+    assert penalty_taker(26, "Chelsea") == "Palmer"
+    assert penalty_taker(26, "Fulham") is None
 
 
 def test_unknown_team_or_season_returns_none() -> None:
@@ -38,10 +30,10 @@ def test_unknown_team_or_season_returns_none() -> None:
 
 
 def test_direct_fk_and_corner_lists_are_lists() -> None:
-    fks = direct_fk_takers(24, "Liverpool")
+    fks = direct_fk_takers(26, "Ipswich Town")
     assert isinstance(fks, list)
-    assert "M.Salah" in fks
-    corners = corner_takers(24, "Arsenal")
+    assert "Enciso" in fks
+    corners = corner_takers(26, "Arsenal")
     assert isinstance(corners, list)
 
 

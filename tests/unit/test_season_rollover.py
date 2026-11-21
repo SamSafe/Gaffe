@@ -116,4 +116,4 @@ def test_set_piece_block_covers_every_current_club() -> None:
         f"{missing}; regenerate with scripts/gen_set_piece_takers.py"
     )
     for team, info in block.items():
-        assert info.get("penalty"), f"{team} has no primary penalty taker"
+        assert any(info.values()), f"{team} has no observed roles"
