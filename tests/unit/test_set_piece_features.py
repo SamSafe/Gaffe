@@ -10,7 +10,6 @@ import pytest
 import yaml
 
 from fpl_bot.db import pit
-
 from fpl_bot.features import manual_overrides
 from fpl_bot.features.bps import _resolved_pk_taker_set
 from fpl_bot.features.goals import _resolved_pk_takers, _resolved_set_piece_players

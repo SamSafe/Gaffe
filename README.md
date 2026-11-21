@@ -1,50 +1,51 @@
 # Gaffe
 
-Gaffe helps Fantasy Premier League managers decide whether to spend a free transfer or roll it. It forecasts player points, builds a legal starting XI and bench, and compares transfer and captaincy choices across upcoming gameweeks.
+Gaffe is a Fantasy Premier League squad planner. It forecasts player points over several gameweeks and compares the expected return from making a transfer with the return from keeping your squad.
 
-![Gaffe desktop dashboard showing the gameweek overview](docs/images/app-desktop.png)
+[App guide](docs/APP.md) · [Mobile view](docs/images/app-mobile.png) · [Model design](docs/design/) · [Run locally](#run-locally)
 
-[App guide](docs/APP.md) · [Mobile screenshot](docs/images/app-mobile.png) · [Model design](docs/design/) · [Historical benchmark](docs/OPERATIONS_BENCHMARK.md)
+![The gameweek overview in Gaffe’s desktop dashboard](docs/images/app-desktop.png)
 
-## What would a transfer buy you?
+## Gameweek planning
 
-Suppose you want to replace a midfielder before a difficult run of fixtures. The planner checks what you can afford at the player's actual selling price, whether the move costs points, and how it changes your projected score compared with keeping the squad. A small projected gain is easier to judge when you can see the cost of giving up the free transfer.
+| Decision | What Gaffe shows |
+| --- | --- |
+| Spend a transfer or roll it | The projected points gain over holding, accounting for selling prices, available funds and transfer hits. |
+| Pick the matchday squad | A starting XI, bench order and captain that fit the formation and club limits. |
+| Time a chip | Suggested gameweeks for the available chips across the planning horizon. |
+| Review a decision | The points earned by recommendations saved before the deadline, once the gameweek is complete. |
 
-The dashboard also shows the recommended XI, bench order, captain and chip timing. After a deadline, the performance view scores saved recommendations against completed gameweeks. You make the final moves in FPL.
+## Forecast and optimization
 
-## How the forecast works
+Gaffe estimates playing time, goals, assists, clean sheets and bonus points using player history, set-piece roles and market-implied team strength. A Monte Carlo simulation combines these outcomes into a distribution of points for each player. A mixed-integer optimizer then selects a squad and plans transfers within the game’s budget and roster constraints.
 
-1. **Estimate playing time and returns.** The models combine minutes, expected goals and assists, set-piece roles and market-implied team strength to estimate each player's outcomes.
-2. **Simulate the gameweek.** A Monte Carlo simulation combines those outcomes with clean sheets and bonus points to produce player points distributions.
-3. **Choose a squad over several weeks.** A mixed-integer optimizer weighs expected points against the budget, formation, club limits and transfer costs. The chip planner considers when to use the available chips.
+The Python implementation uses Polars and PostgreSQL for historical inputs, LightGBM for prediction, and Pyomo with CBC for optimization. [Prediction model](docs/design/phase2_5_joint_xpts.md) · [Squad optimizer](docs/design/phase3_deterministic_milp.md) · [Set-piece observations](configs/set_piece_observations.csv)
 
-The prediction code uses Python, Polars and LightGBM. PostgreSQL holds the historical inputs, and Pyomo builds the optimization problem for CBC. [Prediction design](docs/design/phase2_5_joint_xpts.md) · [Optimizer design](docs/design/phase3_deterministic_milp.md) · [Set-piece observations](configs/set_piece_observations.csv)
+## Historical benchmark
 
-## Historical results
+Each evaluation trained on prior seasons and compared Gaffe with a buy-and-hold squad over 38 gameweeks, with chips disabled.
 
-The development benchmark trained on earlier seasons and simulated 38 gameweeks per test season with chips disabled.
-
-| Test season | Gaffe points | Buy-and-hold points | Difference |
+| Season | Gaffe | Buy and hold | Points gained |
 | --- | ---: | ---: | ---: |
 | 2024/25 | 2,508 | 2,104 | +404 |
 | 2025/26 | 2,331 | 1,994 | +337 |
 
-Some closing odds and player metadata were available only after the relevant deadlines. Those timing limits can flatter a backtest. A full season of forecasts saved before each deadline is still needed to establish live performance. [Benchmark settings and limitations](docs/OPERATIONS_BENCHMARK.md)
+Some closing odds and player metadata postdate the gameweek deadlines. These figures can therefore overstate what a manager could have achieved live. A full season of pre-deadline forecasts is still needed to measure live performance. [Benchmark methodology and limitations](docs/OPERATIONS_BENCHMARK.md)
 
 ## Run locally
 
-From the repository root, install the project with Python 3.11+ and uv. The CLI help is a quick way to explore the available commands.
+Install Python 3.11 or later and uv. From the repository root, install the dependencies and inspect the CLI.
 
 ```bash
 uv sync --all-extras
 uv run gaffe --help
 ```
 
-For the browser app, configure PostgreSQL as described in the app guide, then run the migrations and start the local server.
+Configure PostgreSQL using the app guide, then apply the migrations and launch the dashboard.
 
 ```bash
 uv run alembic upgrade head
 uv run gaffe serve
 ```
 
-The dashboard opens at `http://127.0.0.1:8080`. Generating a forecast also requires the CBC solver and populated historical training data. The screenshots above show the interface without any setup. [App setup](docs/APP.md) · [Forecast runbook](docs/RUNBOOK_live.md)
+The dashboard opens at `http://127.0.0.1:8080`. Generating forecasts also requires CBC and a populated training database. [App setup](docs/APP.md) · [Forecast runbook](docs/RUNBOOK_live.md)
