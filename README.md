@@ -48,11 +48,3 @@ uv run gaffe serve
 ```
 
 The dashboard opens at `http://127.0.0.1:8080`. Generating a forecast also requires the CBC solver and populated historical training data. The screenshots above show the interface without any setup. [App setup](docs/APP.md) · [Forecast runbook](docs/RUNBOOK_live.md)
-
-## Data access
-
-Gaffe is an independent project. FPL's 2026/27 terms address commercial use in clause 28(b) and automated access and extraction in clause 28(d). Clause 28(d) has no stated exception for personal or non-commercial use. Gaffe's live refresh sends automated requests to FPL even when started with a button. Obtain permission covering that use before enabling it. Each other data provider sets its own terms. The set-piece ranking rebuilds offline from the linked match observations. [FPL terms](https://fantasy.premierleague.com/help/terms)
-
-## Development
-
-The maintainer directs the project, makes modelling decisions and reviews the results. AI coding agents wrote much of the implementation, documentation and tests. [Model experiments and rejected changes](docs/MODEL_IMPROVEMENT_2026-10-11.md)
