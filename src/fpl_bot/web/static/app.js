@@ -13,7 +13,12 @@ const paths = {
 };
 const labels = {overview:'Overview',squad:'My squad',planner:'Transfer planner',performance:'Performance',settings:'Settings'};
 let data, players = {}, view = 'overview', pitchMode = 'recommended', draft = [], planResult = null, planError = '', busy = false, lastJobState = '', toastTimer, pairingInfo = null, metadataPoll = 0;
-$('#navigation').innerHTML = Object.entries(labels).map(([id,label]) => `<a class="nav-link" href="#${id}" data-nav="${id}"><svg viewBox="0 0 24 24" aria-hidden="true">${paths[id]}</svg><span>${label}</span></a>`).join('');
+const compactLabels = {planner:'Transfers', performance:'Results'};
+$('#navigation').innerHTML = Object.entries(labels).map(([id,label]) => `<a class="nav-link" href="#${id}" data-nav="${id}"><svg viewBox="0 0 24 24" aria-hidden="true">${paths[id]}</svg>${compactLabels[id] ? `<span class="wide-label">${label}</span><span class="compact-label">${compactLabels[id]}</span>` : `<span>${label}</span>`}</a>`).join('');
+$('.skip').onclick = event => {
+  event.preventDefault();
+  $('#main').focus();
+};
 $('#settings-shortcut').onclick = () => location.hash = 'settings';
 $('#close-dialog').onclick = () => $('#player-dialog').close();
 function toast(message) { const el=$('#toast'); el.textContent=message; el.hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.hidden=true,6500); }
@@ -95,7 +100,9 @@ function squad() {
   return heading('THE SQUAD',data.team.name,'Your latest saved selection, with fresh forecast points.',actions())+
     `<div class="squad-grid"><section class="card"><div class="card-head"><h2>Last saved lineup</h2><span class="badge">${data.current.squad.length} PLAYERS</span></div>${pitch(data.current)}<div class="card-foot"><span>${esc(data.team.source)} · ${esc(localDate(data.freshness.refreshed_at))}</span><span>Pending transfers may not be public yet</span></div></section><section class="card"><div class="card-head"><h2>Squad detail</h2><span class="badge">GW${data.next_event.gameweek||'—'}</span></div>${playerTable(data.current.squad)}<div class="table-caption">Sale prices follow FPL’s half-profit rule. Tap a player to read their news and horizon forecast.</div></section></div>${warnings()}`;
 }
+let draftCaptain = null;
 function seedDraft() {
+  draftCaptain = null;
   const d=data.recommendation.decisions;
   const outs=d?.transferred_out||[], remaining=[...(d?.transferred_in||[])];
   draft=pairTransfers(outs,remaining).map(([out,incoming])=>({out,incoming}));
@@ -105,8 +112,9 @@ function planner() {
   if(!data.hold) return heading('TRANSFER PLANNER','Make your next move.','Compare a plan with holding your squad.',actions())+`<section class="card"><div class="empty"><h2>A fresh forecast comes first.</h2><p>Refresh your public team, then generate a forecast to compare transfers.</p></div></section>${warnings()}`;
   const held=data.current.squad.map(id=>players[id]), pool=data.players.filter(p=>!data.current.squad.includes(p.id)&&p.forecast_available).sort((a,b)=>b.xpts-a.xpts);
   const result=planResult?.plan, planned=[...data.current.squad.filter(p=>!draft.some(t=>t.out===p)),...draft.map(t=>t.incoming).filter(Boolean)];
+  if(!planned.includes(draftCaptain)) draftCaptain = null;
   return heading('TRANSFER PLANNER','A better move starts here.','Test the budget. Compare the points. Keep the final call.')+
-    `<div class="grid-main"><div class="stack"><section class="card"><div class="card-head"><h2>Your what-if plan</h2><span class="badge">${number(data.team.free_transfers)} FREE TRANSFERS</span></div><div class="card-body"><form id="plan-form"><div class="eyebrow">SELL &nbsp; → &nbsp; BUY</div><p class="field-help">Players are ordered by next-week forecast. Incoming lists match the outgoing position.</p><div id="transfer-rows">${draft.map((t,i)=>`<div class="plan-row"><select aria-label="Sell player ${i+1}" data-out="${i}">${options(held,t.out,'Sell…')}</select><span aria-hidden="true">→</span><select aria-label="Buy player ${i+1}" data-in="${i}">${options(pool.filter(p=>!t.out||p.position===players[t.out]?.position),t.incoming,'Buy…')}</select><button type="button" class="remove-transfer" data-remove="${i}" aria-label="Remove transfer ${i+1}">×</button></div>`).join('')}</div><button type="button" class="button text" id="add-transfer">＋ Add a transfer</button><div class="field"><label for="plan-captain">Captain</label><select id="plan-captain">${options(planned.map(id=>players[id]).filter(Boolean),result?.captain,'Let the model choose')}</select></div><div class="form-buttons"><button class="button" type="submit">Compare this plan →</button><button class="button secondary" type="button" id="reset-plan">Use recommendation</button><button class="button secondary" type="button" id="hold-plan">Hold squad</button></div>${planError?`<div class="form-error" role="alert">${esc(planError)}</div>`:''}</form><div class="notice">Budget: ${money(data.team.bank)} · 15 players · Up to 3 per club. Extra transfers cost 4 points each. This local planner models regular transfers.</div></div></section><section class="card"><div class="card-head"><h2>Model recommendation</h2><span class="badge">MULTI-WEEK PLAN</span></div><div class="card-body">${transfersHtml()}<p class="field-help">The saved recommendation considers the full horizon. The instant comparison below scores one week and can favor a different choice.</p></div></section></div>
+    `<div class="grid-main"><div class="stack"><section class="card"><div class="card-head"><h2>Your what-if plan</h2><span class="badge">${number(data.team.free_transfers)} FREE TRANSFERS</span></div><div class="card-body"><form id="plan-form"><div class="eyebrow">SELL &nbsp; → &nbsp; BUY</div><p class="field-help">Players are ordered by next-week forecast. Incoming lists match the outgoing position.</p><div id="transfer-rows">${draft.map((t,i)=>`<div class="plan-row"><select aria-label="Sell player ${i+1}" data-out="${i}">${options(held,t.out,'Sell…')}</select><span aria-hidden="true">→</span><select aria-label="Buy player ${i+1}" data-in="${i}">${options(pool.filter(p=>!t.out||p.position===players[t.out]?.position),t.incoming,'Buy…')}</select><button type="button" class="remove-transfer" data-remove="${i}" aria-label="Remove transfer ${i+1}">×</button></div>`).join('')}</div><button type="button" class="button text" id="add-transfer">＋ Add a transfer</button><div class="field"><label for="plan-captain">Captain</label><select id="plan-captain">${options(planned.map(id=>players[id]).filter(Boolean),draftCaptain,'Let the model choose')}</select></div><div class="form-buttons"><button class="button" type="submit">Compare this plan →</button><button class="button secondary" type="button" id="reset-plan">Use recommendation</button><button class="button secondary" type="button" id="hold-plan">Hold squad</button></div>${planError?`<div class="form-error" role="alert">${esc(planError)}</div>`:''}</form><div class="notice">Budget: ${money(data.team.bank)} · 15 players · Up to 3 per club. Extra transfers cost 4 points each. This local planner models regular transfers.</div></div></section><section class="card"><div class="card-head"><h2>Model recommendation</h2><span class="badge">MULTI-WEEK PLAN</span></div><div class="card-body">${transfersHtml()}<p class="field-help">The saved recommendation considers the full horizon. The instant comparison below scores one week and can favor a different choice.</p></div></section></div>
     <section class="card"><div class="card-head"><h2>${result?'Your planned XI':'Plan comparison'}</h2><span class="badge">GW${data.next_event.gameweek}</span></div><div class="card-body"><div class="plan-metrics"><div class="plan-metric"><small>HOLD SQUAD</small><strong>${points(data.hold.expected_points)}</strong></div><div class="plan-metric"><small>PLAN · AFTER HITS</small><strong>${result?points(result.net_points):'—'}</strong></div><div class="plan-metric"><small>EXPECTED GAIN</small><strong class="${result?.gain<0?'negative':'positive'}">${result?signed(result.gain):'—'}</strong></div></div>${result?`<div class="legend"><span>${money(result.bank)} bank left</span><span>${result.hits} hit points</span><span>${draft.length} transfer${draft.length===1?'':'s'}</span></div>`:'<p class="explanation">Compare your plan to see its best legal XI and budget.</p>'}</div>${result?pitch(result):''}<div class="card-foot">${esc(planResult?.note||'One-week estimate. Transfer plans stay local; apply your chosen moves on FPL.')}</div></section></div>${warnings()}`;
 }
 function chart(rows) {
@@ -143,7 +151,7 @@ function renderJob() {
 }
 function render() {
   if(!data)return;
-  view=location.hash.slice(1);if(!labels[view])view='overview';
+  view=location.hash.slice(1);if(!Object.hasOwn(labels,view))view='overview';
   Object.keys(labels).forEach(id=>{const link=$(`[data-nav="${id}"]`);link.classList.toggle('active',id===view);if(id===view)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');});
   document.title=`${labels[view]} · Gaffe`;
   $('.local-badge').textContent=data.desktop_client?'LOCAL APP':'PAIRED PHONE';
@@ -166,7 +174,8 @@ function bind() {
   document.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{draft.splice(Number(b.dataset.remove),1);planResult=null;render();});
   if($('#add-transfer'))$('#add-transfer').onclick=()=>{if(draft.length>=15)return;draft.push({out:null,incoming:null});planResult=null;render();};
   if($('#reset-plan'))$('#reset-plan').onclick=()=>{seedDraft();comparePlan();};
-  if($('#hold-plan'))$('#hold-plan').onclick=()=>{draft=[];comparePlan();};
+  if($('#hold-plan'))$('#hold-plan').onclick=()=>{draft=[];draftCaptain=null;comparePlan();};
+  if($('#plan-captain'))$('#plan-captain').onchange=e=>{draftCaptain=Number(e.target.value)||null;planResult=null;planError='';render();$('#plan-captain').focus();};
   if($('#plan-form'))$('#plan-form').onsubmit=e=>{e.preventDefault();comparePlan(Number($('#plan-captain').value)||null);};
 }
 function bindPhone() {
