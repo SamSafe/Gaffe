@@ -88,7 +88,7 @@ class Automation:
         state.setdefault("slots", {})
         state["last_check"] = now.isoformat()
         if not prefs.automation_enabled or not prefs.team_id:
-            state.update(state="disabled", message="Scheduled updates are disabled.")
+            state.update(next_run=None, state="disabled", message="Scheduled updates are disabled.")
             write_json(self.path, state)
             return
         jobs = self.manager.list()
@@ -132,6 +132,7 @@ class Automation:
                 )
         if (not ledger or not ledger["records"]) and (target or not events):
             candidates.append((f"initialize:{keybase}", JobRequest(kind="cycle")))
+        state["next_run"] = None
         if target:
             deadline = timestamp(target["deadline_time"])
             seconds = (deadline - now).total_seconds()
@@ -165,11 +166,11 @@ class Automation:
         interval = 3600 if provisional or waiting else 6 * 3600
         bucket = int(now.timestamp()) // interval
         refresh_at = dt.datetime.fromtimestamp((bucket + 1) * interval, dt.UTC)
-        planned = timestamp(state.get("next_run"))
-        state["next_run"] = (
-            min(planned, refresh_at).isoformat() if planned > now else refresh_at.isoformat()
-        )
         if target or provisional or waiting:
+            planned = timestamp(state.get("next_run"))
+            state["next_run"] = (
+                min(planned, refresh_at).isoformat() if planned > now else refresh_at.isoformat()
+            )
             candidates.append(
                 (f"refresh:{keybase}:{interval}:{bucket}", JobRequest(kind="refresh"))
             )

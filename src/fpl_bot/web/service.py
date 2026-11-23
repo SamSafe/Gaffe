@@ -100,6 +100,8 @@ def _comparison(store, folder, recommendations, bootstrap, players):
             if pid is not None:
                 points[pid] = element["stats"]["total_points"]
                 minutes[pid] = element["stats"]["minutes"]
+        if not set(d["squad"]).issubset(points):
+            continue
         decision = GwDecisions(
             gameweek=gw,
             squad=frozenset(d["squad"]),

@@ -166,7 +166,7 @@ function bind() {
   document.querySelectorAll('[data-player]').forEach(b=>b.onclick=()=>showPlayer(Number(b.dataset.player)));
   document.querySelectorAll('[data-job]').forEach(b=>b.onclick=()=>startJob(b.dataset.job));
   document.querySelectorAll('[data-pitch]').forEach(b=>b.onclick=()=>{pitchMode=b.dataset.pitch;render();});
-  if($('#settings-form'))$('#settings-form').onsubmit=async e=>{e.preventDefault();try{await api('preferences','PUT',{...data.preferences,team_id:Number($('#team-id').value),horizon:Number($('#horizon').value),timezone:$('#timezone').value.trim(),automation_enabled:$('#automation-enabled').checked,automation_odds:$('#automation-odds').checked,quiet_start:$('#quiet-start').value||null,quiet_end:$('#quiet-end').value||null,notify_topic:$('#notify-topic').value.trim()||null});draft=[];planResult=null;await load();toast('Preferences saved. Refresh to load a changed team.');}catch(err){toast(err.message);}};
+  if($('#settings-form'))$('#settings-form').onsubmit=async e=>{e.preventDefault();try{await api('preferences','PUT',{...data.preferences,team_id:Number($('#team-id').value),horizon:Number($('#horizon').value),timezone:$('#timezone').value.trim(),automation_enabled:$('#automation-enabled').checked,automation_odds:$('#automation-odds').checked,quiet_start:$('#quiet-start').value||null,quiet_end:$('#quiet-end').value||null,notify_topic:$('#notify-topic').value.trim()||null});await load();toast('Preferences saved. Refresh to load a changed team.');}catch(err){toast(err.message);}};
   if($('#new-topic'))$('#new-topic').onclick=()=>{const bytes=crypto.getRandomValues(new Uint8Array(12));$('#notify-topic').value='gaffe-'+Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');toast('Topic created. Save preferences, then subscribe to it in ntfy.');};
   if($('#test-topic'))$('#test-topic').onclick=async()=>{try{await api('notify/test','POST',{});toast('Test alert sent.');}catch(err){toast(err.message);}};
   document.querySelectorAll('[data-out]').forEach(s=>s.onchange=()=>{draft[Number(s.dataset.out)]={out:Number(s.value)||null,incoming:null};planResult=null;planError='';render();});
@@ -182,9 +182,21 @@ function bindPhone() {
   document.querySelectorAll('[data-access]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{const result=await api('access/'+b.dataset.access,'POST',{});if(b.dataset.access==='pair')pairingInfo=result;else if(['disable','revoke'].includes(b.dataset.access))pairingInfo=null;await load();}catch(err){toast(err.message);b.disabled=false;}});
   if($('#copy-pairing'))$('#copy-pairing').onclick=async()=>{try{await navigator.clipboard.writeText(pairingInfo.url);toast('Pairing link copied.');}catch{toast('Select and copy the pairing link shown above.');}};
 }
+let latestComparison = 0;
 async function comparePlan(captain=null) {
+  const request = ++latestComparison;
+  const form = $('#plan-form');
   if(draft.some(t=>!t.out||!t.incoming)){planError='Choose both players for each transfer.';render();return;}
-  try{planResult=await api('plan','POST',{transfers:draft,captain});planError='';}catch(err){planResult=null;planError=err.message;}render();
+  let result = null, error = '';
+  try {
+    result = await api('plan','POST',{transfers:draft,captain});
+  } catch(err) {
+    error = err.message;
+  }
+  if(request !== latestComparison || !form?.isConnected) return;
+  planResult = result;
+  planError = error;
+  render();
 }
 function showPlayer(id) {
   const p=players[id];if(!p)return;
@@ -198,6 +210,8 @@ async function startJob(kind) {
 async function load() {
   const before=data?.preferences.team_id, previousGw=data?.next_event.gameweek;
   data=await api('dashboard');players=Object.fromEntries(data.players.map(p=>[p.id,p]));
+  const job = data.jobs[0];
+  lastJobState = job ? `${job.id}:${job.status}` : '';
   if(before!==data.preferences.team_id||previousGw!==data.next_event.gameweek){seedDraft();planResult=null;}
   render();
 }

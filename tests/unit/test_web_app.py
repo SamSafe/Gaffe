@@ -448,3 +448,27 @@ def test_page_and_assets_are_revalidated(populated):
         for path in ("/", "/assets/app.js"):
             assert client.get(path).headers["cache-control"] == "no-cache"
         assert client.get("/api/dashboard").headers["cache-control"] == "no-store"
+
+
+def test_partial_live_results_leave_the_week_unscored(populated):
+    store, folder, _, _, rec_dir = populated
+    (folder / "bot_vs_team.json").unlink()
+    rec = read_json(rec_dir / "recommendation.json")
+    rec["context"]["gameweek"] = 1
+    rec["generated_at"] = (dt.datetime.now(dt.UTC) - dt.timedelta(days=21)).isoformat()
+    write_json(rec_dir / "recommendation.json", rec)
+    rows = [
+        {"id": i, "stats": {"total_points": 0, "minutes": 0}} for i in range(1, 16)
+    ]
+    write_json(folder / "live_gw1.json", {"elements": rows[:-1]})
+    assert dashboard(store)["performance"]["covered_weeks"] == 0
+    write_json(folder / "live_gw1.json", {"elements": rows})
+    performance = dashboard(store)["performance"]
+    assert performance["covered_weeks"] == 1
+    assert performance["bot_compared"] == 0
+
+
+def test_quiet_hours_round_trip_for_compact_iso_time():
+    prefs = Preferences(quiet_start="2315", quiet_end="07:30")
+    assert prefs.quiet_start == "23:15"
+    assert Preferences.model_validate(prefs.model_dump()) == prefs

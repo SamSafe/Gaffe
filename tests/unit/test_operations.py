@@ -554,3 +554,21 @@ def test_forecast_alert_pairs_transfers_by_position(scenario):
     write_json(path, rec)
     _, body = notify.forecast_message(store, 718959, "UTC")
     assert "P8 → P16; P15 → P17" in body
+
+
+def test_idle_scheduler_clears_previous_next_run(scenario):
+    store, _, bootstrap, _, now, folder = scenario
+    auto = Automation(store, Jobs())
+    write_json(auto.path, {"next_run": (now + dt.timedelta(hours=1)).isoformat()})
+    auto.tick(now)
+    assert auto.status()["next_run"] is None
+
+    store.save_preferences(store.preferences().model_copy(update={"automation_enabled": True}))
+    for event in bootstrap["events"]:
+        event["data_checked"] = True
+    write_json(folder / "bootstrap.json", bootstrap)
+    auto.tick(
+        max(dt.datetime.fromisoformat(e["deadline_time"]) for e in bootstrap["events"])
+        + dt.timedelta(days=1)
+    )
+    assert auto.status()["next_run"] is None

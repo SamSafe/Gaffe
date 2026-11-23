@@ -27,10 +27,10 @@ class Preferences(BaseModel):
         if value in (None, ""):
             return None
         try:
-            dt.time.fromisoformat(value)
+            clock = dt.time.fromisoformat(value)
         except ValueError as exc:
             raise ValueError("Use a 24-hour time, such as 23:00") from exc
-        return value[:5]
+        return clock.strftime("%H:%M")
 
     @field_validator("notify_topic", mode="before")
     @classmethod
