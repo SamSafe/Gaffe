@@ -272,3 +272,34 @@ def test_hold_first_week_forbids_buys_now_but_not_later() -> None:
     assert not hold.transferred_in and hold.squad == frozenset(owned)
     # Holding forfeits the star's week-8 haul only; week 9 can still buy him.
     assert plan_meta["objective"] > hold_meta["objective"]
+
+
+@pytest.mark.parametrize("week, allowance, moves, chip, following, hits", [
+    (1, 1, 3, None, 1, 0),
+    (8, 1, 3, None, 1, 2),
+    (8, 5, 0, None, 5, 0),
+    (8, 3, 1, None, 3, 0),
+    (8, 2, 3, "wc", 2, 0),
+    (8, 2, 3, "fh", 2, 0),
+])
+def test_transfer_balance_across_deadlines(week, allowance, moves, chip, following, hits):
+    from pyomo.environ import value
+
+    from fpl_bot.optim.milp import solve_milp
+
+    positions = (["GKP"] * 2 + ["DEF"] * 5 + ["MID"] * 5 + ["FWD"] * 3) * 2
+    pool = list(range(30))
+    prices = dict.fromkeys(pool, 50)
+    state = BacktestState(26, week, frozenset(pool[:15]), 0, allowance)
+    inputs = _toy_inputs(candidates=pool, positions=dict(enumerate(positions)),
+                         teams={p: p % 10 for p in pool}, prices=prices,
+                         horizon=[week, week + 1], state=state)
+    inputs.enable_chips = True
+    model = build_milp(inputs)
+    for p in pool:
+        model.x[p, week].fix(int(moves <= p < 15 + moves))
+    model.z_wc[week].fix(int(chip == "wc"))
+    model.z_fh[week].fix(int(chip == "fh"))
+    assert solve_milp(model, time_limit_s=15)["termination"] == "optimal"
+    assert value(model.ft[week + 1]) == following
+    assert value(model.ht[week]) == hits

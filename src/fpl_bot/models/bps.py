@@ -106,6 +106,7 @@ def score_bps_known_events(
     yellow_cards: int = 0,
     red_cards: int = 0,
     own_goals: int = 0,
+    penalties_saved: int = 0,
     penalties_scored: int = 0,
     penalties_missed_or_saved: int = 0,
     season_id: int = 24,
@@ -139,15 +140,21 @@ def score_bps_known_events(
         bps += assists * BPS_ASSIST
     if position in ("GKP", "DEF") and minutes >= 60 and team_clean_sheet:
         bps += BPS_CLEAN_SHEET_GK_DEF
-    if position in ("GKP", "DEF") and minutes >= 90 and team_goals_conceded > 0:
+    if position in ("GKP", "DEF") and minutes > 0 and team_goals_conceded > 0:
         if rules_mode == "legacy":
-            bps -= team_goals_conceded
+            if minutes >= 90:
+                bps -= team_goals_conceded
         elif season_id >= 24:
             bps += BPS_GOAL_CONCEDED * team_goals_conceded
     if saves > 0 and position == "GKP":
         bps += _bps_from_saves(
             saves, season_id=season_id, rules_mode=rules_mode
         )
+    if rules_mode == "official" and penalties_saved:
+        # A saved penalty is an inside-box save and (from 26/27) a big chance.
+        # The ordinary save contribution is already included above.
+        extra = 15 if season_id < 24 else 9 if season_id == 24 else 8 + 1 if season_id == 25 else 7 + 1 + 1
+        bps += penalties_saved * extra
     bps += penalties_missed_or_saved * BPS_PEN_MISS
     bps -= yellow_cards * 3
     bps -= red_cards * 9
@@ -527,6 +534,7 @@ class BPSSimulator:
     event_source: EventSource
     n_iterations: int = 500
     seed: int = 42
+    saved_share_of_misses: float = 54 / 68  # Archived 2016/17 through 2018/19, before training folds.
     pen_per_match_lambda: float = 0.27  # league-typical penalty rate
     pen_conversion: float = 0.78
     bps_rules_mode: BPSRulesMode = "official"
@@ -537,6 +545,10 @@ class BPSSimulator:
         inputs: FixtureInputs,
         *,
         return_raw_xpts_samples: bool = False,
+        minute_caps: tuple | list = (),
+        track_minutes: bool = False,
+        record_draws: list[dict] | None = None,
+        replay_draws: list[dict] | None = None,
     ) -> pl.DataFrame | tuple[pl.DataFrame, np.ndarray]:
         """Per-player bonus + xPts distribution for one fixture.
 
@@ -592,6 +604,11 @@ class BPSSimulator:
         rc_rate = players["rc_rate_per_90"].to_numpy()
         is_pen_taker = players["is_penalty_taker"].to_numpy()
 
+        keeper_mask = np.array(positions) == "GKP"
+        index = {pid: i for i, pid in enumerate(player_ids)} if minute_caps else {}
+        caps = [(index[pid], cap, index[sub] if sub is not None else None)
+                for pid, cap, sub in minute_caps]
+        minutes_totals = np.zeros((n_players, 3), dtype=np.int64) if track_minutes else None
         bonus_counts = np.zeros((n_players, 4), dtype=np.int64)
         xpts_samples = np.zeros((n_players, self.n_iterations), dtype=np.int16)
 
@@ -606,11 +623,19 @@ class BPSSimulator:
         rc_buf = np.zeros(n_players, dtype=np.int8)
         pens_missed_buf = np.zeros(n_players, dtype=np.int8)
 
+        if replay_draws is not None and len(replay_draws) != self.n_iterations:
+            raise ValueError("One saved RNG state is required per paired simulation.")
         for s in range(self.n_iterations):
+            # Replay the same scoreline and original minutes draw in each arm.
+            # Otherwise a substitution changes RNG consumption for every later match draw.
+            if record_draws is not None:
+                record_draws.append(rng.bit_generator.state)
+            if replay_draws is not None:
+                rng.bit_generator.state = replay_draws[s]
             h_score = int(rng.poisson(inputs.home_team_lambda))
             a_score = int(rng.poisson(inputs.away_team_lambda))
-            home_cs = (a_score == 0)
-            away_cs = (h_score == 0)
+            home_times = rng.uniform(0, 90, h_score)
+            away_times = rng.uniform(0, 90, a_score)
             home_pens = int(rng.poisson(self.pen_per_match_lambda / 2))
             away_pens = int(rng.poisson(self.pen_per_match_lambda / 2))
 
@@ -638,9 +663,17 @@ class BPSSimulator:
                     rng,
                 )
                 minutes_buf[i] = minutes
-                player_home = bool(is_home[i])
-                team_cs_buf[i] = home_cs if player_home else away_cs
-                team_gc_buf[i] = a_score if player_home else h_score
+
+
+            for subject, cap, replacement in caps:
+                released = max(0, int(minutes_buf[subject]) - cap)
+                minutes_buf[subject] -= released
+                if replacement is not None:
+                    minutes_buf[replacement] = min(90, int(minutes_buf[replacement]) + released)
+            if minutes_totals is not None:
+                minutes_totals[:, 0] += minutes_buf
+                minutes_totals[:, 1] += minutes_buf == 0
+                minutes_totals[:, 2] += minutes_buf >= 60
 
             # PASS 2: Multinomial-allocate team goals to on-field players.
             # Weight w_p = max(0, λ_g[p]) · (minutes_p / 90). Players with
@@ -684,12 +717,33 @@ class BPSSimulator:
                 allocation = rng.multinomial(team_score, w / total_w)
                 goals_buf[team_mask] = allocation.astype(np.int16)
 
+            # Short appearances approximate late substitutes; longer ones start.
+            starts = np.where(minutes_buf < 60, 90 - minutes_buf, 0)
+            ends = starts + minutes_buf
+            penalty_saves = np.zeros(n_players, dtype=np.int16)
+            missed = np.zeros(n_players, dtype=np.int16)
+            scored_pens = np.zeros(n_players, dtype=np.int16)
+            for home, count in ((True, home_pens), (False, away_pens)):
+                for minute in rng.uniform(0, 90, count):
+                    active = (starts <= minute) & (minute < ends)
+                    takers = np.flatnonzero(active & (is_home == home) & is_pen_taker.astype(bool))
+                    taker = rng.choice(takers) if takers.size else None
+                    if rng.random() < self.pen_conversion:
+                        if taker is not None:
+                            scored_pens[taker] += 1
+                    else:
+                        if taker is not None:
+                            missed[taker] += 1
+                        keepers = np.flatnonzero(active & (is_home != home) & keeper_mask)
+                        if keepers.size and rng.random() < self.saved_share_of_misses:
+                            penalty_saves[rng.choice(keepers)] += 1
+
             # PASS 3: remaining per-player events and BPS scoring. Assists are
             # already populated by PASS 2 in goal-conditioned mode.
             for i in range(n_players):
                 pos = positions[i]
                 player_home = bool(is_home[i])
-                pens_for_team = home_pens if player_home else away_pens
+                opposition_times = away_times if player_home else home_times
                 minutes = int(minutes_buf[i])
                 if minutes <= 0:
                     continue
@@ -715,19 +769,13 @@ class BPSSimulator:
                     max(0.0, rc_rate[i]) * minutes_factor
                 )
 
-                # Penalty mechanism: pen-taker takes all of the team's pens.
-                # Scored pens are NOT added to goals — Phase 2.2's λ_g already
-                # absorbs total goals incl. pens, and the multinomial above
-                # has already allocated h_score (Dixon-Coles total goals incl.
-                # pens). We track pens_missed only for BPS deduction.
-                pens_missed = 0
-                pens_scored_for_bps = 0
-                if bool(is_pen_taker[i]) and pens_for_team > 0:
-                    for _ in range(pens_for_team):
-                        if rng.random() >= self.pen_conversion:
-                            pens_missed += 1
-                    pens_scored_for_bps = min(goals, pens_for_team - pens_missed)
-
+                pens_missed = int(missed[i])
+                pens_scored_for_bps = min(goals, int(scored_pens[i]))
+                end = 90 if rc_drawn else ends[i]
+                gc = int(np.count_nonzero((opposition_times >= starts[i]) & (opposition_times < end)))
+                team_gc_buf[i] = gc
+                team_cs_buf[i] = gc == 0
+                saves = max(saves, int(penalty_saves[i]))
                 saves_buf[i] = saves
                 yc_buf[i] = int(yc_drawn)
                 rc_buf[i] = int(rc_drawn)
@@ -743,6 +791,7 @@ class BPSSimulator:
                     saves=saves,
                     yellow_cards=int(yc_drawn),
                     red_cards=int(rc_drawn),
+                    penalties_saved=int(penalty_saves[i]),
                     penalties_scored=pens_scored_for_bps,
                     penalties_missed_or_saved=pens_missed,
                     season_id=inputs.season_id,
@@ -786,6 +835,8 @@ class BPSSimulator:
                         yellow_cards=int(yc_buf[i]),
                         red_cards=int(rc_buf[i]),
                         penalties_missed_or_saved=int(pens_missed_buf[i]),
+                        penalties_saved=int(penalty_saves[i]),
+                        season_id=inputs.season_id,
                         bonus=int(bonus_array[i]),
                     )
                 # Clip to histogram range; rare outliers stack at edge
@@ -835,6 +886,11 @@ class BPSSimulator:
             )
 
         out_df = pl.DataFrame(rows)
+        if minutes_totals is not None:
+            mean, zero, full = minutes_totals.T / n
+            out_df = out_df.with_columns(pl.Series("expected_minutes", mean),
+                pl.Series("p_minutes_zero", zero), pl.Series("p_minutes_full", full),
+                pl.Series("p_minutes_short", (n - minutes_totals[:, 1] - minutes_totals[:, 2]) / n))
         if return_raw_xpts_samples:
             return out_df, xpts_samples
         return out_df
@@ -848,6 +904,7 @@ def fit_residual_dataset(
     positions: pl.DataFrame,
     *,
     rules_mode: BPSRulesMode = "official",
+    target_season: int | None = None,
 ) -> pl.DataFrame:
     """Build the residual training DataFrame for EmpiricalResidualEventSource.fit.
 
@@ -895,8 +952,9 @@ def fit_residual_dataset(
                 minutes=row["minutes"] or 0,
                 goals=row["goals"] or 0,
                 assists=row["assists"] or 0,
-                team_clean_sheet=bool(row["team_clean_sheet"]),
-                team_goals_conceded=row["team_goals_conceded"] or 0,
+                team_clean_sheet=bool(row["team_clean_sheet"]) if rules_mode == "legacy" else row["goals_conceded"] == 0,
+                team_goals_conceded=(row["team_goals_conceded"] if rules_mode == "legacy" else row["goals_conceded"]) or 0,
+                penalties_saved=row.get("penalties_saved") or 0,
                 saves=row.get("saves") or 0,
                 yellow_cards=row.get("yellow_cards") or 0,
                 red_cards=row.get("red_cards") or 0,
@@ -909,6 +967,10 @@ def fit_residual_dataset(
         (pl.col("bps").cast(pl.Int64) - pl.col("simulated_bps_known"))
         .alias("residual_bps")
     )
+    if target_season is not None and target_season >= 26 and rules_mode == "official" and "clearances_blocks_interceptions" in df.columns:
+        cbi = pl.col("clearances_blocks_interceptions").fill_null(0)
+        df = df.with_columns((pl.col("residual_bps") + pl.when(pl.col("season_id") < 26)
+            .then(cbi // 3 - cbi // 2).otherwise(0)).alias("residual_bps"))
     return df.select(
         "player_id",
         "fixture_id",

@@ -300,6 +300,7 @@ def parse_raw_fpl_event_live_matches(
                 clean_sheet=bool(_coerce_int(stats.get("clean_sheets"))),
                 goals_conceded=_coerce_int(stats.get("goals_conceded")),
                 saves=_coerce_int(stats.get("saves")),
+                penalties_saved=_coerce_int(stats.get("penalties_saved")),
                 yellow_cards=_coerce_int(stats.get("yellow_cards")),
                 red_cards=_coerce_int(stats.get("red_cards")),
                 bonus=_coerce_int(stats.get("bonus")),

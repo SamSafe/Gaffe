@@ -277,7 +277,7 @@ def run_walk_forward_cv(
         # 2. Fit residual on train fold using actual events
         train_pm = pit.all_player_match_with_kickoff(season_ids=train_seasons)
         residual_df = fit_residual_dataset(
-            train_pm, positions_df, rules_mode=bps_rules_mode
+            train_pm, positions_df, rules_mode=bps_rules_mode, target_season=test_season
         )
         event_source = EmpiricalResidualEventSource(
             integer_bps=bps_rules_mode == "official"

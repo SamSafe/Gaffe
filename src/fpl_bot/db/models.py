@@ -178,6 +178,7 @@ class FactPlayerMatch(Base):
     clean_sheet: Mapped[bool | None] = mapped_column(Boolean)
     goals_conceded: Mapped[int | None] = mapped_column(SmallInteger)
     saves: Mapped[int | None] = mapped_column(SmallInteger)
+    penalties_saved: Mapped[int | None] = mapped_column(SmallInteger)
     yellow_cards: Mapped[int | None] = mapped_column(SmallInteger)
     red_cards: Mapped[int | None] = mapped_column(SmallInteger)
     bonus: Mapped[int | None] = mapped_column(SmallInteger)

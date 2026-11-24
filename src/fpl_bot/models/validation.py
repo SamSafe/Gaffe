@@ -7,7 +7,7 @@ from typing import Any, Protocol, TypeVar
 
 import polars as pl
 
-TRAINING_POLICY_VERSION = "chronological_v1"
+TRAINING_POLICY_VERSION = "chronological_v1_scoring_v2"
 
 
 class IterativeModel(Protocol):

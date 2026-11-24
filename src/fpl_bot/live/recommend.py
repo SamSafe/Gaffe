@@ -124,6 +124,7 @@ def generate_recommendation(
     output_dir: Path | None = None,
     state_override: BacktestState | None = None,
     compare_hold: bool = True,
+    news_trial=None,
 ) -> tuple[Path, Path]:
     """Run the full Phase 6 pipeline and write recommendation files.
 
@@ -204,7 +205,7 @@ def generate_recommendation(
                 tuple(sorted((expected_minutes or {}).items())),
                 n_iterations,
             )
-            if key not in _PREDICTIONS:
+            if key not in _PREDICTIONS or news_trial is not None:
                 _PREDICTIONS[key] = run_predict_only(
                     test_season=season_id,
                     train_seasons=train_seasons,
@@ -214,6 +215,7 @@ def generate_recommendation(
                     n_iterations=n_iterations,
                     seed=42,
                     prop_shadow_out=shadow_dir / "player_prop_shadow.parquet",
+                    news_trial=news_trial,
                 )
             predict_df = _PREDICTIONS[key]
             if not predict_df.is_empty():
@@ -238,15 +240,13 @@ def generate_recommendation(
     if not pred_by_pgw:
         raise RuntimeError(f"Could not generate predictions for season {season_id}")
 
-    pred_by_pgw = apply_prediction_postprocessing(
-        pred_by_pgw,
-        season_id=season_id,
-        train_seasons=train_seasons,
-        cache_dir=cache_dir,
-        appearance_exposure_by_pgw=(
-            _per_player_per_gw_appearances(eval_df) if eval_df is not None else None
-        ),
-    )
+    def postprocess(frame, predictions):
+        return apply_prediction_postprocessing(
+            predictions, season_id=season_id, train_seasons=train_seasons, cache_dir=cache_dir,
+            appearance_exposure_by_pgw=_per_player_per_gw_appearances(frame),
+        )
+
+    pred_by_pgw = postprocess(eval_df, pred_by_pgw)
 
     all_gws = sorted({gw for (_, gw) in pred_by_pgw if gw > 0})
     all_players = sorted({pid for (pid, _) in pred_by_pgw})
@@ -338,23 +338,39 @@ def generate_recommendation(
             f"No predictions for any GW in horizon starting at GW{gameweek}"
         )
     is_current_free_hit = gameweek in free_hit_gws(chip_schedule)
-    horizon_pred = pred_df.filter(pl.col("gameweek").is_in(horizon_gws))
-    candidates_set = select_candidates(
-        season_id=season_id,
-        horizon_predictions=horizon_pred,
-        current_squad=set(state.squad),
-        top_n_per_position=25,
-        cheap_k_per_position=3,
-    )
-    candidates_set &= set(valid_players)
-    candidates_set |= set(state.squad)  # always keep current squad
-    candidates = sorted(candidates_set)
+
+    def shortlist(frame):
+        pool = select_candidates(
+            season_id=season_id, horizon_predictions=frame.filter(pl.col("gameweek").is_in(horizon_gws)),
+            current_squad=set(state.squad), top_n_per_position=25, cheap_k_per_position=3,
+        )
+        return sorted((pool & set(valid_players)) | set(state.squad))
+
+    candidates = shortlist(pred_df)
+    reranked = candidates
+    shadow_full = None
+    if news_trial is not None and news_trial.updates:
+        adjusted = news_trial.adjusted_frame(eval_df)
+        shadow = _attenuate_predictions(
+            postprocess(adjusted, _per_player_per_gw_predictions(adjusted)), overrides,
+            news_attenuator=news_attenuator, unexclude_returning=unexclude_returning,
+            doubt_priced_gws=frozenset({gameweek}) if market_priced else frozenset(),
+        )
+        shadow_full = pred_df.with_columns(pl.Series("e_xpts", [
+            shadow.get(key, 0.0) for key in pred_df.select("player_id", "gameweek").iter_rows()
+        ]))
+        reranked = shortlist(shadow_full)
+        news_trial.shortlist = {
+            "entered": sorted(set(reranked) - set(candidates)),
+            "left": sorted(set(candidates) - set(reranked)),
+        }
+    priced_players = sorted(set(candidates) | set(reranked))
 
     # 7. Prices + sell-tax for state.squad players. Phase 7 2.2: project
     # sell_prices to horizon-end using the price-change predictor so the
     # MILP's terminal-value chain rewards holding rising players. buy_prices
     # stay at current (we pay today).
-    buy_prices = {p: _resolve_price_at_gw(p, gameweek, prices_by_pgw) for p in candidates}
+    buy_prices = {p: _resolve_price_at_gw(p, gameweek, prices_by_pgw) for p in priced_players}
     sell_prices: dict[int, int] = {}
     try:
         from fpl_bot.live.price_predict import (
@@ -364,7 +380,7 @@ def generate_recommendation(
         deltas = predict_one_step_price_deltas(
             season_id=season_id,
             gameweek=gameweek,
-            candidates=list(candidates),
+            candidates=priced_players,
             train_seasons=train_seasons,
         )
         price_predict_available = True
@@ -373,9 +389,9 @@ def generate_recommendation(
         # training data, missing features). Logged so it's visible in
         # the smoke output.
         print(f"  price-change predictor unavailable: {exc}; sell_prices = current")
-        deltas = {p: 0.0 for p in candidates}
+        deltas = {p: 0.0 for p in priced_players}
         price_predict_available = False
-    for p in candidates:
+    for p in priced_players:
         current = buy_prices[p]
         delta = deltas.get(p, 0.0)
         projected_horizon_end = (
@@ -397,7 +413,7 @@ def generate_recommendation(
         for p in candidates
         for w in horizon_gws
     }
-    eo = eo_for_candidates(candidates) if rho else {}
+    eo = eo_for_candidates(priced_players) if rho else {}
     teams_dict = {p: teams[p] for p in candidates if p in teams}
     positions_dict = {p: positions.get(p, "MID") for p in candidates}
 
@@ -528,6 +544,36 @@ def generate_recommendation(
         pred_dict,
     )
 
+    if shadow_full is not None:
+        def record(label, plan):
+            news_trial.decisions[label] = {
+                "starting_xi": sorted(plan.starting_xi), "captain": plan.captain,
+                "transferred_in": sorted(plan.transferred_in),
+                "transferred_out": sorted(plan.transferred_out),
+            }
+
+        record("baseline", decisions)
+        for label, pool in (("news", candidates), ("reranked", reranked)):
+            if label == "reranked" and pool == candidates and "news" in news_trial.decisions:
+                news_trial.decisions[label] = news_trial.decisions["news"].copy()
+                continue
+            limit = 180
+            if news_trial.deadline is not None:
+                limit = min(limit, int((news_trial.deadline - dt.datetime.now(dt.UTC)).total_seconds()) - 5)
+            if limit <= 0:
+                news_trial.skipped.append(f"Insufficient time for the {label} squad comparison.")
+                break
+            trial_inputs = replace(inputs, candidates=pool,
+                predictions={(p, w): shadow.get((p, w), 0.0) for p in pool for w in horizon_gws},
+                positions={p: positions[p] for p in pool}, teams={p: teams[p] for p in pool if p in teams},
+                eo=eo,
+                full_predictions=None if is_current_free_hit else shadow_full)
+            try:
+                plan, _ = solve_rolling_horizon(trial_inputs, time_limit_s=limit)
+            except RuntimeError as exc:
+                news_trial.skipped.append(f"{label} squad comparison unavailable: {exc}")
+            else:
+                record(label, plan)
     return md_path, json_path
 
 

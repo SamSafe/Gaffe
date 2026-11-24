@@ -15,6 +15,7 @@ from pyomo.environ import (
     Binary,
     ConcreteModel,
     Constraint,
+    ConstraintList,
     NonNegativeIntegers,
     NonNegativeReals,
     Objective,
@@ -40,9 +41,6 @@ PER_TEAM_CAP = 3
 HIT_COST = 4
 # Transfers for the season's opening gameweek are unlimited and free in FPL.
 SEASON_OPENING_GW = 1
-
-# Big-M for chip-suppression of hits. 15 max transfers × 4 hit cost = 60; use 100 for safety.
-HIT_BIGM = 100
 
 # Default CBC random seed. Pinning it makes single-threaded solves
 # reproducible run-to-run (see solve_milp docstring). Arbitrary fixed value.
@@ -346,54 +344,39 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
         m.con_hold_first = Constraint(m.P, rule=lambda m, p: m.bin[p, first_w] == 0)
 
     # ── Free transfers and hits ─────────────────────────────────────────────
-    def _ft_initial(m):
-        return m.ft[first_w] == state.free_transfers
+    m.ft[first_w].fix(state.free_transfers)
+    m.transfer_rules = ConstraintList()
+    m.paid_week = Var(m.W, domain=Binary)
+    m.lost_roll = Var(H[:-1], domain=Binary)
+    for i, w in enumerate(H):
+        following = H[i + 1] if i + 1 < len(H) else None
+        if w == SEASON_OPENING_GW or (i == 0 and not state.squad):
+            m.ht[w].fix(0)
+            if following is not None:
+                m.ft[following].fix(1)
+            continue
 
-    if state.squad:
-        m.con_ft_initial = Constraint(rule=_ft_initial)
-    # Cold start: leave ft[first_w] free; we constrain hits[first_w] = 0 below.
+        chip = m.z_wc[w] + m.z_fh[w]
+        excess = sum(m.bout[p, w] for p in m.P) - m.ft[w]
+        # A paid transfer is possible only after exhausting the allowance.
+        paid = m.paid_week[w]
+        m.transfer_rules.add(paid + chip <= 1)
+        m.transfer_rules.add(m.ht[w] <= SQUAD_SIZE * paid)
+        m.transfer_rules.add(m.ht[w] >= excess - SQUAD_SIZE * chip)
+        m.transfer_rules.add(m.ht[w] <= excess + 5 * (1 - paid))
+        if following is None:
+            continue
 
-    def _ft_evolution(m, w):
-        if w == first_w:
-            return Constraint.Skip
-        prev_w = H[H.index(w) - 1]
-        # ft_w = min(5, ft_{w-1} + 1 - transfers_used_{w-1})
-        # Linearize: introduce ft_uncapped >= ft_{w-1} + 1 - sum(bin), ft <= 5, ft <= ft_uncapped
-        # Skip the min cap via ft_w = ft_{prev} + 1 - transfers but bound by [0, 5]
-        # We bound m.ft already at [0, 5], and add: ft_w <= ft_{prev} + 1 - sum(bout_{prev_w}) - (-M * chip_waiver)
-        # WC and FH waive the consumption. Simplification: when chip waives, we let ft_w be free in [0, 5].
-        wc_or_fh = m.z_wc[prev_w] + m.z_fh[prev_w]
-        # If no chip waive: ft_w == ft_prev + 1 - transfers_in_prev (with cap at 5 absorbed by domain bounds)
-        return (
-            m.ft[w] <= m.ft[prev_w] + 1 - sum(m.bout[p, prev_w] for p in m.P) + 100 * wc_or_fh
-        )
-
-    m.con_ft_evolution = Constraint(m.W, rule=_ft_evolution)
-
-    def _ft_above_zero(m, w):
-        if w == first_w:
-            return Constraint.Skip
-        prev_w = H[H.index(w) - 1]
-        wc_or_fh = m.z_wc[prev_w] + m.z_fh[prev_w]
-        return (
-            m.ft[w] >= m.ft[prev_w] + 1 - sum(m.bout[p, prev_w] for p in m.P) - 100 * (1 + wc_or_fh)
-        )
-
-    m.con_ft_above_zero = Constraint(m.W, rule=_ft_above_zero)
-
-    def _hits(m, w):
-        # Cold start: GW1 picks are free (no FPL hit penalty); ht[first_w] = 0.
-        # The season opener is free even WITH a pre-picked squad, because FPL
-        # allows unlimited transfers until the first deadline — a live GW1 solve
-        # otherwise sees a 1-FT budget and charges -4 for restructuring a team
-        # the manager could still change for nothing.
-        if w == SEASON_OPENING_GW or (w == first_w and not state.squad):
-            return m.ht[w] == 0
-        return m.ht[w] >= sum(m.bout[p, w] for p in m.P) - m.ft[w] - HIT_BIGM * (
-            m.z_wc[w] + m.z_fh[w]
-        )
-
-    m.con_hits = Constraint(m.W, rule=_hits)
+        # Only a manager rolling at the five-transfer cap loses the new FT.
+        lost = m.lost_roll[w]
+        next_ft = m.ft[following]
+        m.transfer_rules.add(next_ft >= 5 * lost)
+        ordinary_next = 1 - excess + m.ht[w] - lost
+        m.transfer_rules.add(next_ft <= ordinary_next + 20 * chip)
+        m.transfer_rules.add(next_ft >= ordinary_next - 20 * chip)
+        # Wildcard and Free Hit preserve exactly the entering allowance.
+        m.transfer_rules.add(next_ft <= m.ft[w] + 5 * (1 - chip))
+        m.transfer_rules.add(next_ft >= m.ft[w] - 5 * (1 - chip))
 
     # ── Budget evolution ─────────────────────────────────────────────────────
     # Unified bank evolution: bank[w] = (entering bank) + sells - buys
@@ -590,7 +573,7 @@ def build_milp(inputs: MilpInputs) -> ConcreteModel:
     # ── Objective ────────────────────────────────────────────────────────────
     # Main term: (y + c) * pred - rho * eo * (y + c) * pred  (EO-adjusted)
     # Chip bonus: tc_bonus[w] + bb_bonus[w]  (weekly big-M, no EO adjust in v1)
-    # Hits: -4 * ht (suppressed under WC/FH via HIT_BIGM)
+    # Hits: -4 * ht (waived under WC/FH)
     # Terminal value V_T applied to squad at last horizon week.
     last_w = H[-1]
 

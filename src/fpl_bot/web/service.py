@@ -186,6 +186,7 @@ def dashboard(store: Store) -> dict:
             "club": team.get("short_name", "?"),
             "club_name": team.get("name", ""),
             "price": player["now_cost"],
+            "price_signal": {k: player.get("price_change_" + k) for k in ("percent", "locked_until", "calibrating", "projections")} if player.get("price_change_percent") is not None else None,
             "selling_price": sale,
             "status": player.get("status"),
             "news": player.get("news", ""),

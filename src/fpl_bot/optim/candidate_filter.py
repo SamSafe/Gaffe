@@ -49,7 +49,7 @@ def select_candidates(
     for pos in POSITIONS:
         sub = (
             horizon_total.filter(pl.col("position_code") == pos)
-            .sort("horizon_xpts", descending=True)
+            .sort(["horizon_xpts", "player_id"], descending=[True, False])
             .head(top_n_per_position)
         )
         candidates.update(sub["player_id"].to_list())
@@ -117,6 +117,6 @@ def _cheapest_k_per_position(k: int) -> dict[str, list[int]]:
 
     out: dict[str, list[int]] = {}
     for pos in POSITIONS:
-        sorted_by_price = sorted(by_pos[pos], key=lambda x: x[1])
+        sorted_by_price = sorted(by_pos[pos], key=lambda x: (x[1], x[0]))
         out[pos] = [pid for pid, _ in sorted_by_price[:k]]
     return out

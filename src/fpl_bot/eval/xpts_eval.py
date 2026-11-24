@@ -115,7 +115,7 @@ def _baseline_naive_sum_of_components(
     )
     # Goal points by position (lookup via map) and CS points by position
     pos_goal_pts = pl.col("position_code").replace_strict(
-        FPL_GOAL_BY_POSITION, default=4
+        {**FPL_GOAL_BY_POSITION, "GKP": 6 if fixtures["season_id"][0] < 24 else 10}, default=4
     )
     cs_pts = pl.when(pl.col("position_code") == "GKP").then(4).when(
         pl.col("position_code") == "DEF"
@@ -416,7 +416,7 @@ def _run_one_fold(
             | (pl.col("gameweek") <= train_through_gw)
         )
     residual_df = fit_residual_dataset(
-        train_pm, positions_df, rules_mode=bps_rules_mode
+        train_pm, positions_df, rules_mode=bps_rules_mode, target_season=test_season
     )
     event_source = EmpiricalResidualEventSource(
         integer_bps=bps_rules_mode == "official"
@@ -813,6 +813,7 @@ def run_predict_only(
     market_weight: float | None = None,
     prop_odds_as_of: dt.datetime | None = None,
     prop_shadow_out: Path | None = None,
+    news_trial=None,
     minutes_split: MinutesSplitMode = MINUTES_SPLIT_DEFAULT,
     saves_mode: SavesMode = SAVES_MODE_DEFAULT,
     cards_mode: CardsMode = CARDS_MODE_DEFAULT,
@@ -845,7 +846,7 @@ def run_predict_only(
 
     positions_df = pit.all_player_positions()
     train_pm = pit.all_player_match_with_kickoff(season_ids=train_seasons)
-    residual_df = fit_residual_dataset(train_pm, positions_df)
+    residual_df = fit_residual_dataset(train_pm, positions_df, target_season=test_season)
     event_source = EmpiricalResidualEventSource()
     event_source.fit(residual_df)
     train_pm_for_alphas = train_pm.join(
@@ -1020,7 +1021,15 @@ def run_predict_only(
     )
     sim_rows: list[pl.DataFrame] = []
     for fix_inputs in fixture_inputs_iter(prepared):
-        df = simulator.simulate_fixture(fix_inputs)
+        constraints = (news_trial.constraints(fix_inputs, expected_minutes_by_pgw or {}, availability_by_pgw)
+                       if news_trial else [])
+        if constraints:
+            draws = []
+            df = simulator.simulate_fixture(fix_inputs, track_minutes=True, record_draws=draws)
+            news_trial.compare(simulator, fix_inputs, df, constraints, draws)
+            df = df.drop("expected_minutes", "p_minutes_zero", "p_minutes_short", "p_minutes_full")
+        else:
+            df = simulator.simulate_fixture(fix_inputs)
         if not df.is_empty():
             df = df.with_columns(pl.lit(fix_inputs.fixture_id).alias("fixture_id"))
             sim_rows.append(df)

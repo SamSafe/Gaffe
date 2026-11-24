@@ -373,7 +373,7 @@ def test_public_state_preserves_costs_and_free_transfers_through_wildcard(popula
     rebuilt = reconstruct_state(
         bootstrap, history, transfers, state["picks"], state["cost_basis"], {}
     )
-    assert rebuilt["free_transfers"] == 2
+    assert rebuilt["free_transfers"] == 1
     assert rebuilt["chips_used"] == ["BB1", "WC1"]
     assert rebuilt["cost_basis"]["1003"] == 47
     assert rebuilt["picks"][2]["selling_price"] == 48

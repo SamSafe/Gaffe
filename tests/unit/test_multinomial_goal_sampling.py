@@ -270,8 +270,8 @@ def test_independent_assist_mode_reproduces_frozen_simulator_path() -> None:
     )
     out = sim.simulate_fixture(_make_inputs())
 
-    assert out["e_xpts"].sum() == pytest.approx(85.33)
-    assert out["expected_bonus"].sum() == pytest.approx(12.55)
+    assert out["e_xpts"].sum() == pytest.approx(85.375)
+    assert out["expected_bonus"].sum() == pytest.approx(11.39)
 
 
 def test_higher_weight_gets_more_goals_on_average():

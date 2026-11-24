@@ -13,7 +13,7 @@ FPL 2024/25 rules. Diverges from BPS in:
 from __future__ import annotations
 
 # FPL points constants (2024/25)
-FPL_GOAL_BY_POSITION: dict[str, int] = {"GKP": 6, "DEF": 6, "MID": 5, "FWD": 4}
+FPL_GOAL_BY_POSITION: dict[str, int] = {"GKP": 10, "DEF": 6, "MID": 5, "FWD": 4}
 FPL_ASSIST = 3
 FPL_CS_BY_POSITION: dict[str, int] = {"GKP": 4, "DEF": 4, "MID": 1, "FWD": 0}
 FPL_YELLOW = -1
@@ -65,11 +65,14 @@ def score_fpl_points(
     red_cards: int = 0,
     own_goals: int = 0,
     penalties_missed_or_saved: int = 0,
+    penalties_saved: int = 0,
+    season_id: int = 24,
     bonus: int = 0,
 ) -> int:
     """Total FPL points for one player-fixture realization."""
     pts = fpl_appearance_pts(minutes)
-    pts += goals * FPL_GOAL_BY_POSITION.get(position, 4)
+    goal_points = 6 if position == "GKP" and season_id < 24 else FPL_GOAL_BY_POSITION.get(position, 4)
+    pts += goals * goal_points + 5 * penalties_saved
     pts += assists * FPL_ASSIST
     if minutes >= 60 and team_clean_sheet:
         pts += FPL_CS_BY_POSITION.get(position, 0)

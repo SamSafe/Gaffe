@@ -64,6 +64,41 @@ unrefreshed public snapshot as authenticated account synchronization.
 Bookmaker refresh is optional in Settings and consumes the configured API's
 request allowance. The dashboard reports later weeks with market fallback.
 
+## Team news experiment
+
+Open **Team news** after **Refresh data**. Refresh reads the BBC Sport football RSS feed and the
+FPL player news snapshot. Explicit minutes limits and unambiguous fixture-specific absence reports
+enter a parallel forecast. Other matched BBC stories appear for review. Coverage depends on the
+feed naming the player. For an official club press conference, enter the original URL, publication
+time and quote, choose the fixture and player, and optionally name a likely replacement. Enter a
+cap of zero for a confirmed absence. Save another report for the same player and fixture to revise
+it, or select **Withdraw earlier report**. Publication and recording times are both checked.
+
+**Generate forecast** runs the regular model and re-simulates affected fixtures with the same seed,
+odds and per-90 rates. In each simulation the subject can lose only minutes above the reported
+cap. A named teammate can receive those minutes up to 90. The first news comparison uses the original shortlist. A third plan reranks the eligible players
+over the same horizon, holding prices and chip timing fixed. Identical shortlists reuse the same solve. The regular recommendation
+continues to drive the independent bot. Existing manual expected-minutes overrides take precedence.
+
+The page shows the paired fixture estimates and the three plans, who entered or left the shortlist, and whether transfers changed.
+Each entrant’s finalized gameweek points appear after results are refreshed. After a results refresh it scores the
+last completed comparison before each deadline, using FPL's finalized fixture breakdown even in a
+double gameweek. Minutes Brier score measures the probabilities of zero, 1–59 and 60+ minutes.
+Minutes and points MAE are mean absolute errors. Lower is better for each measure. Check the
+sample counts for reported players and replacements separately.
+
+## Workload and price indicators
+
+Refresh data collects completed Champions League, Europa League, Conference League, FA Cup and
+League Cup appearances, Nations League matches, senior international friendlies and World Cup qualifiers. Other competitions can be imported with `gaffe workload-match COMPETITION MATCH_ID`
+using ESPN identifiers. Only unambiguous player matches with recorded minutes count. For at least
+75 external minutes within 96 hours before a league kickoff, the comparison moves one tenth of the
+60+ probability into the cameo bucket. Finalized minutes errors appear under **short rest** in
+Team news. This experimental adjustment does not select the squad.
+
+Transfer planner choices and player details show FPL's projected threshold for the next price
+update, as captured at the last refresh. Current buy and sale prices still determine affordability.
+
 ## Scheduled updates and persistent service
 
 Enable **Run scheduled updates** in Settings. The scheduler checks once a minute

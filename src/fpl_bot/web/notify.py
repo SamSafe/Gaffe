@@ -67,7 +67,7 @@ def forecast_message(store: Store, team_id: int, timezone: str) -> tuple[str, st
 
 def hold_sentence(hold: dict) -> str:
     gain, tolerance = hold["gain"], hold["tolerance"]
-    text = f"Plan vs rolling the transfer: {gain:+.1f} xPts over {hold['weeks']} GWs"
+    text = f"Plan vs rolling the transfer: {gain:+.1f} optimizer score over {hold['weeks']} GWs"
     if abs(gain) <= tolerance:
         return text + f" (within solver tolerance ±{tolerance:.1f}; holding is a fair call)"
     return text

@@ -68,6 +68,18 @@ _SUPPORTED_SOURCES = {
 }
 
 
+@app.command("workload-match")
+def workload_match(competition: str, match_id: int) -> None:
+    """Record a completed external match by ESPN competition slug and event ID."""
+    from fpl_bot.live.workload import capture
+    from fpl_bot.web.store import Store
+
+    store = Store()
+    bootstrap = store.bootstrap(store.snapshot_dir(store.preferences().team_id))
+    with httpx.Client(timeout=12) as client:
+        capture(store, client, competition, match_id, bootstrap)
+
+
 @app.command("install-service")
 def install_app_service() -> None:
     """Keep the app and enabled schedules running after the terminal closes."""

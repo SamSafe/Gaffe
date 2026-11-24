@@ -268,6 +268,7 @@ def _ingest_one_gw_df(
                 clean_sheet=bool(row.get("clean_sheets") or 0),
                 goals_conceded=row.get("goals_conceded"),
                 saves=row.get("saves"),
+                penalties_saved=row.get("penalties_saved"),
                 yellow_cards=row.get("yellow_cards"),
                 red_cards=row.get("red_cards"),
                 bonus=row.get("bonus"),

@@ -9,7 +9,7 @@ from collections import Counter
 
 from fpl_bot.live.market_state import selling_price
 from fpl_bot.optim.scorer import ScorerInputs, score_gw
-from fpl_bot.optim.state import BacktestState, GwDecisions, apply_gw_outcomes
+from fpl_bot.optim.state import BacktestState, GwDecisions, apply_gw_outcomes, next_free_transfers
 from fpl_bot.web.store import Store, read_json, timestamp, write_json
 
 
@@ -257,7 +257,9 @@ class Ledger:
                     reason = f"The saved draft could not be frozen: {exc}"
             record.update(status="missed", reason=reason)
             data["state"]["gameweek"] += 1
-            data["state"]["free_transfers"] = min(5, data["state"]["free_transfers"] + 1)
+            data["state"]["free_transfers"] = next_free_transfers(
+                data["state"]["free_transfers"], 0, opening=gw == 1, transfer_chip=False
+            )
         for record in data["records"]:
             gw = record["gameweek"]
             if record.get("status") != "frozen" or not events.get(gw, {}).get("data_checked"):

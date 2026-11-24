@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,12 +13,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from fpl_bot.live.team_news import NewsReport, record_report
 from fpl_bot.web.automation import Automation
 from fpl_bot.web.jobs import ACTIVE, BusyError, JobManager
 from fpl_bot.web.phone import PhoneAccess
 from fpl_bot.web.schemas import JobRequest, PlanRequest, Preferences
 from fpl_bot.web.service import dashboard, evaluate_plan
 from fpl_bot.web.store import Store
+from fpl_bot.web.team_news import match_context, news_dashboard
 
 ASSETS = Path(__file__).parent / "static"
 
@@ -92,6 +95,18 @@ def create_app(store: Store | None = None, desktop_port: int = 8080) -> FastAPI:
             "access": phone.status(),
             "desktop_client": request.headers.get("x-gaffe-device") != "paired",
         }
+
+    @app.get("/api/team-news")
+    def get_news():
+        return news_dashboard(store)
+
+    @app.post("/api/team-news")
+    def add_news(report: NewsReport):
+        _, bootstrap, fixtures = match_context(store)
+        try:
+            return record_report(store, report, bootstrap, fixtures, dt.datetime.now(dt.UTC))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @app.get("/api/preferences")
     def get_preferences():

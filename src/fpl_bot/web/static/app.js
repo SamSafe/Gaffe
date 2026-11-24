@@ -1,3 +1,5 @@
+import {newsPanel, bindTeamNews} from './team-news.js';
+
 const $ = (s, root = document) => root.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const number = v => v == null ? '—' : Number(v).toLocaleString('en-CA');
@@ -9,9 +11,10 @@ const paths = {
   squad:'<path d="m8 4 4 2 4-2 6 5-4 4-2-2v10H8V11l-2 2-4-4z"/>',
   planner:'<path d="M4 7h16m-4-4 4 4-4 4M20 17H4m4-4-4 4 4 4"/>',
   performance:'<path d="M3 3v18h18M7 16l5-7 4 4 5-8"/>',
+  news:'<path d="M4 4h16v16H4zM7 8h10M7 12h10M7 16h6"/>',
   settings:'<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="8" cy="18" r="2"/>'
 };
-const labels = {overview:'Overview',squad:'My squad',planner:'Transfer planner',performance:'Performance',settings:'Settings'};
+const labels = {overview:'Overview',squad:'My squad',planner:'Transfer planner',performance:'Performance',news:'Team news',settings:'Settings'};
 let data, players = {}, view = 'overview', pitchMode = 'recommended', draft = [], planResult = null, planError = '', busy = false, lastJobState = '', toastTimer, pairingInfo = null, metadataPoll = 0;
 const compactLabels = {planner:'Transfers', performance:'Results'};
 $('#navigation').innerHTML = Object.entries(labels).map(([id,label]) => `<a class="nav-link" href="#${id}" data-nav="${id}"><svg viewBox="0 0 24 24" aria-hidden="true">${paths[id]}</svg>${compactLabels[id] ? `<span class="wide-label">${label}</span><span class="compact-label">${compactLabels[id]}</span>` : `<span>${label}</span>`}</a>`).join('');
@@ -42,7 +45,7 @@ function jersey(p) {
 function footballer(pid, lineup) {
   const p=players[pid]; if(!p) return '';
   const mark=lineup.captain===pid?'C':lineup.vice===pid?'V':'';
-  return `<button class="footballer" data-player="${pid}" aria-label="${esc(p.name)}, ${esc(p.position)}, ${points(p.xpts)} expected points">${jersey(p)}${mark?`<span class="captain-mark ${mark==='V'?'vice':''}">${mark}</span>`:''}<span class="player-name">${esc(p.name)}</span><span class="player-points">${p.forecast_available?points(p.xpts):'—'} xPts</span></button>`;
+  return `<button class="footballer" data-player="${pid}" aria-label="${esc(p.name)}, ${esc(p.position)}, ${p.forecast_available ? points(p.xpts)+' expected points' : 'forecast unavailable'}">${jersey(p)}${mark?`<span class="captain-mark ${mark==='V'?'vice':''}">${mark}</span>`:''}<span class="player-name">${esc(p.name)}</span><span class="player-points">${p.forecast_available?points(p.xpts):'—'} xPts</span></button>`;
 }
 function pitch(lineup) {
   if(!lineup?.starting_xi?.length) return '<div class="empty"><h2>Your squad belongs here.</h2><p>Refresh public data to bring in your team.<br>Then generate a forecast for the next deadline.</p><a class="button" href="#settings">Set up your team →</a></div>';
@@ -73,22 +76,41 @@ function chipsHtml() {
   return `<p class="field-help chips-note"><strong>Chips left this half:</strong> ${left.map(slot=>`${names[slot.slice(0,2)]} ${plan[slot]?`· planned GW${plan[slot]}`:'· held'}`).join('; ')}. Unused chips expire after GW${end}.</p>`;
 }
 function holdHtml() {
-  const h=data.recommendation.hold_comparison;
-  if(!h) return '';
-  const close=Math.abs(h.gain)<=h.tolerance;
-  return `<p class="field-help hold-note"><strong>${signed(h.gain)} xPts</strong> over ${h.weeks} GWs compared with rolling the transfer. ${close?`That is within the solver’s ±${points(h.tolerance)} tolerance, so holding is a fair call.`:'Clear of the solver’s tolerance.'}</p>`;
+  const {decisions, hold_comparison: horizon} = data.recommendation;
+  const gain = data.hold && decisions && !decisions.chip_played
+    ? decisions.expected_gw_points - 4 * decisions.hits - data.hold.expected_points : null;
+  const week = Number.isFinite(gain)
+    ? `<p class="hold-note"><strong>${signed(gain)} xPts this week</strong> versus your best XI if you roll, after hits.</p>` : '';
+  if (!horizon) return week;
+  const close = Math.abs(horizon.gain) <= horizon.tolerance;
+  const verdict = close ? 'The two plans are within solver tolerance.'
+    : horizon.gain > 0 ? 'The transfer plan scores higher.' : 'Rolling scores higher.';
+  return week + `<p class="field-help">Across ${horizon.weeks} GWs, the transfer plan’s optimizer score differs by ${signed(horizon.gain)}. ${verdict}</p>`;
 }
 function qualityCard() {
   const q=data.recommendation.quality, train=q.completed_results_through_gw;
-  return `<section class="card quality-card"><div class="card-head"><h2>Behind the forecast</h2><span class="badge">MODEL STATUS</span></div><div class="card-body"><ul class="quality-list"><li>Completed training results <strong>${train?`Through GW${train}`:'No forecast yet'}</strong></li><li>Bookmaker odds <strong>${q.odds_fetched_at?esc(localDate(q.odds_fetched_at)):'—'}</strong></li><li>Simulations <strong>${number(q.simulation_iterations)}</strong></li><li>Validation <strong>${q.training_policy==='chronological_v1'?'Chronological':'—'}</strong></li><li>Forecast updated <strong>${esc(localDate(data.recommendation.generated_at,false))}</strong></li></ul><div class="notice">Expectations guide the decision; they don’t guarantee the result. Later deadlines may use fallback market estimates.</div></div></section>`;
+  const gw=data.next_event.gameweek, coverage=q.bookmaker_coverage?.[gw];
+  const market = coverage ? `<li>GW${gw} fixtures with odds <strong>${number(coverage.priced_fixtures)} of ${number(coverage.fixtures)}</strong></li>` : '';
+  const fallback = coverage && coverage.priced_fixtures < coverage.fixtures
+    ? '<div class="notice warning">Fixtures without direct odds use team ratings fitted to earlier odds.</div>' : '';
+  return `<section class="card quality-card"><div class="card-head"><h2>Behind the forecast</h2><span class="badge">MODEL STATUS</span></div><div class="card-body"><ul class="quality-list"><li>Completed training results <strong>${train?`Through GW${train}`:'No forecast yet'}</strong></li>${market}<li>Last odds update <strong>${q.odds_fetched_at?esc(localDate(q.odds_fetched_at)):'—'}</strong></li><li>Simulations <strong>${number(q.simulation_iterations)}</strong></li><li>Validation <strong>${q.training_policy?.startsWith('chronological_v1')?'Chronological':'—'}</strong></li><li>Forecast updated <strong>${esc(localDate(data.recommendation.generated_at,false))}</strong></li></ul>${fallback}</div></section>`;
 }
 function overview() {
   const d=data.recommendation.decisions, cap=players[d?.captain], vice=players[d?.vice], perf=data.performance, latest=data.performance.rows.at(-1);
-  const lineup=pitchMode==='recommended'?d:data.current;
+  const views = [
+    ['current', 'Last XI', 'Your last saved XI', data.current],
+    ...(data.hold ? [['hold', 'Roll transfer', 'Best XI with your current squad', data.hold]] : []),
+    ['recommended', 'Suggested', 'The model’s starting XI', d],
+  ];
+  const [mode, , title, lineup] = views.find(([id]) => id === pitchMode) || views.at(-1);
+  const viewButtons = views.map(([id, label]) =>
+    `<button data-pitch="${id}" aria-pressed="${id === mode}" class="${id === mode ? 'selected' : ''}">${label}</button>`
+  ).join('');
+  const lineupPoints = mode === 'hold' ? lineup.expected_points : mode === 'recommended' ? d?.expected_gw_points : null;
   return heading(`YOUR DUGOUT · TEAM ${data.team.id||'NOT SET'}`,`Ready for the next move.`,`${data.team.name}${data.team.manager?' · '+data.team.manager:''}`,actions())+
     `<div class="deadline"><span class="badge amber">${data.next_event.gameweek?`GW${data.next_event.gameweek} DEADLINE`:'SEASON STATUS'}</span><span>${esc(localDate(data.next_event.deadline))}</span><span>•</span><span>${esc(data.preferences.timezone)}</span></div>
     <div class="stats">${stat('Your total points',number(data.team.points),latest?.provisional?'Includes provisional results':'Season to date',false,'◷')}${stat('Overall rank',number(data.team.rank),'Public FPL standing',false,'↗')}${stat('Bank / free transfers',`${money(data.team.bank)} <span class="subheading">/ ${number(data.team.free_transfers)} FT</span>`,'Current public squad state',false,'⇄')}${stat(`GW${data.next_event.gameweek||'—'} forecast`,d?`${points(d.expected_gw_points)} <span class="subheading">xPts</span>`:'—','Recommended XI + captain, before hits',true,'✧')}</div>
-    <div class="grid-main"><section class="card"><div class="card-head"><div><h2>${pitchMode==='recommended'?'The model’s starting XI':'Your last saved XI'}</h2><small>GW${data.next_event.gameweek||'—'} · Tap a player for details</small></div><div class="segment" role="group" aria-label="Squad view"><button data-pitch="current" class="${pitchMode==='current'?'selected':''}">My squad</button><button data-pitch="recommended" class="${pitchMode==='recommended'?'selected':''}">Suggested</button></div></div>${pitch(lineup)}<div class="card-foot"><span><strong>C</strong> Captain &nbsp; <strong>V</strong> Vice captain &nbsp; · &nbsp; Forecast points</span><a href="#squad">Explore squad →</a></div></section>
+    <div class="grid-main"><section class="card"><div class="card-head lineup-head"><div><h2>${title}</h2><small>${lineupPoints == null ? 'Tap a player for details' : `GW${data.next_event.gameweek} · ${points(lineupPoints)} expected points`}</small></div><div class="segment" role="group" aria-label="Squad view">${viewButtons}</div></div>${pitch(lineup)}<div class="card-foot"><span><strong>C</strong> Captain &nbsp; <strong>V</strong> Vice captain &nbsp; · &nbsp; Forecast points</span><a href="#squad">Explore squad →</a></div></section>
     <div class="stack"><section class="card"><div class="card-head"><h2>Your next transfers</h2><span class="badge">${d?(d.hits?`${d.hits*4} PT HIT`:'NO HITS'):'WAITING'}</span></div><div class="card-body">${transfersHtml()}<div class="advice-total"><span>${number(data.team.free_transfers)} free transfers available</span><strong>${d?.transferred_in?.length||0} proposed</strong></div>${chipsHtml()}<a class="button full" href="#planner">Open transfer planner <span class="arrow">→</span></a></div></section>
     <section class="card"><div class="card-body"><div class="captain-card"><div class="captain-icon">${jersey(cap)}</div><div><div class="eyebrow">THE ARMBAND</div><strong>${esc(cap?.name||'Awaiting forecast')}</strong><small>${esc(cap?.club_name||'')} ${cap?'· Captain':''}</small></div></div><div class="metric-pair"><div><strong>${cap?points(cap.xpts*2):'—'}</strong><small>CAPTAIN xPts · DOUBLED</small></div><div><strong>${esc(vice?.name||'—')}</strong><small>VICE CAPTAIN</small></div></div></div></section>${qualityCard()}</div></div>
     <div class="notice">${perf.covered_weeks?`<strong>You’re ${perf.lead>=0?'ahead':'behind'} by ${number(Math.abs(perf.lead))} points</strong> across ${perf.covered_weeks} comparable weeks. Saved bot plans are independent weekly decisions; this is a partial season comparison. <a href="#performance">See the breakdown →</a>`:'No completed, saved pre-deadline comparisons yet. They’ll appear in Performance.'}</div>${warnings()}`;
@@ -107,7 +129,15 @@ function seedDraft() {
   const outs=d?.transferred_out||[], remaining=[...(d?.transferred_in||[])];
   draft=pairTransfers(outs,remaining).map(([out,incoming])=>({out,incoming}));
 }
-function options(list,selected,empty='Choose a player') {return `<option value="">${empty}</option>`+list.map(p=>`<option value="${p.id}" ${p.id===Number(selected)?'selected':''}>${esc(p.name)} · ${esc(p.club)} · ${money(p.price)}${p.forecast_available?' · '+points(p.xpts)+' xPts':''}</option>`).join('');}
+function priceSignal(p) {
+  const s=p?.price_signal;
+  if(!s)return '';
+  if(Date.parse(s.locked_until)>Date.now())return 'Price locked';
+  if(s.calibrating)return 'Price indicator calibrating';
+  const v=s.projections?.find(row=>row.offset===0)?.projected_percent;
+  return v==null?'':'FPL projected threshold '+Number(v).toFixed(1)+'%';
+}
+function options(list,selected,empty='Choose a player') {return `<option value="">${empty}</option>`+list.map(p=>`<option value="${p.id}" ${p.id===Number(selected)?'selected':''}>${esc(p.name)} · ${esc(p.club)} · ${money(p.price)}${p.forecast_available?' · '+points(p.xpts)+' xPts':''}${priceSignal(p)?' · '+esc(priceSignal(p)):''}</option>`).join('');}
 function planner() {
   if(!data.hold) return heading('TRANSFER PLANNER','Make your next move.','Compare a plan with holding your squad.',actions())+`<section class="card"><div class="empty"><h2>A fresh forecast comes first.</h2><p>Refresh your public team, then generate a forecast to compare transfers.</p></div></section>${warnings()}`;
   const held=data.current.squad.map(id=>players[id]), pool=data.players.filter(p=>!data.current.squad.includes(p.id)&&p.forecast_available).sort((a,b)=>b.xpts-a.xpts);
@@ -158,10 +188,11 @@ function render() {
   $('#season-label').textContent=`FANTASY PREMIER LEAGUE · ${2000+data.season}/${String(data.season+1).padStart(2,'0')}`;
   const initials=data.team.name.split(' ').slice(0,2).map(s=>s[0]).join('');
   $('#manager').innerHTML=`<div class="avatar">${esc(initials)}</div><div>${esc(data.team.name)}<small>TEAM ${data.team.id||'NOT SET'}</small></div>`;
-  $('#main').innerHTML=({overview,squad,planner,performance,settings}[view])();
+  $('#main').innerHTML=({overview,squad,planner,performance,news:newsPanel,settings}[view])();
   renderJob();bind();
 }
 function bind() {
+  if(view==='news') bindTeamNews({$, api, players, esc, points, rosterData:data.players, toast});
   bindPhone();
   document.querySelectorAll('[data-player]').forEach(b=>b.onclick=()=>showPlayer(Number(b.dataset.player)));
   document.querySelectorAll('[data-job]').forEach(b=>b.onclick=()=>startJob(b.dataset.job));
@@ -200,7 +231,7 @@ async function comparePlan(captain=null) {
 }
 function showPlayer(id) {
   const p=players[id];if(!p)return;
-  $('#player-detail').innerHTML=`<div class="detail-head">${jersey(p)}<div><div class="eyebrow">${esc(p.club_name)} · ${esc(p.position)}</div><h2 id="player-detail-title">${esc(p.name)}</h2><span class="badge ${p.status==='a'?'':'amber'}">${p.status==='a'?'Available':p.availability!=null?`${p.availability}% chance to play`:'Check news'}</span></div></div><div class="metric-pair"><div><strong>${money(p.price)}</strong><small>BUY PRICE</small></div><div><strong>${money(p.selling_price)}</strong><small>YOUR SALE PRICE</small></div><div><strong>${number(p.total_points)}</strong><small>SEASON POINTS</small></div></div><div class="forecast-strip">${Object.entries(p.forecast).map(([gw,value])=>`<div class="forecast-week"><small>GW${gw}</small><strong>${points(value)}</strong></div>`).join('')}</div><p class="detail-news">${esc(p.news||'No injury or availability news in the latest snapshot.')}</p><p class="field-help">Forecast figures are expected points before captain multipliers.</p>`;
+  $('#player-detail').innerHTML=`<div class="detail-head">${jersey(p)}<div><div class="eyebrow">${esc(p.club_name)} · ${esc(p.position)}</div><h2 id="player-detail-title">${esc(p.name)}</h2><span class="badge ${p.status==='a'?'':'amber'}">${p.status==='a'?'Available':p.availability!=null?`${p.availability}% chance to play`:'Check news'}</span></div></div><div class="metric-pair"><div><strong>${money(p.price)}</strong><small>BUY PRICE</small></div><div><strong>${money(p.selling_price)}</strong><small>YOUR SALE PRICE</small></div><div><strong>${number(p.total_points)}</strong><small>SEASON POINTS</small></div></div><div class="forecast-strip">${Object.entries(p.forecast).map(([gw,value])=>`<div class="forecast-week"><small>GW${gw}</small><strong>${points(value)}</strong></div>`).join('')}</div><p>${esc(priceSignal(p))}</p><p class="detail-news">${esc(p.news||'No injury or availability news in the latest snapshot.')}</p><p class="field-help">Forecast figures are expected points before captain multipliers.</p>`;
   $('#player-dialog').showModal();
 }
 async function startJob(kind) {

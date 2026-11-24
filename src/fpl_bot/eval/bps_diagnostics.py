@@ -76,7 +76,7 @@ def _run_fold_for_diagnostics(
 
     positions_df = pit.all_player_positions()
     train_pm = pit.all_player_match_with_kickoff(season_ids=train_seasons)
-    residual_df = fit_residual_dataset(train_pm, positions_df)
+    residual_df = fit_residual_dataset(train_pm, positions_df, target_season=test_season)
     fitted_source = EmpiricalResidualEventSource()
     fitted_source.fit(residual_df)
     zero_source = _ZeroResidualEventSource()

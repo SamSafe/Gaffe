@@ -24,6 +24,14 @@ SECOND_HALF_FIRST_GW = 20
 INITIAL_BUDGET_TENTHS = 1000  # £100.0m
 
 
+def next_free_transfers(current: int, transfers: int, *, opening: bool, transfer_chip: bool) -> int:
+    if opening:
+        return 1
+    if transfer_chip:
+        return current
+    return min(5, 1 + max(0, current - transfers))
+
+
 @dataclass(frozen=True)
 class BacktestState:
     """Snapshot of the FPL team's state entering a gameweek."""
@@ -117,14 +125,11 @@ def apply_gw_outcomes(
     if decisions.chip_played:
         chips_after.add(decisions.chip_played)
 
-    # FT evolution: WC and FH refund the FT count to 1 the week they're played
-    # (and don't consume FT this week — the MILP enforces hits=0 under WC). For
-    # next-GW carry-over: ft_next = min(5, ft_now + 1 - transfers_used_this_gw),
-    # with WC/FH waiving consumption.
-    transfers_used = len(transfers_in)
-    chip_waives_ft = decisions.chip_played in ("WC1", "WC2", "FH1", "FH2")
-    consumed = 0 if chip_waives_ft else min(transfers_used, state.free_transfers)
-    ft_next = min(5, state.free_transfers + 1 - consumed)
+    ft_next = next_free_transfers(
+        state.free_transfers, len(transfers_in),
+        opening=state.gameweek == 1 or not state.squad,
+        transfer_chip=decisions.chip_played in ("WC1", "WC2", "FH1", "FH2"),
+    )
 
     squad_after = state.squad if is_free_hit else decisions.squad
 

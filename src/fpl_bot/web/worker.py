@@ -37,12 +37,13 @@ def reconstruct_state(bootstrap, history, transfers, picks, previous_basis, open
 
     ft = 1
     chips = {c["event"]: c["name"] for c in history.get("chips", [])}
-    for row in sorted(history.get("current", []), key=lambda r: r["event"]):
-        if row["event"] == 1:
-            ft = 1
-        else:
-            exempt = chips.get(row["event"]) in {"wildcard", "freehit"}
-            ft = min(5, ft + 1 - (0 if exempt else min(ft, row.get("event_transfers", 0))))
+    from fpl_bot.optim.state import next_free_transfers
+
+    for index, row in enumerate(sorted(history.get("current", []), key=lambda r: r["event"])):
+        ft = next_free_transfers(
+            ft, row.get("event_transfers", 0), opening=index == 0,
+            transfer_chip=chips.get(row["event"]) in {"wildcard", "freehit"},
+        )
     chip_names = {"wildcard": "WC", "freehit": "FH", "bboost": "BB", "3xc": "TC"}
     used = [
         chip_names[c["name"]] + ("1" if c["event"] <= 19 else "2")
@@ -179,6 +180,13 @@ def refresh(store: Store, team_id: int, refresh_odds: bool):
             ("state", state),
         ]:
             write_json(snapshot / f"{name}.json", data)
+        from fpl_bot.ingest.team_news import capture_feed
+        from fpl_bot.live.workload import refresh_workload
+
+        refresh_workload(store, client, bootstrap, dt.datetime.now(dt.UTC))
+        prior_news = read_json(previous / "team_news_feed.json", {}) if previous else {}
+        write_json(snapshot / "team_news_feed.json",
+                   capture_feed(client, bootstrap, fixtures, target, prior_news))
         if previous and (previous / "bot_vs_team.json").exists():
             shutil.copy2(previous / "bot_vs_team.json", snapshot / "bot_vs_team.json")
         for event in bootstrap["events"]:
@@ -348,6 +356,11 @@ def recommend(store: Store, team_id: int, horizon: int):
     # Build off to the side; a failed solve must never replace a usable forecast.
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S%f")
     staging = destination / "archive" / stamp
+    from fpl_bot.live.team_news import NewsTrial
+    from fpl_bot.web.team_news import forecast_reports
+
+    reports = forecast_reports(store, target, folder)
+    trial = NewsTrial(reports, deadline=timestamp(target["deadline_time"]))
     generate_recommendation(
         season_id=store.season,
         gameweek=target["id"],
@@ -356,7 +369,17 @@ def recommend(store: Store, team_id: int, horizon: int):
         horizon=horizon,
         n_iterations=1000,
         output_dir=staging,
+        news_trial=trial if reports else None,
     )
+    from fpl_bot.live.workload import comparison
+
+    workload = comparison(store, staging / "fixture_predictions.parquet", target["id"], timestamp(target["deadline_time"]))
+    write_json(staging / "team_news_trial.json", {
+        "workload": workload,
+        "started_at": stamp, "finished_at": dt.datetime.now(dt.UTC).isoformat(),
+        "deadline": target["deadline_time"], "reports": reports, "rows": trial.rows,
+        "shortlist": trial.shortlist, "decisions": trial.decisions, "skipped": trial.skipped, "seed": 42, "iterations": 1000,
+    })
     write_json(staging / "complete.json", {"completed": True})
     progress(95, "Saving the optimized squad and forecast…")
     # Archive existing artifacts before replacement. Historical primary remains intact.

@@ -360,7 +360,7 @@ def _check_validity(
 
     # FT evolution: if no chip waiver, transfers above ft = hits
     chip_waives_ft = decisions.chip_played in ("WC1", "WC2", "FH1", "FH2")
-    if not chip_waives_ft and state_before.squad:
+    if not chip_waives_ft and state_before.squad and record.gameweek != 1:
         expected_hits = max(0, bin_n - state_before.free_transfers)
         if decisions.hits != expected_hits:
             errors.append(

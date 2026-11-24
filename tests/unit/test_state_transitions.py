@@ -140,8 +140,7 @@ def test_apply_gw_outcomes_chip_waives_ft_consumption() -> None:
         objective_value=0.0,
     )
     new_state = apply_gw_outcomes(s, decisions, actual_prices={300: {"buy": 90, "sell": 90}})
-    # WC waives FT consumption: ft_next = min(5, 1 + 1 - 0) = 2
-    assert new_state.free_transfers == 2
+    assert new_state.free_transfers == 1
     assert "WC1" in new_state.chips_used
 
 
@@ -180,7 +179,7 @@ def test_apply_gw_outcomes_free_hit_reverts_squad_and_bank() -> None:
     assert new_state.squad == s.squad
     assert new_state.bank == s.bank
     assert new_state.cost_basis == s.cost_basis
-    assert new_state.free_transfers == 2
+    assert new_state.free_transfers == 1
     assert "FH1" in new_state.chips_used
 
 
